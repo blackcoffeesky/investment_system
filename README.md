@@ -144,3 +144,48 @@ python -m datahub.fin.intake wgc_etf <xlsx> --load
 
 **已知短板**（详见各模块文档）：`industrial_yoy`/`exports_yoy` 停在 2025-08、
 `geopolitic_risk` 源已停更、央行季报有 23/87 国未更新。
+
+---
+
+## 9. 部署
+
+```bash
+git clone git@github.com:blackcoffeesky/investment_system.git
+cd investment_system
+
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+
+# 建库并抓数（首次会跑几分钟；周期源首次会拉全量历史，耐心等）
+python -m datahub.fin.update
+
+# 出卡（需要先有边快照/状态模型；仓库不含这些产物，见下）
+python -m causual.causual_core.daily --asset ashare
+
+# 起服务
+uvicorn service.app:app --host 0.0.0.0 --port 8000
+```
+
+**仓库里没有的东西**（`.gitignore` 排除，需自行生成）：
+
+| 缺什么 | 怎么补 |
+|---|---|
+| `datahub/datahub.sqlite` | `python -m datahub.fin.update` |
+| `causual/data/`（边快照、标签） | `python -m causual.causual_core.edges fit --asset ashare` |
+| `causual/output/`（卡片） | 跑 `daily` 或服务的 `/ops` → 运行一次 |
+| `datahub/fin/intake/raw/*.xlsx` | 手工源的原始文件，需自行放回 |
+
+`datahub/fin/intake/clean/*.csv` **是包含的**——它是解析后的手工数据，
+有了它才能在不放回 xlsx 的情况下重建库。
+
+---
+
+## 10. 备份
+
+数据库是 WAL 模式，`datahub.sqlite` 旁边还有 `-wal`/`-shm`。
+**直接复制文件可能丢最近事务**，正确做法：
+
+```bash
+sqlite3 datahub/datahub.sqlite ".backup backup/db-$(date +%F).sqlite"
+```
