@@ -132,3 +132,44 @@ def test_macro_card_is_monthly_and_idempotent():
     assert cc.card_path("ashare", "2026-09", "macro").name == "macro_2026-09.md"
     assert cc.card_path("ashare", "2026-09", "macro_detail").name == "macro_detail_2026-09.md"
     assert cc.card_path("ashare", "2026-11-04", "card").name == "card_2026-11-04.md"
+
+
+def test_write_upsert_single():
+    """单值写入：新增 / 覆盖 / 元数据同步。"""
+    import shutil
+    import tempfile
+
+    import datahub.fin.write as W
+    from datahub.core.conn import connect
+    from datahub.core.schema import DATA_DDL
+
+    tmp = Path(tempfile.mkdtemp()) / "w.sqlite"
+    import sqlite3
+    con = sqlite3.connect(str(tmp))
+    con.executescript(DATA_DDL)
+    con.commit()
+    con.close()
+
+    try:
+        r1 = W.upsert_single("t_probe", "2026-11-01", 1.0, db_path=tmp)
+        assert r1["before"] is None and r1["after"] == 1.0
+        r2 = W.upsert_single("t_probe", "2026-11-01", 2.0, db_path=tmp)
+        assert r2["before"] == 1.0 and r2["after"] == 2.0
+        # 元数据被补上并同步
+        con = connect(tmp)
+        row = con.execute("SELECT start_date, end_date FROM metadata WHERE name='t_probe'").fetchone()
+        con.close()
+        assert row[0] == "2026-11-01" and row[1] == "2026-11-01"
+    finally:
+        shutil.rmtree(tmp.parent, ignore_errors=True)
+
+
+def test_data_page_renders():
+    """数据层页面能渲染（含上传表单与表清单）。"""
+    from fastapi.testclient import TestClient
+
+    from service.app import app
+
+    r = TestClient(app).get("/data")
+    assert r.status_code == 200
+    assert "上传文件" in r.text and "录入单个数值" in r.text

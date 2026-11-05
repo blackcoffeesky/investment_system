@@ -1,4 +1,4 @@
-"""数据层的三个状态：抓取 → 手工数据检查 → 完整性校验。
+"""数据层的两个状态：抓取 → 数据检查（手工表逾期 + 日期缺口）。
 
 一个模块一个文件：同一模块的状态共享常量与判断逻辑，放在一起才不会散。
 真正的判断抽成**纯函数**（`stale_tables` / `overdue_tables`），方便单测；
@@ -16,10 +16,14 @@ from service.ops.messages import Message, MessageLevel, StateResult
 # 保鲜期（天）：超过这个天数没更新，就认为该表"不可用"
 FRESH_DAYS = {"D": 10, "W": 21, "M": 62, "Q": 150, "Y": 400}
 
-# 手工表期望更新周期（天）
+# 手工表期望更新周期（天）——按**表自身频率**而不是统一天数。
+# 季报按季、月报按月，否则 cb_holdings 每天都会报"逾期"。
+EXPECTED_BY_FREQ = {"D": 5, "W": 14, "M": 45, "Q": 120, "Y": 400}
+
+# 个别表手工指定（覆盖频率推算）
 EXPECTED_DAYS = {
-    "cb_holdings": 100,          # WGC 季报，滞后约 45 天
-    "gold_etf_holdings": 40,     # WGC ETF 月报
+    "cb_holdings": 120,          # WGC 季报，滞后约 45 天
+    "gold_etf_holdings": 45,     # WGC ETF 月报
     "insider_net": 45,           # 东财月度导出
     "equity_fin_monthly": 45,    # 人行社融表
 }
@@ -55,10 +59,13 @@ def overdue_tables(meta: pd.DataFrame, today: pd.Timestamp) -> list[dict]:
     """
     out = []
     idx = meta.set_index("name") if "name" in meta.columns else meta
-    for table, days in EXPECTED_DAYS.items():
+    for table in EXPECTED_DAYS:
         if table not in idx.index:
             continue
-        end = idx.loc[table, "end_date"]
+        row = idx.loc[table]
+        freq = str(row.get("freq") or "M")
+        days = EXPECTED_DAYS.get(table) or EXPECTED_BY_FREQ.get(freq, 45)
+        end = row.get("end_date")
         if not end:
             out.append({"table": table, "end_date": "", "gap": None,
                         "text": f"{table} 无数据"})
@@ -105,68 +112,71 @@ class FetchState(BaseState):
         ctx.logger.info("[fetch] 结束")
 
 
-class ManualCheckState(BaseState):
-    name = "manual_check"
+class ValidateState(BaseState):
+    """数据检查：手工表逾期 + 日期缺口。
+
+    原先 manual_check / validate 是两个状态，但两者产出同一种 WARNING、
+    用户动作也一样（补数据 / 忽略），却要确认两次——合并成一个。
+    消息 key 仍是表名，静音粒度不变。
+    """
+
+    name = "validate"
     prefix = ("fetch",)
-    label = "手工数据逾期检查"
+    label = "数据检查（手工表 + 缺口）"
     # 逾期多半是"新一期还没发布"——按数据期静音，出新的自然恢复
     default_snooze = "period_change"
 
     def start(self, ctx) -> None:
-        ctx.logger.info("[manual_check] 检查手工表")
+        ctx.logger.info("[validate] 检查手工表与日期缺口")
 
     def run(self, ctx) -> StateResult:
-        overdue = overdue_tables(ctx.data_service.metadata(),
-                                 pd.Timestamp.today().normalize())
-        if not overdue:
-            return StateResult.ok("手工数据均在更新周期内", self.name)
-
-        # 每张逾期表单独一条消息：静音按表做 key，按 end_date 做 period
         r = StateResult()
-        for o in overdue:
+
+        # ① 手工表逾期：每张表一条消息（key=表名，period=end_date）
+        for o in overdue_tables(ctx.data_service.metadata(),
+                                pd.Timestamp.today().normalize()):
             r.messages.append(Message(
                 MessageLevel.WARNING, o["text"], self.name,
                 key=o["table"], period=o["end_date"]))
-        return r
 
-    def end(self, ctx) -> None:
-        ctx.logger.info("[manual_check] 结束")
-
-
-class ValidateState(BaseState):
-    name = "validate"
-    prefix = ("fetch", "manual_check")
-    label = "数据完整性检查"
-    default_snooze = "days:7"        # 缺口不是每天都能修，一周看一次
-
-    def start(self, ctx) -> None:
-        ctx.logger.info("[validate] 开始检查")
-
-    def run(self, ctx) -> StateResult:
+        # ② 日期缺口
         try:
             issues = ctx.data_service.check()
         except Exception as e:  # noqa: BLE001
-            return StateResult.error(f"完整性检查无法执行：{type(e).__name__}: {e}", self.name)
+            r.messages.append(Message(
+                MessageLevel.ERROR,
+                f"完整性检查无法执行：{type(e).__name__}: {e}", self.name))
+            return r
 
         if issues is None or not len(issues):
-            return StateResult.ok("全部通过", self.name)
+            if not r.messages:
+                return StateResult.ok("手工表与日期缺口均正常", self.name)
+            return r
 
         structural, recent = [], []
-        for _, r in issues.iterrows():
-            text = str(r.get("issues", ""))
+        for _, row in issues.iterrows():
+            text = str(row.get("issues", ""))
             if "读取失败" in text or "空表" in text or "日历失败" in text:
-                structural.append(f"{r['name']}：{text}")
+                structural.append(f"{row['name']}：{text}")
             elif "近期" in text:
-                recent.append(f"{r['name']}：{text}")
+                recent.append(f"{row['name']}：{text}")
 
         if structural:
-            return StateResult.error("数据不可用：" + "；".join(structural[:3]), self.name)
+            r.messages.append(Message(
+                MessageLevel.ERROR, "数据不可用：" + "；".join(structural[:3]),
+                self.name, key="structural"))
+            return r
+
         if recent:
-            return StateResult.warn(
+            r.messages.append(Message(
+                MessageLevel.WARNING,
                 f"近期缺口 {len(recent)} 张表：" + "；".join(recent[:3]),
-                self.name, key="recent_gaps")
-        return StateResult.ok(
-            f"无近期缺口；{len(issues)} 张表有历史缺口（已登记，仅提示）", self.name)
+                self.name, key="recent_gaps"))
+
+        if not r.messages:
+            return StateResult.ok(
+                f"无近期缺口；{len(issues)} 张表有历史缺口（已登记，仅提示）", self.name)
+        return r
 
     def end(self, ctx) -> None:
         ctx.logger.info("[validate] 结束")

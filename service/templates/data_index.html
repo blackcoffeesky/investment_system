@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}数据{% endblock %}
+{% block content %}
+
+{% if result %}
+<div style="border:1px solid var(--ok);border-left:4px solid var(--ok);border-radius:8px;
+            padding:10px 12px;margin-bottom:14px;background:#121a12">
+  <strong style="color:var(--ok)">已写入</strong>
+  <div class="muted">
+    {{ result.table }} · {{ result.date }} ·
+    {% if result.before is not none %}覆盖 {{ result.before }} → {% endif %}{{ result.after }}
+  </div>
+</div>
+{% endif %}
+
+<div class="row" style="margin-bottom:12px">
+  <a class="btn" href="/data?only=manual" style="{{ 'border-color:var(--accent)' if only == 'manual' else '' }}">手工数据</a>
+  <a class="btn" href="/data?only=all" style="{{ 'border-color:var(--accent)' if only != 'manual' else '' }}">全部表</a>
+</div>
+
+<h2 style="margin-top:0">上传文件</h2>
+<form method="post" action="/data/upload" enctype="multipart/form-data"
+      enctype="multipart/form-data"
+      onsubmit="this.querySelector('button').textContent='上传中…';this.style.pointerEvents='none'">
+  <div class="row" style="margin-bottom:8px">
+    <select name="source" class="btn">
+      {% for k, v in sources.items() %}
+      <option value="{{ k }}">{{ v }}</option>
+      {% endfor %}
+    </select>
+    <input type="file" name="file" accept=".xlsx,.xls,.csv" required>
+    <input type="hidden" name="load" value="1">
+    <button class="btn" type="submit">上传并入库</button>
+  </div>
+  <p class="muted">上限 {{ max_mb }} MB。上传后按该源解析 → 写库 → 更新元数据。</p>
+</form>
+
+<h2>录入单个数值</h2>
+<form method="post" action="/data/manual" class="row"
+      onsubmit="this.querySelector('button').textContent='写入中…';this.style.pointerEvents='none'">
+  <select name="table" class="btn" required>
+    {% for r in rows %}
+      {% if r.kind == 'single' %}
+      <option value="{{ r.name }}">{{ r.name }}（{{ r.freq or '?' }}）</option>
+      {% endif %}
+    {% endfor %}
+  </select>
+  <input class="btn" type="date" name="date" required>
+  <input class="btn" type="text" name="value" placeholder="数值" required style="width:120px">
+  <button class="btn" type="submit">写入</button>
+</form>
+<p class="muted">日期已有值时会覆盖，写入后会告诉你原来是多少。</p>
+
+<h2>数据表</h2>
+<table style="border-collapse:collapse;width:100%;font-size:13px">
+  <tr>
+    <th align="left">表</th><th align="left">频率</th><th align="left">市场</th>
+    <th align="left">起</th><th align="left">止</th><th align="left">备注</th>
+  </tr>
+  {% for r in rows %}
+  <tr>
+    <td><code>{{ r.name }}</code></td>
+    <td>{{ r.freq }}</td>
+    <td>{{ r.market }}</td>
+    <td class="muted">{{ r.start }}</td>
+    <td class="muted">{{ r.end }}</td>
+    <td class="muted" style="white-space:normal">{{ r.note[:60] }}</td>
+  </tr>
+  {% endfor %}
+</table>
+
+{% endblock %}

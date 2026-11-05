@@ -9,18 +9,17 @@ from __future__ import annotations
 
 from service.ops.base_state import BaseState
 from service.ops.states.causal import GenerateCardsState, GenerateMacroState
-from service.ops.states.data import FetchState, ManualCheckState, ValidateState
+from service.ops.states.data import FetchState, ValidateState
 
 # 将来：
 # from service.ops.states.causal import CausalCardState
 
 STATES: list[BaseState] = [
     FetchState(),
-    ManualCheckState(),
     ValidateState(),
     GenerateCardsState(),
     GenerateMacroState(),
 ]
 
-__all__ = ["STATES", "FetchState", "ManualCheckState", "ValidateState",
+__all__ = ["STATES", "FetchState", "ValidateState",
            "GenerateCardsState", "GenerateMacroState"]

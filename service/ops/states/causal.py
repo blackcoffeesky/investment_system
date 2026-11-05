@@ -21,7 +21,7 @@ class GenerateMacroState(BaseState):
     """
 
     name = "generate_macro"
-    prefix = ("fetch", "manual_check", "validate")
+    prefix = ("fetch", "validate")
     label = "生成月频卡"
     default_snooze = "days:1"
 
@@ -74,7 +74,7 @@ class GenerateMacroState(BaseState):
 
 class GenerateCardsState(BaseState):
     name = "generate_cards"
-    prefix = ("fetch", "manual_check", "validate")
+    prefix = ("fetch", "validate")
     label = "生成新卡片"
     default_snooze = "days:1"
 

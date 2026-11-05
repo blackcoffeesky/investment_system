@@ -206,8 +206,10 @@ def home():
 # ---------------- 挂载模块
 def _load_modules():
     from causual import web as causual_web
+    from service import data_web
 
     causual_web.register_module()      # 它内部已经调用 register()
+    data_web.register_module()
 
 
 _load_modules()

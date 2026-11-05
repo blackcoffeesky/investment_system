@@ -137,15 +137,15 @@ def test_skip_once_keeps_checking():
     """skip(once) 记 SNOOZED：下次仍会重新检查。"""
     p = _tmp()
     m = _mgr(p)
-    m.store.save_result("manual_check", StateStatus.WAITING_ACK.value,
+    m.store.save_result("validate", StateStatus.WAITING_ACK.value,
                         messages=[{"id": "m-w1", "level": "warning", "text": "逾期",
-                                   "state": "manual_check", "key": "cb_holdings",
+                                   "state": "validate", "key": "cb_holdings",
                                    "period": "2026-06-30", "created_at": "2026-01-01"}],
                         blocking_msg_id="m-w1")
     r = m.ack("m-w1", "skip", remind_at="once")
     assert r["result"] == "skip"
-    assert m.status()["manual_check"]["state"] == "snoozed"
-    assert not m.store.snoozes("manual_check"), "once 不应留下静音记录"
+    assert m.status()["validate"]["state"] == "snoozed"
+    assert not m.store.snoozes("validate"), "once 不应留下静音记录"
 
 
 def test_snooze_is_per_message():
@@ -157,7 +157,7 @@ def test_snooze_is_per_message():
     m._refresh()
 
     r = m.run()
-    assert r["manual_check"]["status"] == "waiting_ack"
+    assert r["validate"]["status"] == "waiting_ack"
     warns = [x for x in m.store.messages(unacked_only=True) if x["level"] == "warning"]
     assert len(warns) == 2, [w["key"] for w in warns]
 
@@ -167,7 +167,7 @@ def test_snooze_is_per_message():
     m2.store.set_status("fetch", StateStatus.DONE.value)
     m2._refresh()
     r2 = m2.run()
-    assert r2["manual_check"]["status"] == "waiting_ack", "另一张仍应打断"
+    assert r2["validate"]["status"] == "waiting_ack", "另一张仍应打断"
 
     # 把剩下的告警全部静音 → snoozed
     for x in [y for y in m2.store.messages(unacked_only=True)
@@ -176,19 +176,19 @@ def test_snooze_is_per_message():
     m3 = _mgr(p)
     m3.store.set_status("fetch", StateStatus.DONE.value)
     m3._refresh()
-    assert m3.run()["manual_check"]["status"] == "snoozed"
+    assert m3.run()["validate"]["status"] == "snoozed"
 
 
 def test_snooze_expires_by_days():
     p = _tmp()
     m = _mgr(p)
-    m.store.save_result("manual_check", StateStatus.WAITING_ACK.value,
+    m.store.save_result("validate", StateStatus.WAITING_ACK.value,
                         messages=[{"id": "m-w2", "level": "warning", "text": "逾期",
-                                   "state": "manual_check", "key": "cb_holdings",
+                                   "state": "validate", "key": "cb_holdings",
                                    "period": "2026-06-30", "created_at": "2026-01-01"}],
                         blocking_msg_id="m-w2")
     m.ack("m-w2", "skip", remind_at="days:3")
-    assert m.store.snoozes("manual_check")
+    assert m.store.snoozes("validate")
 
     con = sqlite3.connect(str(p))
     con.execute("UPDATE ops_snooze SET remind_at='2000-01-01T00:00:00'")
@@ -198,7 +198,7 @@ def test_snooze_expires_by_days():
     m2 = _mgr(p)
     m2.store.set_status("fetch", StateStatus.DONE.value)
     m2._refresh()
-    assert m2.run()["manual_check"]["status"] in ("waiting_ack", "blocked")
+    assert m2.run()["validate"]["status"] in ("waiting_ack", "blocked")
 
 
 def test_repeated_run_does_not_bump_attempts():
@@ -208,8 +208,11 @@ def test_repeated_run_does_not_bump_attempts():
     m.store.set_status("fetch", StateStatus.DONE.value)
     m._refresh()
     m.run()
+    m._refresh()                      # status() 读的是内存快照，跑完要刷新
+    first = int(m.status()["validate"]["attempts"])
     m.run()
-    assert int(m.status()["validate"]["attempts"]) == 0, m.status()["validate"]
+    m._refresh()
+    assert int(m.status()["validate"]["attempts"]) == first, m.status()["validate"]
 
 
 def test_run_log_written():
@@ -226,7 +229,7 @@ def test_run_log_written():
 def test_generate_cards_warns_on_partial_failure():
     p = _tmp()
     m = _mgr(p, cards=FakeCards(fail={"gold"}))
-    for s in ("fetch", "manual_check", "validate"):
+    for s in ("fetch", "validate"):
         m.store.set_status(s, StateStatus.DONE.value)
     m._refresh()
     r = m.run(only=["generate_cards"])
@@ -238,7 +241,7 @@ def test_generate_cards_warns_on_partial_failure():
 def test_generate_cards_errors_when_all_fail():
     p = _tmp()
     m = _mgr(p, cards=FakeCards(fail={"ashare", "gold"}))
-    for s in ("fetch", "manual_check", "validate"):
+    for s in ("fetch", "validate"):
         m.store.set_status(s, StateStatus.DONE.value)
     m._refresh()
     r = m.run(only=["generate_cards"])
@@ -266,10 +269,10 @@ def test_reset_all_refuses_when_blocked():
     p = _tmp()
     m = _mgr(p)
     m.store.set_status("fetch", StateStatus.DONE.value)
-    m.store.set_status("manual_check", StateStatus.WAITING_ACK.value)
+    m.store.set_status("validate", StateStatus.WAITING_ACK.value)
     m._refresh()
     r = m.reset_all()
-    assert not r["ok"] and "manual_check" in r["reason"]
+    assert not r["ok"] and "validate" in r["reason"]
 
 
 def test_reset_all_resets_settled_states():
@@ -295,11 +298,11 @@ def test_reset_all_keeps_snooze():
     """重跑不解除静音。"""
     p = _tmp()
     m = _mgr(p)
-    m.store.snooze("manual_check", "cb_holdings", "period", period="2026-06-30")
-    m.store.set_status("manual_check", StateStatus.SNOOZED.value)
+    m.store.snooze("validate", "cb_holdings", "period", period="2026-06-30")
+    m.store.set_status("validate", StateStatus.SNOOZED.value)
     m._refresh()
     m.reset_all()
-    assert m.store.snoozes("manual_check"), "重跑不应清掉静音"
+    assert m.store.snoozes("validate"), "重跑不应清掉静音"
 
 
 def test_all_settled_and_has_unacked_flags():
@@ -373,9 +376,9 @@ def test_ops_page_renders_with_grouped_messages():
         s = OpsStore(tmp)
         for i in range(3):
             s.save_result(
-                "manual_check", StateStatus.WAITING_ACK.value,
+                "validate", StateStatus.WAITING_ACK.value,
                 messages=[{"id": f"m-grp{i}", "level": "warning",
-                           "text": f"告警 {i}", "state": "manual_check",
+                           "text": f"告警 {i}", "state": "validate",
                            "key": f"tbl{i}", "period": "2026-11-04",
                            "created_at": "2026-11-04T10:00:00"}])
         r = TestClient(app_mod.app).get("/ops")
