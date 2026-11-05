@@ -32,8 +32,21 @@ def _tpl(request: Request):
     return request.app.state.templates
 
 
+def _db_ready() -> bool:
+    try:
+        from datahub.fin import tables
+
+        return len(tables()) > 0
+    except Exception:  # noqa: BLE001
+        return False
+
+
 @router.get("/data", response_class=HTMLResponse)
 def index(request: Request, only: str = "manual"):
+    if not _db_ready():
+        return _tpl(request).TemplateResponse(
+            request, "data_empty.html", {"max_mb": MAX_UPLOAD_MB})
+
     from datahub.fin import metadata
 
     meta = metadata()
