@@ -16,6 +16,9 @@ pandas-datareader>=0.10
 requests>=2.31
 openpyxl>=3.1
 
+# ---- 状态引擎 ----
+hmmlearn>=0.3          # regime_engine 的 HMM
+
 # ---- 因果估计 ----
 econml>=0.15
 scikit-learn>=1.4
