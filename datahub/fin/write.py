@@ -36,6 +36,13 @@ def _bump_meta(table: str, db_path: Path | None = None) -> None:
             f'SELECT MIN(date), MAX(date) FROM "{table}"').fetchone()
         if not row or not row[0]:
             return
+        exists = con.execute("SELECT 1 FROM metadata WHERE name=?", (table,)).fetchone()
+        if not exists:
+            con.execute(
+                "INSERT INTO metadata(name, kind, market, freq, lag_days,"
+                " start_date, end_date) VALUES (?,?,?,?,?,?,?)",
+                (table, "single", "CN", "M", 0, row[0], row[1]))
+            return
         con.execute(
             "UPDATE metadata SET start_date=?, end_date=? WHERE name=?",
             (row[0], row[1], table))
