@@ -255,7 +255,7 @@ causual/
 ├── narrative.py    每日因果卡片
 ├── evaluate.py     Rank IC / 分层 / 参数回收 / 符号审计
 ├── snapshot.py     边模型快照（只存系数，不存模型对象）
-├── edges.py        边模型拟合与审计（edges fit / audit）
+├── cli.py          命令行入口（regime / edges / audit / daily）
 ├── daily.py        日常入口（不拟合任何模型）
 └── causual.py      研究/回测编排 + CLI
 ```

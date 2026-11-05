@@ -160,7 +160,12 @@ pip install -r requirements.txt
 # 建库并抓数（首次会跑几分钟；周期源首次会拉全量历史，耐心等）
 python -m datahub.fin.update
 
-# 出卡（需要先有边快照/状态模型；仓库不含这些产物，见下）
+# 拟合状态模型 + 边快照（仓库不含这些产物，见下）
+python -m causual.causual_core.cli regime --asset ashare   # HMM 状态（含极端规则）
+python -m causual.causual_core.cli edges  --asset ashare   # 重估所有边 → 快照
+python -m causual.causual_core.cli audit  --asset ashare   # 方向一致性审计
+
+# 出卡
 python -m causual.causual_core.daily --asset ashare
 
 # 起服务
@@ -172,7 +177,7 @@ uvicorn service.app:app --host 0.0.0.0 --port 8000
 | 缺什么 | 怎么补 |
 |---|---|
 | `datahub/datahub.sqlite` | `python -m datahub.fin.update` |
-| `causual/data/`（边快照、标签） | `python -m causual.causual_core.edges fit --asset ashare` |
+| `causual/data/`（边快照、状态模型） | `python -m causual.causual_core.cli regime --asset ashare` 再 `cli edges` |
 | `causual/output/`（卡片） | 跑 `daily` 或服务的 `/ops` → 运行一次 |
 | `datahub/fin/intake/raw/*.xlsx` | 手工源的原始文件，需自行放回 |
 
