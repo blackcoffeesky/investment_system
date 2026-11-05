@@ -61,6 +61,15 @@ def run(
     # 外推只是让状态延续到"今天"，但卡片上所有数字都来自数据截止日。
     when = pd.Timestamp(asof) if asof else df.index[-1]
 
+    # 兜底：当日没有状态标签就说明模型产物不全，宁可报错也不出一张空卡
+    if str(df.loc[when, pkg.LABEL_COL]) == "":
+        raise RuntimeError(
+            f"{asset} 在 {when.date()} 没有状态标签——"
+            "多半是 regime_engine/saved_models/ 下的 hmm_last.pkl 缺失或与状态模型不一致，"
+            "先跑 `python -m causual.causual_core.cli regime --asset "
+            f"{asset}`。"
+        )
+
     # 数据新鲜度：指数最新不代表信号层的日频表也最新
     data_notes: list[str] = []
     try:

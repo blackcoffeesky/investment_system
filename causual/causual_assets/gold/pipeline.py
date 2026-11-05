@@ -168,6 +168,11 @@ def _extend_labels(df: pd.DataFrame, spec: dict, labels: pd.Series) -> pd.Series
     try:
         lw = load_named(C.ASSET, "hmm_last.pkl")
     except FileNotFoundError:
+        print(
+            "[extend] 缺少 regime_engine/saved_models/"
+            f"{C.ASSET}/hmm_last.pkl，无法外推标签——"
+            "当日状态会是空的。先跑 `python -m causual.causual_core.cli regime`。"
+        )
         return labels
     if lw.get("fit_id") != spec.get("fit_id"):
         print("[extend] hmm_last.pkl 与 spec 的 fit_id 不一致，不外推")

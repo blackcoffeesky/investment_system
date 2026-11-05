@@ -177,7 +177,8 @@ uvicorn service.app:app --host 0.0.0.0 --port 8000
 | 缺什么 | 怎么补 |
 |---|---|
 | `datahub/datahub.sqlite` | `python -m datahub.fin.update` |
-| `causual/data/`（边快照、状态模型） | `python -m causual.causual_core.cli regime --asset ashare` 再 `cli edges` |
+| `causual/data/`（边快照、状态标签） | `python -m causual.causual_core.cli regime --asset ashare` 再 `cli edges` |
+| `regime_engine/saved_models/`（HMM pkl） | 同上，`cli regime` 会写出来 |
 | `causual/output/`（卡片） | 跑 `daily` 或服务的 `/ops` → 运行一次 |
 | `datahub/fin/intake/raw/*.xlsx` | 手工源的原始文件，需自行放回 |
 
