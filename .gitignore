@@ -1,0 +1,39 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---- 数据与产物 ----
+# SQLite 主库 + WAL 伴生文件（数据靠 update 重建，不进版本库）
+datahub/datahub.sqlite
+datahub/datahub.sqlite-wal
+datahub/datahub.sqlite-shm
+# 手工源：raw 里的 xlsx 是大件，clean 里的 csv 是解析结果（保留，便于重建）
+datahub/fin/intake/raw/
+
+# 模型产物（跑 fit 可再生）
+causual/data/
+regime_engine/data/
+
+# 卡片（含投资判断，仓库公开时不外泄）
+causual/output/
+
+# ---- 归档与大件 ----
+trash/
+backup_*/
+multi-factors/
+saved_models/
+
+# ---- 本地环境 ----
+.env
+*.log
+*.bak
+.DS_Store
+Thumbs.db
+desktop.ini

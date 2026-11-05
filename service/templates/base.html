@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}因果状态卡{% endblock %}</title>
+<style>
+  :root {
+    --bg: #0f1115; --fg: #e6e6e6; --muted: #9aa0a6; --line: #2a2e37;
+    --accent: #6ea8fe; --warn: #e0a800; --err: #e5534b; --ok: #3fb950;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.7 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  header {
+    position: sticky; top: 0; backdrop-filter: blur(8px);
+    background: rgba(15,17,21,.85); border-bottom: 1px solid var(--line);
+    padding: 10px 14px; display: flex; gap: 14px; align-items: center;
+    flex-wrap: wrap; z-index: 10;
+  }
+  header .brand { font-weight: 600; letter-spacing: .5px; }
+  header a { color: var(--muted); text-decoration: none; font-size: 14px; }
+  header a:hover, header a.active { color: var(--accent); }
+  main { max-width: 980px; margin: 0 auto; padding: 16px 14px 60px; }
+  /* 卡片里的表格：手机上横向滚动，不要挤成一团 */
+  .card-body { overflow-x: auto; }
+  .card-body table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  .card-body th, .card-body td {
+    border: 1px solid var(--line); padding: 6px 8px; text-align: left;
+    vertical-align: top; white-space: nowrap;
+  }
+  .card-body th { background: #171a21; font-weight: 600; }
+  .card-body h1, .card-body h2, .card-body h3 { line-height: 1.3; }
+  .card-body h2 {
+    margin-top: 28px; padding-top: 12px; border-top: 1px solid var(--line);
+    font-size: 18px;
+  }
+  .card-body blockquote {
+    margin: 12px 0; padding: 8px 12px; border-left: 3px solid var(--accent);
+    background: #14171d; color: var(--muted); font-size: 14px;
+  }
+  .muted { color: var(--muted); font-size: 13px; }
+  .pill {
+    display: inline-block; padding: 1px 8px; border-radius: 999px;
+    font-size: 12px; border: 1px solid var(--line);
+  }
+  .pill.error { color: var(--err); border-color: var(--err); }
+  .pill.warning { color: var(--warn); border-color: var(--warn); }
+  .pill.info { color: var(--muted); }
+  .pill.done { color: var(--ok); border-color: var(--ok); }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .btn {
+    display: inline-block; padding: 5px 10px; border-radius: 6px;
+    border: 1px solid var(--line); background: #171a21; color: var(--fg);
+    font-size: 13px; cursor: pointer; text-decoration: none;
+  }
+  .btn:hover { border-color: var(--accent); }
+  .btn.danger { border-color: var(--err); color: var(--err); }
+  ul.plain { list-style: none; padding: 0; }
+  ul.plain li { padding: 6px 0; border-bottom: 1px solid var(--line); }
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">因果状态卡</span>
+  {% for item in nav_items() %}
+    {% set label = item[0] %}{% set href = item[1] %}
+    <a href="{{ href }}" class="{{ 'active' if request.url.path.startswith(href) else '' }}">{{ label }}</a>
+  {% endfor %}
+</header>
+<main>
+  {% block content %}{% endblock %}
+</main>
+</body>
+</html>

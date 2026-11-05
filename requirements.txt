@@ -1,0 +1,35 @@
+# quant —— 依赖清单（Python >= 3.11）
+#
+# 安装：
+#   python -m venv .venv
+#   .venv\Scripts\activate        # Linux: source .venv/bin/activate
+#   pip install -r requirements.txt
+#
+# 说明：下面列的是**直接依赖**，版本是开发环境实测可用的版本。
+# 用 >= 而不是 ==，避免小版本冲突锁死；如需完全复现，把 >= 改成 ==。
+
+# ---- 数据层 ----
+pandas>=2.2
+numpy>=1.26
+akshare>=1.14
+pandas-datareader>=0.10
+requests>=2.31
+openpyxl>=3.1
+
+# ---- 因果估计 ----
+econml>=0.15
+scikit-learn>=1.4
+scipy>=1.11
+statsmodels>=0.14
+
+# ---- 服务层 ----
+fastapi>=0.110
+uvicorn>=0.29
+jinja2>=3.1
+markdown>=3.5
+python-multipart>=0.0.9
+httpx2>=2.0
+
+# ---- 测试 ----
+# 测试运行器 `tests/run_tests.py` 不需要 pytest；装了也能用 `pytest tests`
+# pytest>=8.0

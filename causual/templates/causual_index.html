@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}卡片 · {{ asset_name }}{% endblock %}
+{% block content %}
+<div class="row" style="margin-bottom:10px">
+  {% for a, name in assets.items() %}
+    <a class="btn" href="/cards?asset={{ a }}&type={{ type }}" style="{{ 'border-color:var(--accent)' if a == asset else '' }}">{{ name }}</a>
+  {% endfor %}
+</div>
+<div class="row" style="margin-bottom:12px">
+  <a class="btn" href="/cards?asset={{ asset }}&type=daily" style="{{ 'border-color:var(--accent)' if type != 'macro' else '' }}">日频（信号层）</a>
+  <a class="btn" href="/cards?asset={{ asset }}&type=macro" style="{{ 'border-color:var(--accent)' if type == 'macro' else '' }}">月频（宏观层）</a>
+</div>
+
+{% if not items %}
+  <p class="muted">还没有卡片。先跑一次 <code>python -m causual.causual_core.daily --asset {{ asset }}</code>。</p>
+{% else %}
+<ul class="plain">
+  {% for c in items %}
+  <li>
+    <a href="{{ c.href }}" style="color:var(--accent);text-decoration:none">{{ c.date }}</a>
+    {% if c.stale %}<span class="pill warning" title="{{ c.changed }} 张表在生成后有更新">需重生成</span>{% endif %}
+    <span class="muted">· {{ (c.size / 1024) | round(1) }} KB</span>
+    <a class="muted" href="/card/{{ c.asset }}/{{ c.date }}?kind=detail" style="margin-left:8px">详情</a>
+    <form method="post" action="/card/{{ c.asset }}/{{ c.date }}/regenerate"
+          style="display:inline" onsubmit="this.style.pointerEvents='none';this.style.opacity=0.5">
+      <button class="btn" type="submit" style="margin-left:8px;padding:2px 8px;font-size:12px">重新生成</button>
+    </form>
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% endblock %}

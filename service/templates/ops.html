@@ -1,0 +1,159 @@
+{% extends "base.html" %}
+{% block title %}运维{% endblock %}
+{% block content %}
+{% if stale_watchdog %}
+<div style="border:1px solid var(--err);border-left:4px solid var(--err);border-radius:8px;
+            padding:10px 12px;margin-bottom:14px;background:#1c1212">
+  <strong style="color:var(--err)">⚠ 状态机可能没在跑</strong>
+  <div class="muted">上次运行是 {{ hours_since }} 小时前（阈值 26 小时）。</div>
+</div>
+{% endif %}
+
+{% if running %}
+<div style="border:1px solid var(--warn);border-left:4px solid var(--warn);border-radius:8px;
+            padding:10px 12px;margin-bottom:14px;background:#1a1608">
+  <strong style="color:var(--warn)">正在运行…</strong>
+  <span class="muted">开始于 {{ last_run.started_at }}，页面每 5 秒自动刷新</span>
+</div>
+<meta http-equiv="refresh" content="5">
+{% elif started %}
+<div style="border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:14px">
+  <span class="muted">已启动，稍等几秒…</span>
+  <meta http-equiv="refresh" content="3">
+</div>
+{% endif %}
+
+{% if just_ran and last_run and last_run.run_id == just_ran %}
+<div style="border:1px solid var(--ok);border-left:4px solid var(--ok);border-radius:8px;
+            padding:10px 12px;margin-bottom:14px;background:#121a12">
+  <strong style="color:var(--ok)">本轮已完成</strong>
+  <div class="muted">{{ last_run.summary or '（无摘要）' }}</div>
+</div>
+{% endif %}
+
+<div class="row" style="margin-bottom:14px">
+  <form method="post" action="/task/run" id="run-form">
+    <input type="hidden" name="mode" value="{{ 'rerun' if all_settled else 'run' }}">
+    {% if has_unacked %}
+      <button class="btn" id="run-btn" type="button" disabled title="还有未确认的消息">
+        先处理未确认消息
+      </button>
+    {% elif all_settled %}
+      <button class="btn danger" id="run-btn" type="submit">重跑（全部重新执行）</button>
+    {% else %}
+      <button class="btn" id="run-btn" type="submit">运行一次</button>
+    {% endif %}
+  </form>
+  <span class="muted">
+    {% if last_run %}
+      上次运行：{{ last_run.started_at }} · {{ last_run.status or '进行中' }}
+      {% if last_run.finished_at %}· 结束 {{ last_run.finished_at }}{% endif %}
+    {% else %}
+      还没有运行记录
+    {% endif %}
+  </span>
+</div>
+
+<script>
+  // 同上：只改文案 + 挡住点击，不设 disabled，保证按钮值仍会提交
+  document.getElementById('run-form').addEventListener('submit', function () {
+    const b = document.getElementById('run-btn');
+    b.textContent = '运行中…';
+    document.getElementById('run-form').style.pointerEvents = 'none';
+    document.getElementById('run-form').style.opacity = '0.6';
+  });
+</script>
+
+<h2 style="margin-top:0">状态机</h2>
+<table style="border-collapse:collapse;width:100%;font-size:14px">
+  <tr><th align="left">状态</th><th align="left">名称</th><th align="left">status</th>
+      <th align="left">尝试</th><th align="left">上次运行</th><th align="left">卡在哪条消息</th></tr>
+  {% for name, s in status.items() %}
+  <tr>
+    <td><code>{{ name }}</code></td>
+    <td>{{ s.label }}</td>
+    <td><span class="pill {{ s.state }}">{{ s.state }}</span></td>
+    <td>{{ s.attempts }}</td>
+    <td class="muted">{{ s.last_run_at or '—' }}</td>
+    <td class="muted">{{ s.blocking_msg_id or '—' }}</td>
+  </tr>
+  {% endfor %}
+</table>
+
+<h2>待处理消息</h2>
+{% if not msg_groups %}
+  <p class="muted">没有未确认的消息。</p>
+{% else %}
+  {% for g in msg_groups %}
+  <div style="border:1px solid var(--line);border-radius:8px;padding:10px;margin:10px 0">
+    <div class="row">
+      <span class="pill {{ g.level }}">{{ g.level }}</span>
+      <code class="muted">{{ g.state }}</code>
+      <span class="muted">{{ g.count }} 条</span>
+      {% if g['keys'] %}<span class="muted">· {{ g['keys'] | join('、') }}</span>{% endif %}
+    </div>
+    {% if g.count == 1 %}
+      <p style="margin:8px 0">{{ g.first.text }}</p>
+    {% else %}
+      <p style="margin:8px 0" class="muted">
+        {{ g.first.text }}
+        {% if g.count > 1 %}（另有 {{ g.count - 1 }} 条，展开可见）{% endif %}
+      </p>
+      <details style="margin-bottom:8px">
+        <summary class="muted" style="cursor:pointer">展开全部</summary>
+        <ul class="plain">
+          {% for m in g['items'] %}
+          <li style="font-size:14px">{{ m.text }}</li>
+          {% endfor %}
+        </ul>
+      </details>
+    {% endif %}
+    <form method="post" action="/task/confirm" class="row confirm-form">
+      <input type="hidden" name="msg_id" value="{{ g.first.id }}">
+      <button class="btn" name="action" value="retry">重跑</button>
+      {% if g.level != 'error' %}
+      <button class="btn" name="action" value="skip">跳过</button>
+      <select name="remind_at" class="btn">
+        <option value="">按默认（{{ g.first.default_snooze }}）</option>
+        <option value="once">只跳过本次</option>
+        <option value="days:1">1 天后再提醒</option>
+        <option value="days:3">3 天后再提醒</option>
+        <option value="days:7">7 天后再提醒</option>
+        <option value="period_change">本期内不再提醒</option>
+      </select>
+      {% endif %}
+      {% if g.level == 'info' %}
+      <button class="btn" name="action" value="ack">知道了</button>
+      {% endif %}
+    </form>
+  </div>
+  {% endfor %}
+{% endif %}
+
+<h2>已静音（超过 90 天）</h2>
+{% if not stale %}
+  <p class="muted">没有长期静音的条目。</p>
+{% else %}
+<ul class="plain">
+  {% for s in stale %}
+  <li>
+    <code>{{ s.state }}</code> / <code>{{ s.key }}</code>
+    <span class="muted">· {{ s.mode }} · 自 {{ s.created_at }}</span>
+  </li>
+  {% endfor %}
+</ul>
+<p class="muted">这些条目已静音超过 90 天，可能已经被遗忘——当待办清单看，不是告警。</p>
+{% endif %}
+
+<h2>最近消息</h2>
+<ul class="plain">
+  {% for m in recent %}
+  <li>
+    <span class="pill {{ m.level }}">{{ m.level }}</span>
+    <code class="muted">{{ m.state }}</code>
+    <span class="muted">{{ m.created_at }}</span>
+    <div style="font-size:14px">{{ m.text[:160] }}</div>
+  </li>
+  {% endfor %}
+</ul>
+{% endblock %}

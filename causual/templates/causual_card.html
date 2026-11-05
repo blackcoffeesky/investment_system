@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}{{ asset_name }} · {{ date }}{% endblock %}
+{% block content %}
+<div class="row" style="margin-bottom:10px">
+  <a class="btn" href="/cards?asset={{ asset }}">← 列表</a>
+  <a class="btn" href="/card/{{ asset }}/{{ date }}?kind={{ 'card' if kind == 'detail' else 'detail' }}">
+    {{ '看总览' if kind == 'detail' else '看详情' }}
+  </a>
+  <span class="muted">{{ asset_name }} · {{ date }} · {{ '详情卡' if kind == 'detail' else '总览卡' }}</span>
+</div>
+<div class="card-body">
+{{ body | safe }}
+</div>
+{% endblock %}
