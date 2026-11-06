@@ -42,9 +42,12 @@ uvicorn service.app:app
 | `registry.py` | 模块注册表 `Module` 数据类；汇总模板目录与导航项 |
 | `data_service.py` | `DataService`：模块访问数据的唯一入口（read/metadata/check/update/intake） |
 | `card_service.py` | `CardService`：生成/检查卡片，状态机通过 `ctx.extra["cards"]` 拿到 |
-| `templates/base.html` | 全站骨架：导航 + 内容区 + 移动端 CSS |
+| `templates/base.html` | 全站骨架：导航 + 内容区 + 移动端 CSS（**所有模块共用**） |
 | `templates/ops.html` | 运维页：运行按钮、状态机、消息分组、静音清单 |
 | `templates/error.html` | 错误页（复用 base） |
+
+**service 只留框架**：注册表、共享骨架、鉴权、错误处理、运行锁。
+业务页面各回各家——`datahub/web/`（数据页）、`causual/web/`（卡片 + 拟合页）。
 
 ### 3.2 `ops/` —— 状态机
 
@@ -146,7 +149,7 @@ class XxxState(BaseState):
 ## 8. 扩展新模块
 
 ```python
-# mymodule/web.py
+# mymodule/web/__init__.py
 def register_module():
     return register(Module(
         name="mymodule", label="显示名", router=router,
