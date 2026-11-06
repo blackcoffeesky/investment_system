@@ -25,21 +25,27 @@ from datahub.ops import OpsStore
 
 from service.ops.actions import ALLOWED_ACTIONS, AckAction
 from service.ops.base_state import BaseState
-from service.ops.context import Context
+from kernel.context import Context, ServiceBag
 from service.ops.messages import (PASSABLE_VALUES, Message, MessageLevel,
                                   StateResult, StateStatus)
 
 
 class Manager:
-    def __init__(self, states: list[BaseState], data_service, db_path: Path | None = None):
+    def __init__(self, states: list[BaseState], services=None,
+                 db_path: Path | None = None):
         self.states = {s.name: s for s in states}
         self.order = [s.name for s in states]
-        self.ds = data_service
+        if services is None:
+            from service.bootstrap import load_modules
+
+            load_modules()
+            services = ServiceBag(ports())
+        self.services = services
         self.store = OpsStore(db_path)
         self.log = logging.getLogger("service.ops")
         self.run_id: str = ""
         self._snap: dict[str, dict] = {}
-        self.extra: dict = {}
+        
         self._refresh()      # 构造只读快照，不写库
 
     # ---------------- 快照
@@ -150,8 +156,7 @@ class Manager:
                               attempts=prev_attempts, touch=True)
         self._set(name, StateStatus.RUNNING.value)
 
-        ctx = Context(data_service=self.ds, logger=self.log, state_name=name,
-                      extra=self.extra)
+        ctx = Context(services=self.services, logger=self.log, state_name=name)
         try:
             st.start(ctx)
             result = st.run(ctx)
@@ -388,7 +393,8 @@ def run_cli() -> int:
 
     from datahub import DB_PATH
 
-    from service.data_service import get_data_service
+    from kernel.registry import ports
+    from service.bootstrap import load_modules
     from service.ops.states import STATES
 
     ap = argparse.ArgumentParser(prog="python -m service.ops.manager")
@@ -401,7 +407,8 @@ def run_cli() -> int:
     a = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    mgr = Manager(STATES, get_data_service(), DB_PATH)
+    load_modules()
+    mgr = Manager(STATES, ServiceBag(ports()), DB_PATH)
 
     if a.status:
         print(json.dumps(mgr.status(), ensure_ascii=False, indent=2))

@@ -1,9 +1,5 @@
-"""datahub 模块的 Web 入口（表清单 + 手工数据录入）。"""
+"""datahub 的 Web 入口。"""
 
-from pathlib import Path
-
-from datahub.web.routes import register_module, router
-
-TEMPLATES = Path(__file__).parent / "templates"
+from datahub.web.routes import TEMPLATES, register_module, router
 
 __all__ = ["register_module", "router", "TEMPLATES"]

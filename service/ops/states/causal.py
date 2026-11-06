@@ -29,9 +29,8 @@ class GenerateMacroState(BaseState):
         ctx.logger.info("[generate_macro] 检查本月宏观卡")
 
     def run(self, ctx) -> StateResult:
-        cards = ctx.extra.get("cards")
-        if cards is None:
-            return StateResult.error("没有注入 CardService（ctx.extra['cards']）", self.name)
+        cards = ctx.services["causual"]     # 缺端口直接抛 KeyError，启动期就该发现
+
 
         made, skipped, failed = [], [], []
         for asset in ASSETS:
@@ -82,14 +81,13 @@ class GenerateCardsState(BaseState):
         ctx.logger.info("[generate_cards] 检查是否需要出卡")
 
     def run(self, ctx) -> StateResult:
-        cards = ctx.extra.get("cards")
-        if cards is None:
-            return StateResult.error("没有注入 CardService（ctx.extra['cards']）", self.name)
+        cards = ctx.services["causual"]     # 缺端口直接抛 KeyError，启动期就该发现
+
 
         made, skipped, failed = [], [], []
         for asset in ASSETS:
             try:
-                date = cards.last_data_date(asset, ctx.data_service)
+                date = cards.last_data_date(asset, ctx.data)
             except Exception as e:  # noqa: BLE001
                 failed.append((asset, f"取不到最后交易日：{type(e).__name__}: {e}"))
                 continue
@@ -98,7 +96,7 @@ class GenerateCardsState(BaseState):
                 if cards.exists(asset, date):
                     skipped.append(f"{asset} {date}")
                     continue
-                cards.generate(asset, date, ds=ctx.data_service)
+                cards.generate(asset, date, ds=ctx.data)
                 made.append(f"{asset} {date}")
             except Exception as e:  # noqa: BLE001
                 failed.append((asset, f"{type(e).__name__}: {e}"))

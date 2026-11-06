@@ -20,7 +20,9 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from datahub import DB_PATH
-from service.registry import Module, all_modules, nav_items, register, template_dirs
+from kernel.context import ServiceBag
+from kernel.registry import (all_modules, nav_items, ports,
+                             template_dirs)
 
 SERVICE_DIR = Path(__file__).resolve().parent
 PUBLIC_PATHS = {"/health"}
@@ -86,14 +88,10 @@ def _refresh_template_paths() -> None:
 
 # ---------------- 运维页
 def _manager():
-    from service.card_service import CardService
-    from service.data_service import get_data_service
     from service.ops.manager import Manager
     from service.ops.states import STATES
 
-    mgr = Manager(STATES, get_data_service(), DB_PATH)
-    mgr.extra = {"cards": CardService()}
-    return mgr
+    return Manager(STATES, ServiceBag(ports()), DB_PATH)
 
 
 @app.get("/ops", response_class=HTMLResponse)
@@ -201,7 +199,9 @@ def health():
             busy = con.execute("PRAGMA busy_timeout").fetchone()[0]
     except Exception:  # noqa: BLE001
         mode, busy = "unknown", 0
-    return {"ok": True, "modules": [m.name for m in all_modules()],
+    mods = all_modules()
+    return {"ok": True, "modules": [m.name for m in mods],
+            "ports": [m.name for m in mods if m.has_port],
             "journal_mode": mode, "busy_timeout": busy}
 
 
@@ -212,11 +212,9 @@ def home():
 
 # ---------------- 挂载模块
 def _load_modules():
-    from causual import web as causual_web
-    from datahub import web as data_web
+    from service.bootstrap import load_modules
 
-    causual_web.register_module()      # 卡片 + 拟合两个页面
-    data_web.register_module()
+    load_modules()
 
 
 _load_modules()

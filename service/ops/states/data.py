@@ -88,14 +88,14 @@ class FetchState(BaseState):
         ctx.logger.info("[fetch] 开始拉取全部启用源")
 
     def run(self, ctx) -> StateResult:
-        report = ctx.data_service.run_update()
+        report = ctx.data.run_update()
         if report.success:
             return StateResult.ok(report.summary(), self.name)
 
         failed = [d for d in report.details if d.get("status") == "失败"]
         names = "；".join(f"{d['table']}: {str(d.get('msg', ''))[:60]}" for d in failed[:3])
-        stale = stale_tables(ctx.data_service.metadata(),
-                             ctx.data_service.covered_tables(),
+        stale = stale_tables(ctx.data.metadata(),
+                             ctx.data.covered_tables(),
                              pd.Timestamp.today().normalize())
 
         if stale:
@@ -133,7 +133,7 @@ class ValidateState(BaseState):
         r = StateResult()
 
         # ① 手工表逾期：每张表一条消息（key=表名，period=end_date）
-        for o in overdue_tables(ctx.data_service.metadata(),
+        for o in overdue_tables(ctx.data.metadata(),
                                 pd.Timestamp.today().normalize()):
             r.messages.append(Message(
                 MessageLevel.WARNING, o["text"], self.name,
@@ -141,7 +141,7 @@ class ValidateState(BaseState):
 
         # ② 日期缺口
         try:
-            issues = ctx.data_service.check()
+            issues = ctx.data.check()
         except Exception as e:  # noqa: BLE001
             r.messages.append(Message(
                 MessageLevel.ERROR,

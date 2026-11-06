@@ -14,7 +14,7 @@ from pathlib import Path
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from service.registry import Module, register
+from kernel.registry import Module, register
 
 router = APIRouter()
 
@@ -24,6 +24,7 @@ MANUAL_SOURCES = {
     "wgc_etf": "WGC 全球黄金 ETF 持仓（月报，xlsx）",
 }
 
+TEMPLATES = Path(__file__).parent / "templates"
 MAX_UPLOAD_MB = 20
 RAW_DIR = Path(__file__).resolve().parents[1] / "fin" / "intake" / "raw"
 
@@ -126,7 +127,10 @@ async def manual(request: Request, table: str = Form(...),
 
 
 def register_module() -> Module:
+    from datahub.port import get_port
+
     return register(Module(
         name="datahub", label="数据", router=router,
         template_dir=Path(__file__).parent / "templates",
-        nav=[("数据", "/data")]))
+        nav=[("数据", "/data")],
+        service_port_factory=get_port))

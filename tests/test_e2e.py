@@ -63,22 +63,22 @@ def test_e2e_cards_from_empty_db():
 
 def test_cards_api_on_temp_dir():
     """list_cards / get_card 在临时目录下的行为。"""
-    from causual import causual_cards as cc
+    import causual.port as cp
 
     tmp = Path(tempfile.mkdtemp())
-    old = cc.OUTPUT
-    cc.OUTPUT = tmp
+    old = cp.OUTPUT
+    cp.OUTPUT = tmp
     try:
         d = tmp / "ashare" / "cards" / "2026" / "11"
         d.mkdir(parents=True)
         (d / "card_2026-11-04.md").write_text("# 测试卡\n", encoding="utf-8")
 
-        items = cc.list_cards("ashare")
+        items = cp.get_port().list_cards("ashare")
         assert len(items) == 1 and items[0].date == "2026-11-04"
-        assert cc.get_card("ashare", "2026-11-04").startswith("# 测试卡")
-        assert cc.to_html("# 标题").startswith("<h1"), cc.to_html("# 标题")
+        assert cp.get_port().get_card("ashare", "2026-11-04").startswith("# 测试卡")
+        assert cp.get_port().to_html("# 标题").startswith("<h1"), cp.get_port().to_html("# 标题")
     finally:
-        cc.OUTPUT = old
+        cp.OUTPUT = old
         shutil.rmtree(tmp, ignore_errors=True)
 
 
@@ -125,13 +125,11 @@ def test_sections_render_all_when_keep_none():
 
 def test_macro_card_is_monthly_and_idempotent():
     """月频卡按月份命名；同月重复检查不重复生成。"""
-    from pathlib import Path as P
+    from causual.port import card_path
 
-    from causual import causual_cards as cc
-
-    assert cc.card_path("ashare", "2026-09", "macro").name == "macro_2026-09.md"
-    assert cc.card_path("ashare", "2026-09", "macro_detail").name == "macro_detail_2026-09.md"
-    assert cc.card_path("ashare", "2026-11-04", "card").name == "card_2026-11-04.md"
+    assert card_path("ashare", "2026-09", "macro").name == "macro_2026-09.md"
+    assert card_path("ashare", "2026-09", "macro_detail").name == "macro_detail_2026-09.md"
+    assert card_path("ashare", "2026-11-04", "card").name == "card_2026-11-04.md"
 
 
 def test_write_upsert_single():
@@ -190,5 +188,5 @@ def test_modules_have_web_package():
     """每个模块自带 web 子包，service 不再持有模块页面。"""
     import importlib
 
-    for mod in ("datahub.web", "causual.web", "causual.web.fit"):
+    for mod in ("datahub.web", "causual.web", "datahub.port", "causual.port"):
         importlib.import_module(mod)

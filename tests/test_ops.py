@@ -13,6 +13,7 @@ from pathlib import Path
 import pandas as pd
 
 from datahub.ops import OpsStore
+from kernel.context import ServiceBag
 from service.ops.manager import Manager
 from service.ops.messages import MessageLevel, StateStatus
 from service.ops.states import STATES
@@ -20,7 +21,7 @@ from service.ops.states import STATES
 
 # ---------------------------------------------------------------- 替身
 class FakeDS:
-    """假的 DataService：只回答状态机关心的几个问题。"""
+    """假的数据端口：只回答状态机关心的几个问题。"""
 
     def __init__(self, overdue_days: int = 1):
         self.overdue_days = overdue_days
@@ -70,9 +71,8 @@ def _tmp():
 
 
 def _mgr(path, cards=None, ds=None):
-    m = Manager(STATES, ds or FakeDS(), path)
-    m.extra = {"cards": cards or FakeCards()}
-    return m
+    bag = ServiceBag({"datahub": ds or FakeDS(), "causual": cards or FakeCards()})
+    return Manager(STATES, bag, path)
 
 
 def _overdue(m, days=1):

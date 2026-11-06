@@ -34,12 +34,23 @@ uvicorn service.app:app
 
 ## 3. 文件职责
 
+### 3.0 kernel（模块与框架的共同依赖）
+
+| 文件 | 职责 |
+|---|---|
+| `kernel/registry.py` | `Module`（含 `service_port_factory`）、`register`、`ports()` |
+| `kernel/context.py` | `ServiceBag`（缺端口即报错）+ `Context` |
+| `kernel/protocols.py` | `DataPort` / `CausalPort` 的类型契约 |
+
+依赖方向：`模块 → kernel ← service`。模块对外能力写在 `<module>/port.py`，
+由注册表收进 `ServiceBag`，状态机通过 `ctx.services["datahub"]` 取。
+
 ### 3.1 顶层
 
 | 文件 | 职责 |
 |---|---|
 | `app.py` | FastAPI 实例；鉴权/日志/错误中间件；`/ops`、`/task/*`、`/health`；挂载各模块路由 |
-| `registry.py` | 模块注册表 `Module` 数据类；汇总模板目录与导航项 |
+| `bootstrap.py` | 装配入口：登记所有模块（Web 和 CLI 共用） |
 | `data_service.py` | `DataService`：模块访问数据的唯一入口（read/metadata/check/update/intake） |
 | `card_service.py` | `CardService`：生成/检查卡片，状态机通过 `ctx.extra["cards"]` 拿到 |
 | `templates/base.html` | 全站骨架：导航 + 内容区 + 移动端 CSS（**所有模块共用**） |

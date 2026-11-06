@@ -1,13 +1,13 @@
-"""数据服务：模块访问数据的**唯一入口**。
+"""datahub 对外的能力（其他模块只能通过这里访问数据层）。
 
-方法签名与 `datahub.db` 对齐，外加两个"受控动作"（触发一次已知流程，不是写接口）。
-进程内直接 import 底层实现；HTTP 兜底留给将来（前端由 FastAPI 提供，不是这里）。
+`service` 在启动时拿一次单例，放进 `Context.services["datahub"]`。
+**不在这里暴露任何写接口**——写库是数据层自己的事（`/data` 页面走内部 route）。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from pathlib import Path
 
 import pandas as pd
 
@@ -36,46 +36,52 @@ class IntakeReport:
 
     @property
     def success(self) -> bool:
-        return self.written >= 0 and not self.message.startswith("失败")
+        return not self.message.startswith("失败")
 
 
-class DataService:
-    """进程内 API。**不做缓存、不做变换**——数据层给什么就是什么。"""
+class DataPort:
+    """进程内 API。不做缓存、不做变换——数据层给什么就是什么。"""
 
-    def __init__(self, db_path: Any = None):
-        # 延迟 import，避免 service 与 datahub 在模块加载期互相牵连
+    def __init__(self, db_path: Path | str | None = None):
         from datahub import DB_PATH
-        import datahub.fin as _fin
 
-        self._db = _fin
         self.db_path = db_path or DB_PATH
 
-    # ---------------- 读（与 db 对齐）
+    # ---------------- 读
     def read(self, name: str, *, column: str | None = None,
              start: str | None = None, end: str | None = None):
-        return self._db.read(name, column=column, start=start, end=end)
+        import datahub.fin as fin
+
+        return fin.read(name, column=column, start=start, end=end)
 
     def read_many(self, names: list[str], *, start: str | None = None,
                   end: str | None = None) -> pd.DataFrame:
-        return self._db.read_many(names, start=start, end=end)
+        import datahub.fin as fin
+
+        return fin.read_many(names, start=start, end=end)
 
     def tables(self) -> list[str]:
-        return self._db.tables()
+        import datahub.fin as fin
+
+        return fin.tables()
 
     def metadata(self) -> pd.DataFrame:
-        return self._db.metadata()
+        import datahub.fin as fin
+
+        return fin.metadata()
 
     def check(self) -> pd.DataFrame:
-        return self._db.check()
+        import datahub.fin as fin
+
+        return fin.check()
 
     def missing(self) -> pd.DataFrame:
-        return self._db.missing()
+        import datahub.fin as fin
+
+        return fin.missing()
 
     def covered_tables(self) -> set[str]:
-        """被**启用源**覆盖的表名（含 "a|b" 拆表的每一张）。
-
-        状态里需要判断"哪些表该有新数据"，但不该去 import datahub 内部实现。
-        """
+        """被**启用源**覆盖的表名（含 "a|b" 拆表的每一张）。"""
         from datahub.fin.sources import SOURCES
 
         out: set[str] = set()
@@ -103,19 +109,18 @@ class DataService:
         code = _run(source, path, load=load)
         src = SOURCES.get(source)
         return IntakeReport(table=(src.table if src else ""),
-                            written=0, parsed=0,
                             message="成功" if code == 0 else f"失败（code={code}）")
 
-    # ---------------- 进程内单例（模块的入口用它取实例）
     def __repr__(self) -> str:  # pragma: no cover
-        return f"<DataService {self.db_path}>"
+        return f"<DataPort {self.db_path}>"
 
 
-_INSTANCE: DataService | None = None
+_INSTANCE: DataPort | None = None
 
 
-def get_data_service() -> DataService:
+def get_port() -> DataPort:
+    """模块级单例：注册表里的 factory 指向它。"""
     global _INSTANCE
     if _INSTANCE is None:
-        _INSTANCE = DataService()
+        _INSTANCE = DataPort()
     return _INSTANCE
