@@ -25,7 +25,7 @@ MANUAL_SOURCES = {
 }
 
 MAX_UPLOAD_MB = 20
-RAW_DIR = Path(__file__).resolve().parents[1] / "datahub" / "fin" / "intake" / "raw"
+RAW_DIR = Path(__file__).resolve().parents[1] / "fin" / "intake" / "raw"
 
 
 def _tpl(request: Request):
@@ -127,6 +127,6 @@ async def manual(request: Request, table: str = Form(...),
 
 def register_module() -> Module:
     return register(Module(
-        name="data", label="数据", router=router,
-        template_dir=Path(__file__).resolve().parents[1] / "service" / "templates",
+        name="datahub", label="数据", router=router,
+        template_dir=Path(__file__).parent / "templates",
         nav=[("数据", "/data")]))

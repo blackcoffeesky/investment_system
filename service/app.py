@@ -140,15 +140,15 @@ def ops_page(request: Request):
 @app.post("/task/confirm")
 async def confirm(msg_id: str = Form(...), action: str = Form("retry"),
                   remind_at: str = Form("")):
-    if not RUN_LOCK.acquire(blocking=False):
-        raise HTTPException(409, "状态机正在运行，稍后确认")
-    try:
-        mgr = _manager()
-        res = mgr.ack(msg_id, action=action, remind_at=remind_at or None)
-    finally:
-        RUN_LOCK.release()
+    mgr = _manager()          # 确认本身很快，不占运行锁
+    res = mgr.ack(msg_id, action=action, remind_at=remind_at or None)
     if not res.get("ok"):
         raise HTTPException(400, res.get("reason", "确认失败"))
+
+    # 确认完自动继续跑：用户刚表过态，不该再让他点一次"运行"
+    if action in ("retry", "skip"):
+        _start_run("run")
+        return RedirectResponse("/ops?started=1", status_code=303)
     return RedirectResponse("/ops", status_code=303)
 
 
@@ -171,11 +171,18 @@ def _run_job(mode: str) -> None:
         RUN_LOCK.release()
 
 
+def _start_run(mode: str = "run") -> bool:
+    """抢锁并起后台线程。抢不到返回 False。"""
+    if not RUN_LOCK.acquire(blocking=False):
+        return False
+    threading.Thread(target=_run_job, args=(mode,), daemon=True).start()
+    return True
+
+
 @app.post("/task/run")
 async def task_run(mode: str = Form("run")):
-    if not RUN_LOCK.acquire(blocking=False):
+    if not _start_run(mode):
         raise HTTPException(409, "已经在运行了，稍等一下")
-    threading.Thread(target=_run_job, args=(mode,), daemon=True).start()
     return RedirectResponse("/ops?started=1", status_code=303)
 
 
@@ -206,9 +213,9 @@ def home():
 # ---------------- 挂载模块
 def _load_modules():
     from causual import web as causual_web
-    from service import data_web
+    from datahub import web as data_web
 
-    causual_web.register_module()      # 它内部已经调用 register()
+    causual_web.register_module()      # 卡片 + 拟合两个页面
     data_web.register_module()
 
 

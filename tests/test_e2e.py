@@ -173,3 +173,22 @@ def test_data_page_renders():
     r = TestClient(app).get("/data")
     assert r.status_code == 200
     assert "上传文件" in r.text and "录入单个数值" in r.text
+
+
+def test_fit_page_renders():
+    """拟合页能渲染，并显示产物时间。"""
+    from fastapi.testclient import TestClient
+
+    from service.app import app
+
+    r = TestClient(app).get("/fit")
+    assert r.status_code == 200
+    assert "状态模型拟合" in r.text and "重估边" in r.text
+
+
+def test_modules_have_web_package():
+    """每个模块自带 web 子包，service 不再持有模块页面。"""
+    import importlib
+
+    for mod in ("datahub.web", "causual.web", "causual.web.fit"):
+        importlib.import_module(mod)

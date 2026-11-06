@@ -34,6 +34,12 @@ FREQ_HINT = {
     "world_tension": ("D", "US", 0),
     "gold_etf_holdings": ("M", "NONE", 40),
     "cb_holdings": ("Q", "NONE", 45),
+    # 美联储 H.10 周报：汇率与广义美元指数按周发布，落后 7~10 天是常态
+    "usdcny": ("D", "US", 8),
+    "usd_index": ("D", "US", 8),
+    "fed_rate": ("D", "US", 2),
+    "real_yield_10y": ("D", "US", 2),
+    "vix": ("D", "US", 2),
 }
 
 
@@ -82,6 +88,10 @@ def _ensure_meta(con: sqlite3.Connection) -> int:
         cols = [r[1] for r in con.execute(f'PRAGMA table_info("{name}")')]
         kind = "single" if cols == ["date", "value"] else "multi"
         freq, market, lag = FREQ_HINT.get(name, ("D", "NONE", 0))
+        # 已存在的表也纠正 lag_days（发布滞后会变，别让旧值一直留着）
+        if name in FREQ_HINT:
+            con.execute("UPDATE metadata SET lag_days=?, market=? WHERE name=?",
+                        (lag, market, name))
         con.execute(
             "INSERT OR IGNORE INTO metadata(name, display, freq, unit, start_date,"
             " end_date, n_rows, note, kind, columns, market, lag_days)"

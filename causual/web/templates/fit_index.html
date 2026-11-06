@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}拟合{% endblock %}
+{% block content %}
+
+{% if running %}
+<div style="border:1px solid var(--warn);border-left:4px solid var(--warn);border-radius:8px;
+            padding:10px 12px;margin-bottom:14px;background:#1a1608">
+  <strong style="color:var(--warn)">正在拟合…</strong>
+  <span class="muted">页面每 10 秒刷新；日志见下方</span>
+  <meta http-equiv="refresh" content="10">
+</div>
+{% endif %}
+
+{% for a in assets %}
+<h2 style="margin-top:0">{{ a.asset }}</h2>
+<table style="border-collapse:collapse;width:100%;font-size:14px;margin-bottom:8px">
+  <tr><th align="left">项目</th><th align="left">值</th></tr>
+  <tr><td>状态模型拟合</td><td>
+    {{ a.regime_fit or '—' }}
+    {% if a.regime_age is not none %}<span class="muted">（{{ a.regime_age }} 天前）</span>{% endif %}
+  </td></tr>
+  <tr><td>标签覆盖到</td><td>{{ a.labels_end or '—' }}</td></tr>
+  <tr><td>边快照</td><td>
+    {{ a.edges_fit or '—' }}
+    {% if a.edges_age is not none %}<span class="muted">（{{ a.edges_age }} 天前）</span>{% endif %}
+  </td></tr>
+  <tr><td>HMM 模型文件</td><td>
+    {% if a.hmm_pkl %}<span class="pill done">在</span>
+    {% else %}<span class="pill error">缺失</span>{% endif %}
+  </td></tr>
+  <tr><td>签名</td><td class="muted">{{ a.signature or '—' }}</td></tr>
+  <tr><td>数据覆盖</td><td class="muted">{{ a.data_min_end or '—' }} ~ {{ a.data_max_end or '—' }}</td></tr>
+</table>
+
+<div class="row" style="margin-bottom:18px">
+  {% for step, label in [('regime','重拟状态模型'), ('edges','重估边'), ('audit','方向审计')] %}
+  <form method="post" action="/fit/run"
+        onsubmit="this.style.pointerEvents='none';this.querySelector('button').textContent='提交中…'">
+    <input type="hidden" name="asset" value="{{ a.asset }}">
+    <input type="hidden" name="step" value="{{ step }}">
+    <button class="btn" type="submit" {{ 'disabled' if running else '' }}>{{ label }}</button>
+  </form>
+  {% endfor %}
+</div>
+{% endfor %}
+
+<h2>拟合日志</h2>
+<pre style="background:#14171d;padding:12px;border-radius:8px;overflow-x:auto;font-size:12px">{{ log_tail or '（还没有记录）' }}</pre>
+<p class="muted">顺序：先 <b>重拟状态模型</b>（写 HMM + 标签），再 <b>重估边</b>（用新标签），最后可跑 <b>方向审计</b>。</p>
+
+{% endblock %}
