@@ -149,10 +149,11 @@ class CausalPort:
             raise RuntimeError(f"{asset} 没有价格数据（{table} 为空）")
         return str(s.index[-1].date())
 
-    def macro_month(self, asset: str) -> str:
+    def macro_month(self, meta=None) -> str:
+        """月频卡该覆盖的月份（宏观表 end_date 的最大值所在月）。"""
         from causual.causual_core.pipeline import _month_of
 
-        return _month_of(asset)
+        return _month_of(meta)
 
     def exists(self, asset: str, date: str, kind: str = "card") -> bool:
         return card_path(asset, date, kind).exists()

@@ -54,7 +54,7 @@ class GenerateMacroState(BaseState):
         made, skipped, failed = [], [], []
         for asset in ASSETS:
             try:
-                month = cards.macro_month(asset)
+                month = cards.macro_month(data.metadata())
                 if cards.exists(asset, month, kind="macro"):
                     skipped.append(f"{asset} {month}")
                     continue
