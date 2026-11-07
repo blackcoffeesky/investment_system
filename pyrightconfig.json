@@ -1,0 +1,29 @@
+{
+  // 只检查「接口层」：跨模块传参、端口、Web、状态机。
+  // pandas 密集的数值代码不做类型检查——那里的报错 90% 是 stub 噪声，
+  // 而真正的 bug 都出在签名对不上（我们已经踩过三次）。
+  "include": [
+    "service/app.py",
+    "service/registry.py",
+    "service/ops",
+    "causual/port.py",
+    "causual/web",
+    "datahub/port.py",
+    "datahub/web",
+    "datahub/fin/write.py"
+  ],
+  "exclude": ["**/__pycache__"],
+  "venvPath": "D:/desktop/workspace",
+  "venv": "global_venv",
+  "typeCheckingMode": "basic",
+  "reportMissingImports": "warning",
+  "reportMissingTypeStubs": "none",
+  "reportMissingModuleSource": "none",
+  "reportAttributeAccessIssue": "warning",
+  "reportArgumentType": "error",
+  "reportCallIssue": "error",
+  "reportReturnType": "error",
+  "reportUndefinedVariable": "error",
+  "pythonVersion": "3.12",
+  "pythonPlatform": "All"
+}

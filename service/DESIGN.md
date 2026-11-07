@@ -1,6 +1,6 @@
 # service 设计文档
 
-> **更新日期：2026-11-04**　｜　使用说明见 [`README.md`](README.md)　｜　项目总览见 [`../README.md`](../README.md)
+> **更新日期：2026-11-07**　｜　使用说明见 [`README.md`](README.md)　｜　项目总览见 [`../README.md`](../README.md)
 
 ---
 
@@ -8,105 +8,115 @@
 
 服务层做两件事：
 
-1. **唯一入口**：任何模块想知道"数据长什么样""谁是今天的状态"，都问 `DataService` 或走 HTTP。
-2. **运维与展示**：状态机保证"数据更新 → 检查 → 出卡"这条链路每天走完，并把结果摊在网页上。
+1. **装配与框架**：把各模块的页面挂上来、把模块能力收成端口、提供鉴权与错误处理。
+2. **运维**：状态机保证"抓数 → 检查 → 出卡"这条链路每天走完，并把结果摊在网页上。
 
-它**不含业务逻辑**——因果计算在 `causual`，取数在 `datahub`。service 只负责编排和呈现。
+它**不含业务逻辑**——因果计算在 `causual`，取数在 `datahub`。
 
 ---
 
-## 2. 进程模型
+## 2. 模块模型（重要）
 
-**单进程、单 uvicorn**。所有模块在 import 时注册进 `registry`，`app.py` 负责挂载。
+一个模块 = **核心代码 + `web/` + `port.py`**：
+
+```
+datahub/
+├── web/            与 service 相关的一切：路由、模板、导航
+│   ├── __init__.py
+│   ├── routes.py
+│   └── templates/
+├── port.py         对外能力（别的模块只能用这里的东西）
+└── fin/ ops/ ...   核心实现
+
+causual/
+├── web/            同上（卡片页 + 拟合页）
+├── port.py         CausalPort
+└── causual_core/ causual_assets/ ...
+```
+
+**注册即共享**：模块在 `register()` 时声明 `service_port_factory`，service 启动时会把它
+收进 `ServiceBag`。此后任何模块都能通过框架拿到它——不需要互相 import。
+
+### 取用规则
+
+| 场景 | 允许的方式 |
+|---|---|
+| **service 内部**（状态机、app、路由） | 必须走 `service_port_factory`：`ctx.services["datahub"]`、`request.app.state.services["causual"]` |
+| **模块内部**（causual 想用 datahub） | 可以直接 `from datahub.port import get_port` |
+| **任何地方** | ❌ 不许 import 别的模块的内部实现（`datahub.fin.read` 之类） |
+
+命令行入口是例外中的例外：`causual/causual_core/cli.py` 可以直接用 `datahub.port`，
+因为它不在 service 里跑，没有 `Context`。
+
+**唯一的跨层约定**：模块把 `<module>/port.py` 当作自己对外的全部脸面；
+port 里没有的东西，别人就不该用。
+
+---
+
+## 3. 进程模型
+
+**单进程、单 uvicorn**。模块在 import 时注册，`app.py` 负责挂载。
 
 ```
 uvicorn service.app:app
    │
-   ├── import 时：_load_modules() → causual.web.register_module()
+   ├── import 时：_load_modules() → registry.load() → 各模块 register_module()
    ├── 启动时：_startup_recover()  ← 把上次崩在 running 的状态折算成 blocked
    └── 请求时：各路由
 ```
 
-**状态机跑在后台线程**（`/task/run` 立刻返回，线程里跑 fetch），
-否则一次 fetch 几分钟，HTTP 请求会一直挂着。
+状态机跑在**后台线程**（`/task/run` 立刻返回），否则一次 fetch 几分钟，HTTP 请求会一直挂着。
+`RUN_LOCK` 保证同一时刻只有一个"会改状态"的操作。
 
 ---
 
-## 3. 文件职责
+## 4. 文件职责
 
-### 3.0 模块与 service 的边界
-
-| 文件 | 职责 |
-|---|---|
-| `service/registry.py` | `Module`（含 `service_port_factory`）、`register`、`load()`、`ports()` |
-| `service/ops/context.py` | `ServiceBag`（缺端口即报错）+ `Context`（**只有状态机用**） |
-
-模块对外能力写在 `<module>/port.py`，注册时声明 factory；
-状态机通过 `ctx.services["datahub"]` 取，Web 路由通过 `request.app.state.services` 取。
-
-**允许**：模块 import `service.registry`（这是 service 的公开接口）。
-**禁止**：模块 import service 的运维实现（`manager` / `states` / `app`），
-以及跨模块 import 内部代码。
-
-### 3.1 顶层
+### 4.1 顶层
 
 | 文件 | 职责 |
 |---|---|
 | `app.py` | FastAPI 实例；鉴权/日志/错误中间件；`/ops`、`/task/*`、`/health`；挂载各模块路由 |
-| `bootstrap.py` | 装配入口：登记所有模块（Web 和 CLI 共用） |
-| `data_service.py` | `DataService`：模块访问数据的唯一入口（read/metadata/check/update/intake） |
-| `card_service.py` | `CardService`：生成/检查卡片，状态机通过 `ctx.extra["cards"]` 拿到 |
-| `templates/base.html` | 全站骨架：导航 + 内容区 + 移动端 CSS（**所有模块共用**） |
-| `templates/ops.html` | 运维页：运行按钮、状态机、消息分组、静音清单 |
-| `templates/error.html` | 错误页（复用 base） |
+| `registry.py` | `Module` 数据类、`register()`、`load()`、`ports()`、模板路径、导航项 |
+| `card_service.py` | ❌ 已删除——卡片能力归 `causual/port.py` |
+| `data_service.py` | ❌ 已删除——数据能力归 `datahub/port.py` |
+| `templates/base.html` | 全站骨架（所有模块共用） |
+| `templates/ops.html` | 运维页 |
+| `templates/error.html` | 错误页 |
 
-**service 只留框架**：注册表、共享骨架、鉴权、错误处理、运行锁。
-业务页面各回各家——`datahub/web/`（数据页）、`causual/web/`（卡片 + 拟合页）。
-
-### 3.2 `ops/` —— 状态机
+### 4.2 `ops/` —— 状态机
 
 | 文件 | 职责 |
 |---|---|
-| `base_state.py` | `BaseState` ABC：`name / prefix / label / default_snooze`，`start/run/end` |
+| `base_state.py` | `BaseState` ABC：`name / prefix / label / default_snooze` |
 | `messages.py` | `MessageLevel` / `StateStatus` / `PASSABLE` / `Message` / `StateResult` |
-| `actions.py` | `AckAction` 枚举 + `ALLOWED_ACTIONS`（error→retry，warning→retry/skip，info→ack） |
-| `manager.py` | 编排：`run()` 按序执行、`ack()` 处理确认、`reset/reset_all()`、静音判定、运行日志 |
-| `states/data.py` | `FetchState` / `ManualCheckState` / `ValidateState` |
-| `states/causal.py` | `GenerateCardsState`：数据层三状态过后出卡 |
+| `actions.py` | `AckAction` + `ALLOWED_ACTIONS` |
+| `context.py` | `ServiceBag`（缺端口即报错）+ `Context`——**只有状态机用** |
+| `manager.py` | 编排：`run()`、`ack()`、`reset/reset_all()`、静音判定、运行日志 |
+| `states/data.py` | `FetchState` / `ValidateState`（手工表 + 缺口，已合并） |
+| `states/causal.py` | `GenerateCardsState` / `GenerateMacroState` |
 | `states/__init__.py` | `STATES` 列表——**加状态只改这一个文件** |
-
-### 3.3 数据层里与 service 配套的部分
-
-| 文件 | 职责 |
-|---|---|
-| `datahub/ops/store.py` | `OpsStore`：`ops_state` / `ops_messages` / `ops_snooze` / `ops_run_log` 的读写，`_guard()` 限制只能碰 `ops_*` |
-| `datahub/core/conn.py` | 统一连接：WAL + `busy_timeout=30s`（**不要用裸 `sqlite3.connect`**） |
 
 ---
 
-## 4. 状态机
+## 5. 状态机
 
 ```
-fetch → manual_check → validate → generate_cards
+fetch → validate → generate_cards → generate_macro
 ```
-
-每个状态：
 
 ```python
 class XxxState(BaseState):
     name = "xxx"
     prefix = ("fetch",)             # 前置状态全部 passable 才跑
     label = "显示名"
-    default_snooze = "days:7"       # 用户点"跳过"时的默认静音方式
+    default_snooze = "days:7"
 
-    def run(self, ctx) -> StateResult:   # ctx.data_service / ctx.extra / ctx.logger
+    def run(self, ctx) -> StateResult:
+        data = ctx.data                          # = ctx.services["datahub"]
+        cards = ctx.services["causual"]
         ...
 ```
-
-**状态**：`pending / running / done / blocked / waiting_ack / snoozed`
-**可继续**（`PASSABLE`）：`done / snoozed`
-
-失败语义：
 
 | 情况 | 状态 | 消息 |
 |---|---|---|
@@ -117,62 +127,77 @@ class XxxState(BaseState):
 
 ---
 
-## 5. 静音（snooze）
+## 6. 数据怎么流到 causual
 
-一条消息 = 一个 `(key, period)`，这是静音的最小单位。
-`manual_check` 对**每张逾期表**单独发一条消息（key = 表名），所以静音 `cb_holdings`
-不影响 `insider_net`。
+service **不把端口塞给模块**，而是读好数据再传：
 
-| 模式 | 含义 | 恢复条件 |
-|---|---|---|
-| `once` | 只跳过本次 | 下次运行 |
-| `days:N` | N 天内不提醒 | `remind_at` 到期 |
-| `period_change` | 本期不再提醒 | 数据期（如 `end_date`）变化 |
+```python
+series = {t: data.read(t) for t in cards.required_tables(asset)}   # 多列表再按列拆
+cards.generate(asset, series, data.metadata(), date=date)
+```
 
-**静音期内检查照常执行**（状态 `SNOOZED`），只是不打断——否则就变成"永久关闭"。
+causual 因此不知道数据从哪来——CLI 传库里的数据，service 传端口读出的数据，
+测试传假的 Series。这也是为什么 `causual_assets/common.py` 里没有任何数据层 import。
 
 ---
 
-## 6. HTTP 接口
+## 7. HTTP 接口
 
 | 路径 | 方法 | 说明 |
 |---|---|---|
-| `/` | GET | 跳转 `/cards` |
-| `/cards?asset=` | GET | 卡片列表（含「重新生成」按钮） |
-| `/card/{asset}/{date}` | GET | 单张卡（`?kind=detail` 看详情） |
-| `/card/{asset}/{date}/regenerate` | POST | 重新生成某天的卡 |
-| `/ops` | GET | 运维页 |
-| `/task/run` | POST | 触发一轮（`mode=run\|rerun`），后台线程执行，立即返回 |
-| `/task/confirm` | POST | 确认消息（retry / skip + remind_at / ack） |
-| `/health` | GET | `{ok, modules, journal_mode, busy_timeout}` |
-
-**并发保护**：`RUN_LOCK`（非阻塞）——同一时刻只允许一个"会改状态"的操作。
-
----
-
-## 7. 关键约束
-
-1. **模块不互相 import**：跨模块一律走 `DataService`；`causual_core` 不许 import `service`
-2. **页面加载不写库**：`Manager.__init__` 只读快照，恢复（`recover`）只在启动和 `run()` 开头
-3. **长任务不上 HTTP 线程**：`/task/run` 起后台线程，页面轮询 `ops_run_log`
-4. **消息结构不动**：展示层可以按 `(state, level)` 分组折叠，但 `Message` 仍是 `(key, period)` 粒度
-5. **连接必须走 `core.conn.connect()`**：裸 `sqlite3.connect` 只有 5 秒超时，会撞锁
+| `/cards` | GET | 卡片列表（module: causual） |
+| `/card/{asset}/{date}` | GET | 单张卡 |
+| `/card/{asset}/{date}/regenerate` | POST | 重新生成 |
+| `/fit` | GET / POST | 拟合页（module: causual） |
+| `/data` | GET | 数据表清单 + 上传 + 单值录入（module: datahub） |
+| `/data/upload`、`/data/manual` | POST | 手工数据入库 |
+| `/ops` | GET | 运维页（service 自己） |
+| `/task/run` | POST | 触发一轮（后台线程） |
+| `/task/confirm` | POST | 确认消息，确认后**自动续跑** |
+| `/health` | GET | `{ok, modules, ports, journal_mode, busy_timeout}` |
 
 ---
 
-## 8. 扩展新模块
+## 8. 关键约束
+
+1. **模块不 import 别的模块的内部实现**；对外只用 `<module>/port.py`
+2. **service 内部必须通过 `ServiceBag` 拿端口**，不许 `from datahub.fin import ...`
+3. **页面加载不写库**：`Manager.__init__` 只读快照，恢复只在启动和 `run()`
+4. **长任务不上 HTTP 线程**：起后台线程，页面轮询 `ops_run_log`
+5. **消息结构不动**：展示层可按 `(state, level)` 分组折叠，但 `Message` 仍是 `(key, period)` 粒度
+6. **连接必须走 `core.conn.connect()`**：裸 `sqlite3.connect` 只有 5 秒超时
+
+---
+
+## 9. 类型检查
+
+`pyrightconfig.json` 只检查**接口层**（app / registry / ops / port / web / write）。
+
+```bash
+pyright     # 当前 0 error
+```
+
+pandas 密集的数值代码不查——那里的报错 90% 是 stub 噪声，而真正的 bug 都出在
+"签名改了、调用点没改"（已踩过三次）。把检查范围收在接口层，噪音小、收益高。
+
+---
+
+## 10. 扩展新模块
 
 ```python
-# mymodule/web/__init__.py
+# mymodule/web/routes.py
 def register_module():
+    from mymodule.port import get_port
+
     return register(Module(
         name="mymodule", label="显示名", router=router,
         template_dir=Path(__file__).parent / "templates",
-        nav=[("入口", "/mymodule")]))
+        nav=[("入口", "/mymodule")],
+        service_port_factory=get_port))     # 有对外能力就写，没有就省略
 
-# service/app.py 的 _load_modules()
+# service/registry.py 的 load()
 from mymodule import web as my_web
 my_web.register_module()
 ```
 
-模板里 `{% extends "base.html" %}`，`Jinja2Templates` 的 searchpath 已包含模块目录。
+模板里 `{% extends "base.html" %}`，Jinja2 的 searchpath 已包含模块目录。

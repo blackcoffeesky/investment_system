@@ -1,6 +1,6 @@
 # causual 设计文档
 
-> **更新日期：2026-11-04**　｜　使用说明见 [`readme.md`](readme.md)　｜　变更台账见 [`CHANGES.md`](CHANGES.md)
+> **更新日期：2026-11-07**　｜　使用说明见 [`readme.md`](readme.md)　｜　变更台账见 [`CHANGES.md`](CHANGES.md)
 > 项目整体架构（模块地图、依赖方向、数据流全景）见 [`../../README.md`](../../README.md)。
 
 ---
@@ -69,7 +69,7 @@ causual/output/{asset}/cards/
 | `snapshot.py` | 边快照的读写（`causual/data/snapshots/`） |
 | `regime_fit.py` | 拟合 HMM 状态模型并落盘 |
 | `regime_infer.py` | 用已拟合模型外推最新标签 |
-| `daily.py` | **每日入口**：加载 → 状态 → 信号 → 卡片 |
+| `pipeline.py` | **出卡编排**：面板 → 状态 → 信号 → 卡片（数据由调用方传入） |
 | `cli.py` | 子命令：`regime` / `edges` / `audit` |
 | `evaluate.py` | 评估口径：Rank IC、分层收益、参数回收 |
 | `utils/calendar.py` | 交易日历与对齐 |
@@ -196,9 +196,9 @@ causual 不直接对外提供服务。service 通过三样东西使用它：
 | 接口 | 位置 | 契约 | 谁调用 |
 |---|---|---|---|
 | `panel(ds=None)` | `causual_assets/{asset}/panel.py` | 传 `DataService`，返回日频宽表 | `pipeline` |
-| `daily.run(asset, asof, quiet, return_path)` | `causual_core/daily.py` | 出卡；`return_path=True` 返回 `Path` | `service.card_service.CardService` |
-| `list_cards / get_card / to_html` | `causual_cards.py` | 卡片检索与 Markdown→HTML | `causual/web.py` |
-| `register_module()` | `web.py` | 返回 `Module`（router + templates + nav） | `service.app` 挂载 |
+| `pipeline.run(asset, series, meta, asof, quiet)` | `causual_core/pipeline.py` | 出卡；**只吃数据，不取数** | `causual.port.CausalPort` |
+| `list_cards / get_card / to_html` | `causual/port.py` | 卡片检索与 Markdown→HTML | `causual/web/routes.py` |
+| `register_module()` | `web/routes.py` | 返回 `Module`（router + templates + nav + port） | `service.registry.load()` |
 
 `CardService.generate()` 幂等：目标日期已有卡片就直接返回路径。
 `web.py` 的路由挂在 service 的 FastAPI 上，模板 `extends "base.html"`。

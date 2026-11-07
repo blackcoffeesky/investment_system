@@ -33,17 +33,31 @@ service 只做装配、鉴权、错误处理和运维状态机；它对外只暴
 
 ---
 
-## 2. 依赖方向（硬约束）
+## 2. 模块模型与依赖方向
+
+每个模块 = **核心代码 + `web/` + `port.py`**：
 
 ```
-service  ──→  causual  ──→  datahub
-   │            │
-   └────────────┴──→  regime_engine
+datahub/  web/(路由·模板)  port.py(DataPort)  fin/ ops/(实现)
+causual/  web/(卡片·拟合)  port.py(CausalPort) causual_core/ causual_assets/
+regime_engine/(无 web、无 port)
+service/  app.py registry.py ops/(状态机) templates/(共享骨架)
 ```
 
-- **数据层不依赖任何上层**：`datahub` 里 import `causual` 是方向错误
-- **因果层不取数**：`causual_core` 里没有任何 `requests` / `akshare` / `db.read`
-- **模块之间不直接 import**：跨模块一律走 `service.DataService`
+模块注册时声明 `service_port_factory`，service 把它收进 `ServiceBag` —— **注册即共享**。
+
+| 场景 | 允许 |
+|---|---|
+| service 内部（状态机、app、路由） | 必须走端口：`ctx.services["datahub"]`、`request.app.state.services["causual"]` |
+| 模块内部互用 | 可以直接 `from datahub.port import get_port` |
+| 任何地方 | ❌ 不许 import 别的模块的内部实现 |
+| 命令行入口 | 可以直接用 `datahub.port`（不在 service 里跑，没有 Context） |
+
+其它硬约束：
+
+- **数据层不依赖任何上层**
+- **因果层不取数**：`causual_core` 里没有任何 `requests` / `akshare` / `db.read`；
+  面板与出卡都只吃调用方传进来的 `series + meta`
 - **只有 `signal` 层进 α**：结构层与供需层是背景，不是当日归因
 
 违反这些约束的改动，就算能跑通也算 bug。

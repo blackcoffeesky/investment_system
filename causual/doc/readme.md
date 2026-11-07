@@ -1,6 +1,6 @@
 # causual —— 因果归因层
 
-> **更新日期：2026-11-04**
+> **更新日期：2026-11-07**
 
 把宏观、制度与资金关系写成一张**显式的因果图**，每天算一次"这些机制现在把标的往哪边推"，
 输出成一张人能读、能反驳的卡片，用来**辅助主观判断**（不是收益预测模型）。
@@ -45,9 +45,11 @@ causual/
 │   ├── freshness.py             # 数据新鲜度（按 freq + lag_days 判过期）
 │   ├── regime_fit.py            # 状态模型拟合
 │   ├── regime_infer.py          # 今日后验 / 标签外推
+│   ├── pipeline.py              # 出卡编排：面板 → 信号 → 叙事 → 落盘
+│   ├── cli.py                   # 命令行：regime / edges / audit / daily
 │   ├── narrative.py             # 卡片渲染（总览 / 详情 / 控制台）
 │   ├── card_split.py            # 把完整卡拆成日频卡 / 月频卡
-│   ├── snapshot.py / daily.py / cli.py / evaluate.py
+│   ├── snapshot.py / evaluate.py
 │   └── utils/{calendar,zscore}.py
 ├── causual_assets/
 │   ├── common.py                # 面板组装公用件（列名映射 + 公布滞后）
@@ -72,11 +74,11 @@ causual 不直接对外提供服务，而是暴露三样东西让 service 挂载
 | 接口 | 位置 | 契约 |
 |---|---|---|
 | `panel.panel(ds=None)` | `causual_assets/{asset}/panel.py` | 传入 `DataService`，返回日频宽表 |
-| `daily.run(asset, asof=None, quiet=..., return_path=...)` | `causual_core/daily.py` | 出卡；`asof` 指定日期，`return_path=True` 返回路径 |
+| `pipeline.run(asset, series, meta, asof=None, quiet=...)` | `causual_core/pipeline.py` | 出卡：**只吃数据，不取数** |
 | `list_cards(asset, start, end)` / `get_card(asset, date, kind)` / `to_html(md)` | `causual_cards.py` | 卡片检索与渲染 |
 | `register_module()` | `web.py` | 返回 `service.registry.Module`（路由 + 模板目录 + 导航） |
 
-service 侧的 `CardService` 只调 `daily.run`，不碰 causual 内部。
+service 侧的 `CausalPort` 只调 `pipeline.run`，不碰 causual 内部。
 
 **约束**：`causual_core` 不 import service；`DataService` 由调用方注入。
 
@@ -222,7 +224,7 @@ causual/causual_core/     与资产无关的因果内核
 ├── calendar.py           align_to_trading_calendar
 ├── estimators.py         DML / 分布滞后 / 事件研究
 ├── signal.py  narrative.py  snapshot.py  evaluate.py
-├── daily.py              python -m causual.causual_core.daily --asset gold
+├── cli.py                python -m causual.causual_core.cli daily --asset gold
 └── cli.py                regime / edges / audit
 
 causual/causual_assets/   资产插件
@@ -256,7 +258,7 @@ causual/
 ├── evaluate.py     Rank IC / 分层 / 参数回收 / 符号审计
 ├── snapshot.py     边模型快照（只存系数，不存模型对象）
 ├── cli.py          命令行入口（regime / edges / audit / daily）
-├── daily.py        日常入口（不拟合任何模型）
+├── pipeline.py     出卡编排（不拟合任何模型）
 └── causual.py      研究/回测编排 + CLI
 ```
 

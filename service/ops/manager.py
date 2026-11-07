@@ -19,6 +19,7 @@ import json
 import logging
 import uuid
 from datetime import datetime, timedelta
+from typing import Any
 from pathlib import Path
 
 from datahub.ops import OpsStore
@@ -112,7 +113,7 @@ class Manager:
         self.run_id = f"r-{uuid.uuid4().hex[:10]}"
         self.store.log_run_start(self.run_id)
         self._refresh()
-        results = {"run_id": self.run_id}
+        results: dict[str, Any] = {"run_id": self.run_id}
 
         for name in self.order:
             if only and name not in only:

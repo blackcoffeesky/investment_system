@@ -83,7 +83,9 @@ app.state.services = ServiceBag(ports())      # 模块页面从这里拿别的�
 
 
 def _refresh_template_paths() -> None:
-    templates.env.loader.searchpath = template_dirs(SERVICE_DIR)
+    loader = templates.env.loader
+    if loader is not None and hasattr(loader, "searchpath"):
+        setattr(loader, "searchpath", template_dirs(SERVICE_DIR))
 
 
 # ---------------- 运维页

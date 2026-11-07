@@ -48,12 +48,15 @@ def _bump_meta(table: str, db_path: Path | None = None) -> None:
             (row[0], row[1], table))
 
 
-def upsert_single(table: str, date: str, value: float,
+def upsert_single(table: str, date: str, value: float | str,
                   *, overwrite: bool = True, db_path: Path | None = None) -> dict:
     """写一个 (date, value)。返回 {before, after, written}。"""
     from datetime import datetime
 
-    d = pd.Timestamp(date).normalize()
+    try:
+        d = pd.Timestamp(date).normalize()
+    except (ValueError, TypeError) as e:
+        raise ValueError(f"日期无法解析：{date}") from e
     if pd.isna(d):
         raise ValueError(f"日期无法解析：{date}")
     try:
@@ -102,7 +105,7 @@ def write_frame(table: str, frame: pd.DataFrame | pd.Series,
         col = frame.iloc[:, 0] if not isinstance(frame.index, pd.DatetimeIndex) else frame.iloc[:, 0]
         s = pd.Series(col.to_numpy(), index=pd.to_datetime(idx))
 
-    rows = [(str(pd.Timestamp(i).date()), float(v)) for i, v in s.dropna().items()]
+    rows = [(str(pd.Timestamp(str(i)).date()), float(v)) for i, v in s.dropna().items()]
     if not rows:
         return {"table": table, "rows": 0}
 
