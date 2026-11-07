@@ -58,11 +58,18 @@ GROUPS = {
 }
 
 
-def _derived(idx: pd.DatetimeIndex, ds=None) -> dict[str, pd.Series]:
+def _multi(table: str, series: dict) -> pd.DataFrame:
+    """把 series 里 "表名:列名" 的若干列拼回宽表。"""
+    cols = {k.split(":", 1)[1]: v for k, v in series.items()
+            if k.startswith(f"{table}:")}
+    return pd.DataFrame(cols)
+
+
+def _derived(idx: pd.DatetimeIndex, series) -> dict[str, pd.Series]:
     """由 `etf_shares` **现算**的派生列（数据层不存派生量）。"""
     out: dict[str, pd.Series] = {}
     try:
-        w = common._ds(ds).read("etf_shares")
+        w = _multi("etf_shares", series)
         if not isinstance(w, pd.DataFrame) or w.shape[1] < 3:
             return out
         w = w.rename(columns=lambda c: str(c)[1:] if str(c).startswith("c") else str(c))
@@ -93,9 +100,10 @@ def _derived(idx: pd.DatetimeIndex, ds=None) -> dict[str, pd.Series]:
     return out
 
 
-def panel(ds=None) -> pd.DataFrame:
-    df = common.build({**SHARED, **ASHARE}, index_table="csi_all", ds=ds)
-    for col, s in _derived(df.index, ds).items():
+def panel(series, meta=None) -> pd.DataFrame:
+    df = common.build({**SHARED, **ASHARE}, index_table="csi_all",
+                  series=series, meta=meta)
+    for col, s in _derived(df.index, series).items():
         df[col] = s
     for col in STUB_COLS:
         if col not in df.columns:

@@ -31,15 +31,15 @@ GOLD = {
 }
 
 
-def panel(ds=None) -> pd.DataFrame:
+def panel(series, meta=None) -> pd.DataFrame:
     """拼面板。
 
     **流量列由库里的持仓水平差分得到**，不要拿面板里的日频 ffill 列去 resample 再 diff：
     月/季末的落点依赖交易日，那样会错位一到两期（实测 ETF 流入相关系数只有 0.32，
     还会在尾部多出一个"未来季度"）。
     """
-    svc = common._ds(ds)
-    df = common.build({**SHARED, **GOLD}, index_table="gold_cny", ds=svc)
+    df = common.build({**SHARED, **GOLD}, index_table="gold_cny",
+                      series=series, meta=meta)
 
     def flow_from(table: str) -> pd.Series | None:
         """持仓 → 差分，且**只落在真实观测日对应的交易日上**。
@@ -48,7 +48,7 @@ def panel(ds=None) -> pd.DataFrame:
         当前季会被当成"已经观测到的季度"，凭空多出一个未来期（尾巴重复）。
         """
         try:
-            h = svc.read(table).dropna()
+            h = series[table].dropna()
         except Exception:  # noqa: BLE001
             return None
         if len(h) < 2:

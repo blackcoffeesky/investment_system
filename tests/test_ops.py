@@ -13,7 +13,7 @@ from pathlib import Path
 import pandas as pd
 
 from datahub.ops import OpsStore
-from kernel.context import ServiceBag
+from service.ops.context import ServiceBag
 from service.ops.manager import Manager
 from service.ops.messages import MessageLevel, StateStatus
 from service.ops.states import STATES
@@ -45,6 +45,12 @@ class FakeDS:
     def covered_tables(self):
         return {"cb_holdings", "insider_net"}
 
+    def read(self, name, **_):
+        import numpy as np
+
+        idx = pd.bdate_range("2026-10-01", "2026-11-04")
+        return pd.Series(np.linspace(100, 110, len(idx)), index=idx, name=name)
+
     def check(self):
         return pd.DataFrame()
 
@@ -53,16 +59,30 @@ class FakeCards:
     def __init__(self, fail: set[str] | None = None):
         self.fail = fail or set()
 
-    def last_data_date(self, asset, ds):
+    def required_tables(self, asset):
+        return ("csi_all",)
+
+    def last_data_date(self, asset, series):
         return "2026-11-02"
 
     def exists(self, asset, date):
         return False
 
-    def generate(self, asset, date, ds=None):
+    def generate(self, asset, series, meta=None, date=None):
         if asset in self.fail:
             raise RuntimeError("假失败")
         return Path(f"/tmp/{asset}_{date}.md")
+
+    def generate_macro(self, asset, month, series, meta=None):
+        if asset in self.fail:
+            raise RuntimeError("假失败")
+        return Path(f"/tmp/{asset}_{month}.md")
+
+    def macro_month(self, asset):
+        return "2026-11"
+
+    def exists(self, asset, date, kind="card"):
+        return False
 
 
 def _tmp():

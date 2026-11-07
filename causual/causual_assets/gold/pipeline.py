@@ -17,6 +17,17 @@ from causual.causual_core.signal_layer import build_bundle
 from causual.causual_assets.gold import config as C
 from causual.causual_assets.gold import label as L
 
+def _required_tables() -> tuple[str, ...]:
+    """面板用到的表清单——从映射本身推导，避免手写漏表。"""
+    from causual.causual_assets.gold import panel as _p
+
+    specs = {**_p.SHARED, **_p.GOLD}.values()
+    tables = {x[0] if isinstance(x, tuple) else x for x in specs}
+    return tuple(sorted(tables | set(getattr(C, "EXTRA_TABLES", ()))))
+
+
+REQUIRED_TABLES = _required_tables()
+
 ROOT = Path(__file__).resolve().parents[3]
 DATA = ROOT / "causual" / "data"   # 模型产物跟代码一起走，不跟原始数据混
 PANEL = DATA / "gold_macro.csv"
@@ -74,11 +85,11 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     return out[FEATURES]
 
 
-def load_raw(ds=None) -> pd.DataFrame:
-    """面板 = 经 DataService 拼出来的日频宽表（见 `panel.py`）。"""
+def load_raw(series, meta=None) -> pd.DataFrame:
+    """面板 = 由调用方传入的原始表拼出来的日频宽表（见 `panel.py`）。"""
     from causual.causual_assets.gold import panel as _panel
 
-    return _panel.panel(ds)
+    return _panel.panel(series, meta)
 
 
 # ------------------------------------------------------------------ 状态
@@ -135,8 +146,8 @@ def save_regime(result: dict) -> Path:
 
 
 # ------------------------------------------------------------------ 组装
-def build_panel(asof: str | None = None) -> tuple[pd.DataFrame, dict]:
-    df = prepare(load_raw())
+def build_panel(asof: str | None = None, series=None, meta=None) -> tuple[pd.DataFrame, dict]:
+    df = prepare(load_raw(series, meta))
     spec = load_spec()
     labels = load_labels().reindex(df.index).fillna("").astype(str)
     labels = _extend_labels(df, spec, labels)

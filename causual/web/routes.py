@@ -14,7 +14,7 @@ from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from causual.port import ASSET_NAME, get_port
-from kernel.registry import Module, register
+from service.registry import Module, register
 
 router = APIRouter()
 TEMPLATES = Path(__file__).parent / "templates"
@@ -58,12 +58,31 @@ def view(request: Request, asset: str, date: str, kind: str = "card"):
          "body": port.to_html(text), "asset_name": ASSET_NAME[asset]})
 
 
+def _series_for(request: Request, asset: str) -> tuple[dict, Any]:
+    """从 service 给的端口读数据，组装成 series（路由不直接 import 数据层）。"""
+    services = request.app.state.services
+    data = services["datahub"]
+    causal = get_port()
+    out: dict = {}
+    for t in causal.required_tables(asset):
+        s = data.read(t)
+        if s is None:
+            continue
+        if hasattr(s, "columns"):
+            for c in s.columns:
+                out[f"{t}:{c}"] = s[c]
+        else:
+            out[t] = s
+    return out, data.metadata()
+
+
 @router.post("/card/{asset}/{date}/regenerate")
-def regenerate(asset: str, date: str):
+def regenerate(request: Request, asset: str, date: str):
     if asset not in ASSET_NAME:
         raise HTTPException(404, f"未知资产：{asset}")
     try:
-        get_port().regenerate(asset, date)
+        series, meta = _series_for(request, asset)
+        get_port().regenerate(asset, date, series, meta)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(500, f"重生成失败：{type(e).__name__}: {e}") from e
     return RedirectResponse(f"/card/{asset}/{date}", status_code=303)
@@ -79,7 +98,7 @@ def _age_days(iso: str | None) -> int | None:
         return None
 
 
-def _asset_state(asset: str) -> dict:
+def _asset_state(asset: str, meta) -> dict:
     """一个资产的产物状态：状态模型、边快照、数据覆盖。"""
     out: dict = {"asset": asset}
 
@@ -105,11 +124,9 @@ def _asset_state(asset: str) -> dict:
 
     out["hmm_pkl"] = (SAVED / asset / "hmm_last.pkl").exists()
 
-    # 数据覆盖：所有表 end_date 的 min / max
+    # 数据覆盖：所有表 end_date 的 min / max（service 提供的端口）
     try:
-        from datahub.port import get_port as data_port
-
-        md = data_port().metadata().set_index("name")
+        md = meta.set_index("name")
         ends = [str(v) for v in md["end_date"].dropna()]
         out["data_min_end"] = min(ends) if ends else ""
         out["data_max_end"] = max(ends) if ends else ""
@@ -121,7 +138,9 @@ def _asset_state(asset: str) -> dict:
 
 @router.get("/fit", response_class=HTMLResponse)
 def fit_index(request: Request):
-    assets = [_asset_state(a) for a in ("ashare", "gold")]
+    services = request.app.state.services
+    meta = services["datahub"].metadata()
+    assets = [_asset_state(a, meta) for a in ("ashare", "gold")]
     log_tail = ""
     if FIT_LOG.exists():
         log_tail = "\n".join(

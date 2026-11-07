@@ -126,52 +126,54 @@ class CausalPort:
         return cs[0] if cs else None
 
     # ---------------- 生成
-    def last_data_date(self, asset: str, ds=None) -> str:
-        """面板最后一天（真实交易日，不是外推日）。"""
-        from datahub.port import get_port
+    def required_tables(self, asset: str) -> tuple[str, ...]:
+        """这个资产需要哪些数据表（纯声明，调用方负责读）。"""
+        from causual.causual_assets import load as load_asset
 
-        ds = ds or get_port()
+        return tuple(load_asset(asset).REQUIRED_TABLES)
+
+    def last_data_date(self, asset: str, series: dict) -> str:
+        """面板最后一天（真实交易日，不是外推日）。"""
         table = "csi_all" if asset == "ashare" else "gold_cny"
-        s = ds.read(table)
+        s = series.get(table)
         if s is None or not len(s):
             raise RuntimeError(f"{asset} 没有价格数据（{table} 为空）")
         return str(s.index[-1].date())
 
     def macro_month(self, asset: str) -> str:
-        from causual.causual_core.daily import _month_of
+        from causual.causual_core.pipeline import _month_of
 
         return _month_of(asset)
 
     def exists(self, asset: str, date: str, kind: str = "card") -> bool:
         return card_path(asset, date, kind).exists()
 
-    def generate(self, asset: str, date: str | None = None, ds=None) -> Path:
+    def generate(self, asset: str, series: dict, meta=None,
+                 date: str | None = None) -> Path:
         if date is None:
-            date = self.last_data_date(asset, ds)
+            date = self.last_data_date(asset, series)
         path = card_path(asset, date)
         if path.exists():
             return path
-        from causual.causual_core import daily
+        from causual.causual_core import pipeline
 
-        out = daily.run(asset=asset, asof=date, quiet=True, return_path=True)
-        if not out or isinstance(out, int):
-            raise RuntimeError(f"{asset} 卡片生成失败（返回 {out}）")
-        return Path(out)
+        return pipeline.run(asset, series, meta, asof=date, quiet=True)
 
-    def generate_macro(self, asset: str, month: str) -> Path:
+    def generate_macro(self, asset: str, month: str, series: dict,
+                       meta=None) -> Path:
         path = card_path(asset, month, "macro")
         if path.exists():
             return path
-        from causual.causual_core import daily
+        from causual.causual_core import pipeline
 
-        daily.run(asset=asset, quiet=True)
+        pipeline.run(asset, series, meta, quiet=True)
         return card_path(asset, month, "macro")
 
-    def regenerate(self, asset: str, date: str, ds=None) -> Path:
+    def regenerate(self, asset: str, date: str, series: dict, meta=None) -> Path:
         path = card_path(asset, date)
         if path.exists():
             path.unlink()
-        return self.generate(asset, date, ds=ds)
+        return self.generate(asset, series, meta, date=date)
 
 
 _INSTANCE: CausalPort | None = None

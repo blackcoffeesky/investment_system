@@ -161,3 +161,6 @@ EDGES: list[Edge] = [
          direction_unclear=True,
          falsifier="放量突破时，高换手是确认而非反转"),
 ]
+
+# 只被派生列用到、不在映射里的表
+EXTRA_TABLES = ("etf_shares",)

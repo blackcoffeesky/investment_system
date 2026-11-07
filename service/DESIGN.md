@@ -34,16 +34,19 @@ uvicorn service.app:app
 
 ## 3. 文件职责
 
-### 3.0 kernel（模块与框架的共同依赖）
+### 3.0 模块与 service 的边界
 
 | 文件 | 职责 |
 |---|---|
-| `kernel/registry.py` | `Module`（含 `service_port_factory`）、`register`、`ports()` |
-| `kernel/context.py` | `ServiceBag`（缺端口即报错）+ `Context` |
-| `kernel/protocols.py` | `DataPort` / `CausalPort` 的类型契约 |
+| `service/registry.py` | `Module`（含 `service_port_factory`）、`register`、`load()`、`ports()` |
+| `service/ops/context.py` | `ServiceBag`（缺端口即报错）+ `Context`（**只有状态机用**） |
 
-依赖方向：`模块 → kernel ← service`。模块对外能力写在 `<module>/port.py`，
-由注册表收进 `ServiceBag`，状态机通过 `ctx.services["datahub"]` 取。
+模块对外能力写在 `<module>/port.py`，注册时声明 factory；
+状态机通过 `ctx.services["datahub"]` 取，Web 路由通过 `request.app.state.services` 取。
+
+**允许**：模块 import `service.registry`（这是 service 的公开接口）。
+**禁止**：模块 import service 的运维实现（`manager` / `states` / `app`），
+以及跨模块 import 内部代码。
 
 ### 3.1 顶层
 

@@ -1,4 +1,7 @@
-"""状态运行期的上下文与端口集合。"""
+"""状态运行期上下文：状态机子类能用什么，全在这里。
+
+不放 kernel / 不放进公共层——只有状态机用得到它。
+"""
 
 from __future__ import annotations
 
@@ -9,8 +12,7 @@ from typing import Any
 class ServiceBag:
     """按模块名取 port。
 
-    缺端口在**取的时候**就报错——而不是让状态跑到一半才发现
-    `ctx.extra.get("cards")` 是 None（那个 bug 真的发生过）。
+    缺端口在**取的时候**就报错——而不是让状态跑到一半才发现是 None。
     """
 
     def __init__(self, ports: dict[str, Any] | None = None):
@@ -20,8 +22,8 @@ class ServiceBag:
         if name not in self._ports:
             have = "、".join(sorted(self._ports)) or "（无）"
             raise KeyError(
-                f"模块 {name} 没有暴露 service_port。"
-                f"现有端口：{have}。检查该模块 register 时的 service_port_factory。")
+                f"模块 {name} 没有暴露 service_port。现有端口：{have}。"
+                "检查该模块 register 时的 service_port_factory。")
         return self._ports[name]
 
     def get(self, name: str, default: Any = None) -> Any:
@@ -39,8 +41,6 @@ class ServiceBag:
 
 @dataclass
 class Context:
-    """状态运行期间能拿到的所有东西。"""
-
     services: ServiceBag = field(default_factory=ServiceBag)
     logger: Any = None
     state_name: str = ""

@@ -131,3 +131,6 @@ EDGES: list[Edge] = [
          confounders=(N.XAU_USD, N.USD_INDEX), layer="associative",
          falsifier="趋势行情中净多头持续走高"),
 ]
+
+# 只被派生列用到、不在映射里的表
+EXTRA_TABLES = ("gold_etf_holdings", "cb_holdings")

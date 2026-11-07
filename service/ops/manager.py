@@ -23,9 +23,10 @@ from pathlib import Path
 
 from datahub.ops import OpsStore
 
+from service.registry import ports
 from service.ops.actions import ALLOWED_ACTIONS, AckAction
 from service.ops.base_state import BaseState
-from kernel.context import Context, ServiceBag
+from service.ops.context import Context, ServiceBag
 from service.ops.messages import (PASSABLE_VALUES, Message, MessageLevel,
                                   StateResult, StateStatus)
 
@@ -36,9 +37,8 @@ class Manager:
         self.states = {s.name: s for s in states}
         self.order = [s.name for s in states]
         if services is None:
-            from service.bootstrap import load_modules
+            from service.registry import ports
 
-            load_modules()
             services = ServiceBag(ports())
         self.services = services
         self.store = OpsStore(db_path)
@@ -393,9 +393,8 @@ def run_cli() -> int:
 
     from datahub import DB_PATH
 
-    from kernel.registry import ports
-    from service.bootstrap import load_modules
     from service.ops.states import STATES
+    from service.registry import ports
 
     ap = argparse.ArgumentParser(prog="python -m service.ops.manager")
     ap.add_argument("--run", action="store_true")
@@ -407,7 +406,6 @@ def run_cli() -> int:
     a = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    load_modules()
     mgr = Manager(STATES, ServiceBag(ports()), DB_PATH)
 
     if a.status:

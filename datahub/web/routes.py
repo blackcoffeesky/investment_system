@@ -14,7 +14,7 @@ from pathlib import Path
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from kernel.registry import Module, register
+from service.registry import Module, register
 
 router = APIRouter()
 

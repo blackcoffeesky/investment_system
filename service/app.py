@@ -20,9 +20,8 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from datahub import DB_PATH
-from kernel.context import ServiceBag
-from kernel.registry import (all_modules, nav_items, ports,
-                             template_dirs)
+from service.ops.context import ServiceBag
+from service.registry import all_modules, nav_items, ports, template_dirs
 
 SERVICE_DIR = Path(__file__).resolve().parent
 PUBLIC_PATHS = {"/health"}
@@ -80,6 +79,7 @@ async def http_error(request: Request, exc: HTTPException):
 # ---------------- 模板：searchpath 含服务层与各模块
 templates = Jinja2Templates(directory=[str(SERVICE_DIR / "templates")])
 app.state.templates = templates
+app.state.services = ServiceBag(ports())      # 模块页面从这里拿别的模块的端口
 
 
 def _refresh_template_paths() -> None:
@@ -212,9 +212,9 @@ def home():
 
 # ---------------- 挂载模块
 def _load_modules():
-    from service.bootstrap import load_modules
+    from service.registry import load
 
-    load_modules()
+    load()
 
 
 _load_modules()

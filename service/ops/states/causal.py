@@ -12,6 +12,24 @@ from service.ops.messages import Message, MessageLevel, StateResult
 ASSETS = ("ashare", "gold")
 
 
+def _load_series(data, cards, asset: str) -> dict:
+    """按模块声明的表清单把数据读成 {表名: Series}。
+
+    数据层给什么就是什么；多列表拆成 "表名:列名" 的键。
+    """
+    out: dict = {}
+    for t in cards.required_tables(asset):
+        s = data.read(t)
+        if s is None:
+            continue
+        if hasattr(s, "columns"):
+            for c in s.columns:
+                out[f"{t}:{c}"] = s[c]
+        else:
+            out[t] = s
+    return out
+
+
 class GenerateMacroState(BaseState):
     """月频卡：结构层 + 供需层。
 
@@ -29,7 +47,8 @@ class GenerateMacroState(BaseState):
         ctx.logger.info("[generate_macro] 检查本月宏观卡")
 
     def run(self, ctx) -> StateResult:
-        cards = ctx.services["causual"]     # 缺端口直接抛 KeyError，启动期就该发现
+        cards = ctx.services["causual"]
+        data = ctx.data
 
 
         made, skipped, failed = [], [], []
@@ -39,7 +58,8 @@ class GenerateMacroState(BaseState):
                 if cards.exists(asset, month, kind="macro"):
                     skipped.append(f"{asset} {month}")
                     continue
-                cards.generate_macro(asset, month)
+                series = _load_series(data, cards, asset)
+                cards.generate_macro(asset, month, series, data.metadata())
                 made.append(f"{asset} {month}")
             except Exception as e:  # noqa: BLE001
                 failed.append((asset, f"{type(e).__name__}: {e}"))
@@ -81,13 +101,15 @@ class GenerateCardsState(BaseState):
         ctx.logger.info("[generate_cards] 检查是否需要出卡")
 
     def run(self, ctx) -> StateResult:
-        cards = ctx.services["causual"]     # 缺端口直接抛 KeyError，启动期就该发现
-
+        cards = ctx.services["causual"]
+        data = ctx.data
+        meta = data.metadata()
 
         made, skipped, failed = [], [], []
         for asset in ASSETS:
             try:
-                date = cards.last_data_date(asset, ctx.data)
+                series = _load_series(data, cards, asset)
+                date = cards.last_data_date(asset, series)
             except Exception as e:  # noqa: BLE001
                 failed.append((asset, f"取不到最后交易日：{type(e).__name__}: {e}"))
                 continue
@@ -96,7 +118,7 @@ class GenerateCardsState(BaseState):
                 if cards.exists(asset, date):
                     skipped.append(f"{asset} {date}")
                     continue
-                cards.generate(asset, date, ds=ctx.data)
+                cards.generate(asset, series, meta, date=date)
                 made.append(f"{asset} {date}")
             except Exception as e:  # noqa: BLE001
                 failed.append((asset, f"{type(e).__name__}: {e}"))
