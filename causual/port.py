@@ -133,9 +133,18 @@ class CausalPort:
         return tuple(load_asset(asset).REQUIRED_TABLES)
 
     def last_data_date(self, asset: str, series: dict) -> str:
-        """面板最后一天（真实交易日，不是外推日）。"""
+        """面板最后一天（真实交易日，不是外推日）。
+
+        价格表可能是多列表（`csi_all` 有 close/high/low…），series 里存的是
+        `csi_all:close` 这种键——所以不能直接 `series.get("csi_all")`。
+        """
         table = "csi_all" if asset == "ashare" else "gold_cny"
         s = series.get(table)
+        if s is None:
+            s = series.get(f"{table}:close")
+        if s is None:
+            s = next((v for k, v in sorted(series.items())
+                      if k.startswith(f"{table}:")), None)
         if s is None or not len(s):
             raise RuntimeError(f"{asset} 没有价格数据（{table} 为空）")
         return str(s.index[-1].date())
