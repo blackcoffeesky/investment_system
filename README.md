@@ -198,3 +198,33 @@ uvicorn service.app:app --host 0.0.0.0 --port 8000
 ```bash
 sqlite3 datahub/datahub.sqlite ".backup backup/db-$(date +%F).sqlite"
 ```
+
+---
+
+## 11. 更新服务器
+
+服务器拉 GitHub 偶尔会超时（国内网络）。稳妥做法是用 bundle 传：
+
+```bash
+# 本地
+git bundle create /tmp/upd.bundle main
+scp /tmp/upd.bundle linux-server:/tmp/upd.bundle
+
+# 服务器
+cd ~/workspace/quant && git pull /tmp/upd.bundle main
+systemctl --user restart quant
+```
+
+模型产物（`causual/data/`、`regime_engine/saved_models/`）**不在仓库里**，
+换机器时要单独传：
+
+```bash
+tar czf - causual/data regime_engine/saved_models | ssh linux-server "cd ~/workspace/quant && tar xzf -"
+```
+
+数据库同理（WAL 模式，必须先合并）：
+
+```bash
+python -c "import sqlite3; s=sqlite3.connect('datahub/datahub.sqlite'); d=sqlite3.connect('/tmp/up.sqlite'); s.backup(d)"
+scp /tmp/up.sqlite linux-server:~/workspace/quant/datahub/datahub.sqlite
+```
