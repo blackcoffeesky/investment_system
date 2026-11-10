@@ -192,21 +192,44 @@ def test_modules_have_web_package():
         importlib.import_module(mod)
 
 
-def test_diagnose_page_renders():
+def test_state_page_renders():
     """诊断页：画像表 + SVG 时间轴 + 观测矩阵都要出来。"""
     from fastapi.testclient import TestClient
 
     from service.app import app
 
-    r = TestClient(app).get("/diagnose")
+    r = TestClient(app).get("/state")
     assert r.status_code == 200
     assert "<svg" in r.text, "时间轴没画出来"
     assert "各状态画像" in r.text and "观测矩阵" in r.text
 
 
-def test_diagnose_excludes_causual_inputs():
+def test_state_excludes_causual_inputs():
     """诊断层不许读 causual 的信号输入（两套系统输入不相交）。"""
-    from diagnose import observations
+    from state_layer import observations
 
     used = {t for o in observations.OBSERVATIONS for t in o.sources}
     assert not (used & set(observations.EXCLUDED_TABLES)), used
+
+
+def test_state_contract_fields():
+    """状态层输出契约：下游只依赖这几个字段。"""
+    from state_layer import inference
+
+    cur = inference.current("ashare")
+    for k in ("date", "asset", "state_id", "label", "state_probabilities",
+              "confidence", "model", "as_of_date"):
+        assert k in cur, f"契约缺字段 {k}"
+    assert cur["model"]["version"].startswith("hmm-k")
+    assert cur["label"] in cur["model"].get("features", []) or isinstance(cur["label"], str)
+
+
+def test_state_layer_config_matches_causual():
+    """P1 期间两边配置是副本，必须一致（P3 删掉 causual 那份后此测试失效）。"""
+    import causual.causual_assets.ashare.pipeline as ap
+    import causual.causual_assets.gold.pipeline as gp
+    from state_layer.config import ashare, gold
+
+    assert list(ap.FEATURES) == list(ashare.FEATURES)
+    assert list(gp.FEATURES) == list(gold.FEATURES)
+    assert ashare.EXTREME_PARAMS.sigma == ap.C.EXTREME_PARAMS.sigma

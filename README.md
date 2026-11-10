@@ -14,16 +14,18 @@
 ```
 quant/
 ├── datahub/         数据层：SQLite + 手工入库 + /data 页面
-├── diagnose/        诊断层：市场观测 → 潜在资金状态 + /diagnose 页面
+├── state_layer/     状态层：市场观测 → 市场状态 + /state 页面（因果层的上游）
 ├── causual/         因果层：机制 → 方向 → 强度 → 卡片 + /cards /fit 页面
 ├── regime_engine/   状态引擎：HMM 状态识别（不含任何资产知识）
 ├── service/         框架层：注册表 + 共享模板 + 运维状态机
 ├── tests/           跨模块测试
 └── trash/           归档（不再使用的旧代码，留档备查）
 
-**diagnose 与 causual 输入不相交**：diagnose 只看市场结果 + 资金活动代理
-（收益/成交/换手/宽度），causual 看贴近资金主体的观测（两融/ETF/增持）。
-共用输入会变成自己证明自己；分开后，两边的**矛盾**才是信息。
+**state_layer 是 causual 的上游**：状态层回答"现在像什么"，因果层回答"为什么"。
+因果层把状态当数据用（就像用 `csi_all` 一样），不 import 状态层内部。
+
+状态层输出契约见 `state_layer/inference.py` 顶部：下游**只用 `label`**，
+不要用 `state_id`——HMM 的状态编号是任意排列的，重训一次可能整体换位。
 
 **每个模块自带 `web/`**（路由 + 模板 + 导航）和 `port.py`（对外能力）。
 service 只做装配、鉴权、错误处理和运维状态机；它对外只暴露 `service.registry`。
@@ -32,7 +34,7 @@ service 只做装配、鉴权、错误处理和运维状态机；它对外只暴
 | 模块 | 一句话 | 文档 |
 |---|---|---|
 | `datahub` | 把外部数据变成干净的表 | [README](datahub/README.md) · [DESIGN](datahub/DESIGN.md) |
-| `diagnose` | 从市场观测反推"谁在主导" | 见 `diagnose/observations.py` 顶部说明 |
+| `state_layer` | 从市场观测识别"现在是什么状态" | 见 `state_layer/__init__.py` 顶部说明 |
 | `causual` | 每张卡说清"哪些机制在推、推多少" | [README](causual/doc/readme.md) · [DESIGN](causual/doc/DESIGN.md) |
 | `regime_engine` | 市场现在处于什么状态 | 见 `regime_engine/` 源码注释 |
 | `service` | 一个入口访问全部能力，另有运维状态机 | [README](service/README.md) · [DESIGN](service/DESIGN.md) |

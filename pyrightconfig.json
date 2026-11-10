@@ -11,9 +11,10 @@
     "datahub/port.py",
     "datahub/web",
     "datahub/fin/write.py",
-    "diagnose/port.py",
-    "diagnose/web",
-    "diagnose/observations.py"
+    "state_layer/port.py",
+    "state_layer/web",
+    "state_layer/inference.py",
+    "state_layer/observations.py"
   ],
   "exclude": ["**/__pycache__"],
   "venvPath": "D:/desktop/workspace",

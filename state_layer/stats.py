@@ -15,8 +15,10 @@ from pathlib import Path
 
 import pandas as pd
 
+from state_layer import inference
+
 ROOT = Path(__file__).resolve().parents[1]
-REGIME_DIR = ROOT / "causual" / "data" / "regime"
+REGIME_DIR = ROOT / "causual" / "data" / "regime"   # P1：产物仍在原处
 
 # 标签 → 中文名（与 causual 的命名保持一致）
 LABEL_NAME = {
@@ -30,14 +32,8 @@ LABEL_NAME = {
 
 
 def load_labels(asset: str) -> pd.Series:
-    """读现有 HMM 标签。空标签（未拟合日）会被丢掉。"""
-    p = REGIME_DIR / asset / "labels.csv"
-    if not p.exists():
-        return pd.Series(dtype=str)
-    df = pd.read_csv(p)
-    df["date"] = pd.to_datetime(df["date"])
-    s = df.set_index("date")["label"].astype(str)
-    return s[s != ""]
+    """读状态标签（走 inference，P2 之后由它统一提供）。"""
+    return inference.load_labels(asset)
 
 
 def current(asset: str) -> dict:

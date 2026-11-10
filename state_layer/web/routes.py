@@ -11,8 +11,8 @@ from pathlib import Path
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
-from diagnose import observations
-from diagnose.port import get_port
+from state_layer import observations
+from state_layer.port import get_port
 from service.registry import Module, register
 
 router = APIRouter()
@@ -136,7 +136,7 @@ def _svg(rows: list[dict], width: int = 900, height: int = 260) -> str:
     return "".join(parts)
 
 
-@router.get("/diagnose", response_class=HTMLResponse)
+@router.get("/state", response_class=HTMLResponse)
 def index(request: Request, asset: str = "ashare", days: int = 250):
     port = get_port()
     series = _series_for(request)
@@ -152,9 +152,17 @@ def index(request: Request, asset: str = "ashare", days: int = 250):
          "excluded": observations.EXCLUDED_TABLES, "days": days})
 
 
+@router.get("/diagnose")
+def legacy_redirect():
+    """旧地址重定向（书签救一下）。"""
+    from fastapi.responses import RedirectResponse
+
+    return RedirectResponse("/state", status_code=307)
+
+
 def register_module() -> Module:
     return register(Module(
-        name="diagnose", label="诊断", router=router,
+        name="state", label="状态", router=router,
         template_dir=TEMPLATES,
-        nav=[("诊断", "/diagnose")],
+        nav=[("状态", "/state")],
         service_port_factory=get_port))
