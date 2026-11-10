@@ -40,6 +40,13 @@ FREQ_HINT = {
     "fed_rate": ("D", "US", 2),
     "real_yield_10y": ("D", "US", 2),
     "vix": ("D", "US", 2),
+    # 2026-11-10 新增：成交额/换手率/宽度都是 A 股日频，必须挂 SSE 日历，
+    # 否则会把周末当成缺口（历史缺口 1840 天就是这么来的）
+    "csi_all_amount": ("D", "CN", 0),
+    "csi_all_turnover": ("D", "CN", 0),
+    "breadth_adv": ("D", "CN", 0),
+    "breadth_dec": ("D", "CN", 0),
+    "breadth_limitup": ("D", "CN", 0),
 }
 
 

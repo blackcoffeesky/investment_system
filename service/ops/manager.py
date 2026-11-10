@@ -108,8 +108,22 @@ class Manager:
         return all(self._passable(p) for p in self.states[name].prefix)
 
     # ---------------- 执行
+    def purge_orphan_messages(self) -> int:
+        """把"已经不在 STATES 里"的状态遗留的未确认消息作废。
+
+        状态被删掉（例如 manual_check 并进 validate）后，它的旧消息
+        永远不会再被 save_result 覆盖，会一直挂在待办里。
+        """
+        known = set(self.states)
+        gone = [m for m in self.store.messages(unacked_only=True)
+                if m["state"] not in known]
+        for m in gone:
+            self.store.ack_message(m["id"], by="system", action="superseded")
+        return len(gone)
+
     def run(self, only: list[str] | None = None) -> dict:
-        self.recover()       # 上次崩溃遗留的 running 先折算成 blocked
+        self.recover()
+        self.purge_orphan_messages()       # 上次崩溃遗留的 running 先折算成 blocked
         self.run_id = f"r-{uuid.uuid4().hex[:10]}"
         self.store.log_run_start(self.run_id)
         self._refresh()
@@ -132,6 +146,7 @@ class Manager:
             if cur in (StateStatus.BLOCKED.value, StateStatus.WAITING_ACK.value):
                 results[name] = {"status": cur, "msg_id": row.get("blocking_msg_id")}
                 break
+
 
             results[name] = self._execute(st)
             if results[name]["status"] in ("blocked", "waiting_ack"):
@@ -174,13 +189,10 @@ class Manager:
             m.state = name
             m.run_id = self.run_id
 
-        # 静音的 WARNING 与所有 INFO 都自动置为已读，不留在待办列表里
-        snoozed_ids = set()
-        for m in result.messages:
-            if m.level == MessageLevel.WARNING and self._snoozed(name, m):
-                snoozed_ids.add(m.id)
-            elif m.level == MessageLevel.INFO:
-                snoozed_ids.add(m.id)
+        # INFO 只是通知，永远不留在待办里；静音中的 WARNING 同样自动已读。
+        auto_ids = {m.id for m in result.messages if m.level == MessageLevel.INFO}
+        snoozed_ids = {m.id for m in result.messages
+                       if m.level == MessageLevel.WARNING and self._snoozed(name, m)}
 
         level = result.level
         if level == MessageLevel.ERROR:
@@ -209,17 +221,28 @@ class Manager:
                     name, StateStatus.SNOOZED.value,
                     messages=[m.to_dict() for m in result.messages],
                     blocking_msg_id=None, touch=False)
-                for mid in snoozed_ids:
+                for mid in (snoozed_ids | auto_ids):
                     self.store.ack_message(mid, by="system", action="snoozed")
                 self._set(name, StateStatus.SNOOZED.value, None)
                 return {"status": "snoozed", "snoozed": True,
                         "messages": [m.text for m in result.messages]}
             warn = live[0]
+            if not getattr(warn, "blocking", True):
+                # 数据源抖动但数据仍在保鲜期内：记下来，但别挡住后面的状态
+                self.store.save_result(
+                    name, StateStatus.WARNED.value,
+                    messages=[m.to_dict() for m in result.messages],
+                    blocking_msg_id=None, touch=False,
+                    attempts=prev_attempts + 1)
+                self._set(name, StateStatus.WARNED.value, None)
+                return {"status": "warned", "text": warn.text}
             self.store.save_result(
                 name, StateStatus.WAITING_ACK.value,
                 messages=[m.to_dict() for m in result.messages],
                 blocking_msg_id=warn.id if warn else None, touch=False,
                 attempts=prev_attempts + 1)
+            for mid in auto_ids:
+                self.store.ack_message(mid, by="system", action="info")
             self._set(name, StateStatus.WAITING_ACK.value, warn.id if warn else None)
             return {"status": "waiting_ack", "msg_id": warn.id if warn else None,
                     "text": warn.text if warn else ""}
@@ -228,6 +251,8 @@ class Manager:
             name, StateStatus.DONE.value,
             messages=[m.to_dict() for m in result.messages],
             blocking_msg_id=None, touch=False)
+        for mid in auto_ids:
+            self.store.ack_message(mid, by="system", action="info")
         self._set(name, StateStatus.DONE.value, None)
         return {"status": "done", "messages": [m.text for m in result.messages]}
 

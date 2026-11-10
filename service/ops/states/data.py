@@ -16,6 +16,9 @@ from service.ops.messages import Message, MessageLevel, StateResult
 # 保鲜期（天）：超过这个天数没更新，就认为该表"不可用"
 FRESH_DAYS = {"D": 10, "W": 21, "M": 62, "Q": 150, "Y": 400}
 
+# 每次抓数回溯多少天。建库时用 CLI 的 --full 或手动传更长的 start。
+FETCH_LOOKBACK_DAYS = 400
+
 # 手工表期望更新周期（天）——按**表自身频率**而不是统一天数。
 # 季报按季、月报按月，否则 cb_holdings 每天都会报"逾期"。
 EXPECTED_BY_FREQ = {"D": 5, "W": 14, "M": 45, "Q": 120, "Y": 400}
@@ -105,8 +108,8 @@ class FetchState(BaseState):
 
         # 个别源暂时不可用（限流、抖动），但数据仍在保鲜期内 → 可跳过
         return StateResult.warn(
-            f"{report.failed} 个源暂时不可用（数据仍在保鲜期内，可跳过）：{names}",
-            self.name, key="fetch_unavailable")
+            f"{report.failed} 个源暂时不可用（数据仍在保鲜期内）：{names}",
+            self.name, key="fetch_unavailable", blocking=False)
 
     def end(self, ctx) -> None:
         ctx.logger.info("[fetch] 结束")

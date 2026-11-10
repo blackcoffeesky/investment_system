@@ -29,11 +29,12 @@ class StateStatus(str, Enum):
     DONE = "done"
     BLOCKED = "blocked"            # 被 ERROR 卡住
     WAITING_ACK = "waiting_ack"    # 等用户确认（WARNING）
+    WARNED = "warned"                   # 有告警但不阻塞后续状态
     SNOOZED = "snoozed"                 # 已检查但警告被静音；下次仍会重新检查
 
 
 # 算作"可以继续往下走"的状态
-PASSABLE = {StateStatus.DONE, StateStatus.SNOOZED}
+PASSABLE = {StateStatus.DONE, StateStatus.SNOOZED, StateStatus.WARNED}
 PASSABLE_VALUES = {s.value for s in PASSABLE}
 
 
@@ -48,6 +49,7 @@ class Message:
     state: str = ""
     key: str = ""          # 静音标识（如 cb_holdings）
     period: str = ""       # 该警告对应的数据期
+    blocking: bool = True  # 是否阻塞后续状态（数据源抖动不阻塞）
     id: str = field(default_factory=lambda: new_id("m"))
     run_id: str = ""
     created_at: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
@@ -65,6 +67,7 @@ class Message:
             "acked_at": self.acked_at, "ack_by": self.ack_by,
             "ack_action": getattr(self, "ack_action", None),
             "key": self.key, "period": self.period,
+            "blocking": self.blocking,
         }
 
 
@@ -82,10 +85,10 @@ class StateResult:
 
     @classmethod
     def warn(cls, text: str, state: str = "", *, key: str = "",
-             period: str = "") -> "StateResult":
+             period: str = "", blocking: bool = True) -> "StateResult":
         r = cls()
         r.messages.append(Message(MessageLevel.WARNING, text, state,
-                                  key=key, period=period))
+                                  key=key, period=period, blocking=blocking))
         return r
 
     @classmethod

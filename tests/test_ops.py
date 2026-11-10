@@ -451,3 +451,37 @@ def test_user_acked_message_survives_rerun():
                                  "state": "validate", "created_at": "2026-11-02T10:00:00"}])
     acked = {m["id"]: m["ack_by"] for m in store.messages() if m["state"] == "validate"}
     assert acked["m-u1"] == "user", acked
+
+
+def test_nonblocking_warning_does_not_stop_chain():
+    """数据源抖动（非阻塞 WARNING）不该挡住后面的状态。"""
+    import service.ops.states.data as d
+
+    old = dict(d.EXPECTED_DAYS)
+    d.EXPECTED_DAYS.clear()          # 本用例只想验证"警告不挡路"，先关掉逾期
+    try:
+        p = _tmp()
+        m = _mgr(p)
+        m.store.set_status("fetch", StateStatus.DONE.value)
+        m._refresh()
+        r = m.run()
+    finally:
+        d.EXPECTED_DAYS.update(old)
+    # fetch 自己会成功（FakeDS），重点是没有因为 warning 停住
+    assert "generate_cards" in r, r
+    assert r["generate_cards"]["status"] in ("done", "already_done", "warned"), r
+
+
+def test_orphan_state_messages_purged():
+    """状态被删掉后，它的旧消息不该一直挂在待办里。"""
+    p = _tmp()
+    store = OpsStore(p)
+    store.save_result("manual_check", StateStatus.WAITING_ACK.value,
+                      messages=[{"id": "m-ghost", "level": "warning", "text": "旧状态",
+                                 "state": "manual_check", "key": "k",
+                                 "created_at": "2026-11-01T10:00:00"}],
+                      blocking_msg_id="m-ghost")
+    m = _mgr(p)
+    assert m.purge_orphan_messages() == 1
+    assert not [x for x in store.messages(unacked_only=True)
+                if x["state"] == "manual_check"]
