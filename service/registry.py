@@ -48,9 +48,11 @@ def load() -> None:
         return
     from causual import web as causual_web
     from datahub import web as datahub_web
+    from diagnose import web as diagnose_web
 
     causual_web.register_module()
     datahub_web.register_module()
+    diagnose_web.register_module()
     _LOADED = True
 
 

@@ -54,11 +54,12 @@ def upsert_single(table: str, date: str, value: float | str,
     from datetime import datetime
 
     try:
-        d = pd.Timestamp(date).normalize()
+        ts = pd.Timestamp(date)
     except (ValueError, TypeError) as e:
         raise ValueError(f"日期无法解析：{date}") from e
-    if pd.isna(d):
+    if pd.isna(ts):
         raise ValueError(f"日期无法解析：{date}")
+    d = ts.normalize()  # pyright: ignore[reportAttributeAccessIssue]
     try:
         v = float(value)
     except (TypeError, ValueError) as e:

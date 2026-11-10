@@ -394,13 +394,15 @@ def test_ops_page_renders_with_grouped_messages():
     app_mod.DB_PATH = tmp
     try:
         s = OpsStore(tmp)
-        for i in range(3):
-            s.save_result(
-                "validate", StateStatus.WAITING_ACK.value,
-                messages=[{"id": f"m-grp{i}", "level": "warning",
-                           "text": f"告警 {i}", "state": "validate",
-                           "key": f"tbl{i}", "period": "2026-11-04",
-                           "created_at": "2026-11-04T10:00:00"}])
+        # 必须在**一次** save_result 里写多条：分开写的话后一次会作废前一次，
+        # 这正是「重跑清旧消息」的语义。
+        s.save_result(
+            "validate", StateStatus.WAITING_ACK.value,
+            messages=[{"id": f"m-grp{i}", "level": "warning",
+                       "text": f"告警 {i}", "state": "validate",
+                       "key": f"tbl{i}", "period": "2026-11-04",
+                       "created_at": "2026-11-04T10:00:00"} for i in range(3)],
+            blocking_msg_id="m-grp0")
         r = TestClient(app_mod.app).get("/ops")
         assert r.status_code == 200, r.status_code
         assert "展开全部" in r.text
@@ -408,3 +410,44 @@ def test_ops_page_renders_with_grouped_messages():
     finally:
         app_mod.DB_PATH = old
         shutil.rmtree(tmp.parent, ignore_errors=True)
+
+
+def test_rerun_clears_stale_messages():
+    """重跑后，上一轮的旧消息必须作废，不能一直挂在待办里。"""
+    p = _tmp()
+    store = OpsStore(p)
+
+    # 上一轮：3 条不同 key 的消息
+    old = [{"id": f"m-old{i}", "level": "warning", "text": f"旧告警 {i}",
+            "state": "validate", "key": f"tbl{i}", "period": "2026-11-01",
+            "created_at": "2026-11-01T10:00:00"} for i in range(3)]
+    store.save_result("validate", StateStatus.WAITING_ACK.value,
+                      messages=old, blocking_msg_id="m-old0")
+
+    # 这一轮只产 1 条
+    new = [{"id": "m-new", "level": "info", "text": "新的结果",
+            "state": "validate", "created_at": "2026-11-02T10:00:00"}]
+    store.save_result("validate", StateStatus.DONE.value,
+                      messages=new, blocking_msg_id=None)
+
+    unacked = [m["id"] for m in store.messages(unacked_only=True)
+               if m["state"] == "validate"]
+    assert unacked == ["m-new"], unacked
+    assert len([m for m in store.messages() if m["state"] == "validate"]) == 4
+
+
+def test_user_acked_message_survives_rerun():
+    """用户确认过的消息不能被重跑冲掉。"""
+    p = _tmp()
+    store = OpsStore(p)
+    store.save_result("validate", StateStatus.WAITING_ACK.value,
+                      messages=[{"id": "m-u1", "level": "warning", "text": "x",
+                                 "state": "validate", "key": "k",
+                                 "created_at": "2026-11-01T10:00:00"}],
+                      blocking_msg_id="m-u1")
+    store.ack_message("m-u1", by="user", action="skip")
+    store.save_result("validate", StateStatus.DONE.value,
+                      messages=[{"id": "m-u2", "level": "info", "text": "y",
+                                 "state": "validate", "created_at": "2026-11-02T10:00:00"}])
+    acked = {m["id"]: m["ack_by"] for m in store.messages() if m["state"] == "validate"}
+    assert acked["m-u1"] == "user", acked

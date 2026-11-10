@@ -100,16 +100,15 @@ class OpsStore:
                     m.get("key"), m.get("period"),
                 ))
             if rows:
-                # 同一 (state, key) 的旧未确认消息作废，避免页面上堆同样的告警
-                for m in messages:
-                    k = m.get("key")
-                    if not k:
-                        continue
-                    con.execute(
-                        "UPDATE ops_messages SET acked_at=?, ack_by='superseded',"
-                        " ack_action='superseded'"
-                        " WHERE state=? AND key=? AND acked_at IS NULL AND id<>?",
-                        (now, m.get("state", state), k, m["id"]))
+                # 一次执行产出的就是"当前真值"：该状态所有**不在本批**的未确认消息
+                # 一律作废。否则重跑成功后，上一轮的错误/告警还挂在待办里。
+                ids = [r[0] for r in rows]
+                marks = ",".join("?" for _ in ids)
+                con.execute(
+                    "UPDATE ops_messages SET acked_at=?, ack_by='superseded',"
+                    " ack_action='superseded'"
+                    f" WHERE state=? AND acked_at IS NULL AND id NOT IN ({marks})",
+                    (now, state, *ids))
                 con.executemany(
                     "INSERT OR REPLACE INTO ops_messages"
                     "(id, run_id, state, level, text, created_at, acked_at,"

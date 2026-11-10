@@ -494,6 +494,46 @@ def manual_table(start: str, end: str, table: str = "", **_) -> pd.Series:
     return _clip(pd.to_numeric(d[col], errors="coerce"), start, end)
 
 
+def csi_all_flow(start: str, end: str, **_) -> pd.DataFrame:
+    """中证全指 000985 的成交额与换手率（akshare 东财）。
+
+    腾讯那套只给 OHLCV，没有成交额；换手率也从这里一起取。
+    返回两列，由 SOURCES 拆成 csi_all_amount / csi_all_turnover 两张表。
+    """
+    ak = _ak()
+    d = ak.index_zh_a_hist(symbol="000985", period="daily",
+                           start_date=pd.Timestamp(start).strftime("%Y%m%d"),
+                           end_date=pd.Timestamp(end).strftime("%Y%m%d"))
+    if d is None or not len(d):
+        raise RuntimeError("中证全指成交额接口无数据")
+    d = d.copy()
+    d["日期"] = pd.to_datetime(d["日期"])
+    d = d.set_index("日期").sort_index()
+    return pd.DataFrame({
+        "csi_all_amount": pd.to_numeric(d["成交额"], errors="coerce") / 1e8,
+        "csi_all_turnover": pd.to_numeric(d["换手率"], errors="coerce"),
+    }).dropna(how="all")
+
+
+def market_breadth(start: str, end: str, **_) -> pd.DataFrame:
+    """全市场涨跌家数（**只能取当天快照**，历史无法回溯）。
+
+    指数告诉你涨了多少，宽度告诉你多少股票在涨。
+    返回三列，拆成 breadth_adv / breadth_dec / breadth_limitup。
+    """
+    ak = _ak()
+    d = ak.stock_zh_a_spot_em()
+    if d is None or not len(d):
+        raise RuntimeError("全市场快照为空")
+    pct = pd.to_numeric(d["涨跌幅"], errors="coerce").dropna()
+    today = pd.Timestamp.today().normalize()
+    return pd.DataFrame({
+        "breadth_adv": [int((pct > 0).sum())],
+        "breadth_dec": [int((pct < 0).sum())],
+        "breadth_limitup": [int((pct > 9.8).sum())],
+    }, index=[today])
+
+
 # ---------------------------------------------------------------- 注册表
 SOURCES: list[Source] = [
     # 共享宏观
@@ -509,6 +549,10 @@ SOURCES: list[Source] = [
 
     # 价格与成交
     Source("csi_all", index_tx, {"symbol": "sh000985"}, note="腾讯指数 OHLCV"),
+    Source("csi_all_amount|csi_all_turnover", csi_all_flow,
+           note="中证全指成交额(亿元)/换手率(%)，akshare 东财"),
+    Source("breadth_adv|breadth_dec|breadth_limitup", market_breadth,
+           note="全市场涨跌家数/涨停数（仅当天快照，不回溯）"),
     Source("csi300", index_sina, {"symbol": "sh000300"}, note="新浪指数收盘"),
     Source("csi1000", index_sina, {"symbol": "sh000852"}, note="新浪指数收盘"),
     Source("gold_cny", fut_daily, {"symbol": "AU0"}, note="上期所主力连续"),

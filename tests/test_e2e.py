@@ -190,3 +190,23 @@ def test_modules_have_web_package():
 
     for mod in ("datahub.web", "causual.web", "datahub.port", "causual.port"):
         importlib.import_module(mod)
+
+
+def test_diagnose_page_renders():
+    """诊断页：画像表 + SVG 时间轴 + 观测矩阵都要出来。"""
+    from fastapi.testclient import TestClient
+
+    from service.app import app
+
+    r = TestClient(app).get("/diagnose")
+    assert r.status_code == 200
+    assert "<svg" in r.text, "时间轴没画出来"
+    assert "各状态画像" in r.text and "观测矩阵" in r.text
+
+
+def test_diagnose_excludes_causual_inputs():
+    """诊断层不许读 causual 的信号输入（两套系统输入不相交）。"""
+    from diagnose import observations
+
+    used = {t for o in observations.OBSERVATIONS for t in o.sources}
+    assert not (used & set(observations.EXCLUDED_TABLES)), used

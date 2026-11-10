@@ -10,7 +10,10 @@
     "causual/web",
     "datahub/port.py",
     "datahub/web",
-    "datahub/fin/write.py"
+    "datahub/fin/write.py",
+    "diagnose/port.py",
+    "diagnose/web",
+    "diagnose/observations.py"
   ],
   "exclude": ["**/__pycache__"],
   "venvPath": "D:/desktop/workspace",

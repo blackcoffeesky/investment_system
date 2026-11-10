@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}诊断{% endblock %}
+{% block content %}
+
+<div class="row" style="margin-bottom:10px">
+  {% for a in ["ashare"] %}
+  <a class="btn" href="/diagnose?asset={{ a }}" style="{{ 'border-color:var(--accent)' if a == asset else '' }}">{{ a }}</a>
+  {% endfor %}
+  <span class="muted">状态模型拟合于 {{ current.fit_date or '—' }}（K={{ current.k or '?' }}）</span>
+</div>
+
+<h2 style="margin-top:0">时间轴（近 {{ days }} 个交易日）</h2>
+<div class="card-body">{{ svg | safe }}</div>
+<p class="muted">上：收盘价 + 状态色带；中：成交额；下：涨跌家数比（绿线）。悬停可看当天数值。</p>
+
+<h2>各状态画像</h2>
+{% if profile is not none and profile | length %}
+<table style="border-collapse:collapse;width:100%;font-size:13px">
+  <tr>
+    <th align="left">状态</th><th align="right">天数</th><th align="right">占比</th>
+    <th align="right">均持续</th><th align="right">日均收益</th><th align="right">日波动</th>
+    <th align="right">成交额(亿)</th><th align="right">换手%</th>
+    <th align="right">涨跌比</th><th align="right">涨停</th><th align="right">大小盘差</th>
+  </tr>
+  {% for _, r in profile.iterrows() %}
+  <tr>
+    <td><span class="pill">{{ r['name'] }}</span></td>
+    <td align="right">{{ r['n'] }}</td>
+    <td align="right">{{ '%.1f%%' | format(r['share'] * 100) }}</td>
+    <td align="right">{{ '%.1f' | format(r['avg_duration']) }}</td>
+    <td align="right">{{ '%+.3f' | format(r['mean_ret']) }}</td>
+    <td align="right">{{ '%.3f' | format(r['vol']) }}</td>
+    <td align="right">{{ '%.0f' | format(r['amount']) if r['amount'] == r['amount'] else '—' }}</td>
+    <td align="right">{{ '%.2f' | format(r['turnover']) if r['turnover'] == r['turnover'] else '—' }}</td>
+    <td align="right">{{ '%.2f' | format(r['advance_ratio']) if r['advance_ratio'] == r['advance_ratio'] else '—' }}</td>
+    <td align="right">{{ '%.0f' | format(r['limit_up']) if r['limit_up'] == r['limit_up'] else '—' }}</td>
+    <td align="right">{{ '%+.2f' | format(r['small_large']) if r['small_large'] == r['small_large'] else '—' }}</td>
+  </tr>
+  {% endfor %}
+</table>
+<p class="muted">「—」= 该指标没有覆盖到这段历史（多为宽度数据只有近期快照）。</p>
+{% else %}
+<p class="muted">还没有状态标签，先跑一次 <code>cli regime</code>。</p>
+{% endif %}
+
+<h2>观测矩阵</h2>
+<table style="border-collapse:collapse;width:100%;font-size:13px">
+  <tr><th align="left">组</th><th align="left">观测</th><th align="left">状态</th>
+      <th align="left">覆盖</th><th align="left">备注</th></tr>
+  {% for a in avail %}
+  <tr>
+    <td>{{ groups[a.group] }}</td>
+    <td><code>{{ a.key }}</code> {{ a.label }}</td>
+    <td>
+      {% if a.status == '有' %}<span class="pill done">{{ a.status }}</span>
+      {% elif a.status == '缺' %}<span class="pill error">缺</span>
+      {% else %}<span class="pill warning">{{ a.status }}</span>{% endif %}
+    </td>
+    <td class="muted">{{ a.start }} ~ {{ a.end }}</td>
+    <td class="muted" style="white-space:normal">{{ a.note }}</td>
+  </tr>
+  {% endfor %}
+</table>
+
+<p class="muted">
+  第三组「{{ groups[3] }}」不在本页：{{ excluded | join('、') }}。
+  它们只在 causual 里当信号输入——两套系统**刻意不共用输入**，
+  这样诊断结论和因果归因互相矛盾时，矛盾本身才是信息。
+</p>
+
+{% endblock %}

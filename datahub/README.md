@@ -28,6 +28,8 @@ datahub/
 
 日常唯一入口是 `update.py`；手工数据走 `intake`。
 
+**新增（2026-11-10）**：`csi_all_amount` / `csi_all_turnover`（中证全指成交额与换手率，akshare 有全历史）、`breadth_adv` / `breadth_dec` / `breadth_limitup`（全市场涨跌家数与涨停数，**只有当天快照，历史不可回溯**）。
+
 ---
 
 ## 2. 命名原则

@@ -62,6 +62,8 @@ causual/
 └── output/{asset}/cards/YYYY/MM/
 ```
 
+**状态标签**由 `diagnose` 层提供（现在仍由 `regime_engine` 产出，但 causual 只把它当普通数据列用，不 import 诊断层）。
+
 `causual_core` 里没有 `requests` / `akshare` / `db.read`——取数在 `datahub`，
 面板组装在 `causual_assets`，两者通过注入的 `DataService` 连接。
 
