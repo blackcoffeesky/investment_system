@@ -154,6 +154,59 @@ def current(asset: str, features: pd.DataFrame | None = None) -> dict:
     return _payload(asset, date, label, sid, proba, spec)
 
 
+def extend(asset: str, features: pd.DataFrame,
+           labels: pd.Series | None = None) -> pd.Series:
+    """把标签外推到断档期（上次 fit 之后到最新一天）。
+
+    这是让卡片能在不重跑 regime 的情况下拿到当天状态的原因。
+    极端日走规则，常规日用最后一个窗口的模型逐日后验 argmax。
+
+    `features` 由调用方传入（它来自面板，而面板是消费方的事）——
+    状态层只负责"拿特征 → 出标签"。
+    """
+    lab = cast(pd.Series, load_labels(asset) if labels is None else labels)
+    if lab.empty or features is None or features.empty:
+        return lab
+
+    c = cfg.get(asset)
+    spec = load_spec(asset)
+    valid = features.dropna().index
+    if not len(valid):
+        return lab
+    # 注意：调用方可能传入"已 reindex 到最新日期、空格子仍是 ''"的标签序列，
+    # 所以断档起点要按**最后一个非空标签**算，不能取 index.max()。
+    filled = cast(pd.Series, lab[lab.astype(str) != ""])
+    if filled.empty:
+        return lab
+    last_lab = filled.index.max()
+    gap = valid[valid > last_lab]
+    if not len(gap):
+        return lab
+
+    try:
+        lw = load_last_window(asset)
+    except FileNotFoundError:
+        print(f"[state] 缺 hmm_last.pkl，{asset} 的标签不外推")
+        return lab
+    if lw.get("fit_id") != spec.get("fit_id"):
+        print(f"[state] hmm_last.pkl 与 {asset} 的 spec fit_id 不一致，不外推")
+        return lab
+
+    est = make("hmm", k=spec.get("k"))
+    add = est.labels(features, lw)
+    add = add[add.index.isin(gap)]
+    add = cast(pd.Series, add[add != ""])
+    if add.empty:
+        return lab
+
+    ext = extreme.classify(features, c.EXTREME_PARAMS).reindex(add.index)
+    add = extreme.apply(add, ext)
+    span = pd.DatetimeIndex(add.index)
+    print(f"[state] 外推 {len(add)} 天标签"
+          f"（{span[0].date()} ~ {span[-1].date()}）")
+    return pd.concat([filled, add]).sort_index()
+
+
 def fit(asset: str, panel: pd.DataFrame, *, estimator: str = "hmm",
         labeler_factory, signature_fn, verbose: bool = True) -> dict:
     """训练并返回 {spec, labels, last, profile, k_table}（不落盘）。"""

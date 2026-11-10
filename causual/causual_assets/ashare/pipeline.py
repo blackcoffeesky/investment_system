@@ -213,38 +213,19 @@ def build_panel(asof: str | None = None, series=None, meta=None) -> tuple[pd.Dat
 
 
 def _extend_labels(df: pd.DataFrame, spec: dict, labels: pd.Series) -> pd.Series:
-    """把标签外推到最新交易日（上次 fit 之后的断档期）。"""
-    from causual.causual_core.regime_infer import predict_labels
-    from regime_engine import extreme as X
-    from regime_engine.serialize import load_named
+    """把标签外推到最新交易日——**委托状态层做**。
+
+    P2 起外推逻辑归 `state_layer`（它管模型和窗口），这里只负责
+    把特征矩阵递过去。因果层不再 import regime_engine 的推断部分。
+    """
+    from state_layer.port import get_port
 
     feat = build_features(df)
-    valid = feat.dropna().index
-    if not len(valid) or not labels.notna().any():
-        return labels
-    last_lab = labels[labels != ""].index.max()
-    gap = valid[valid > last_lab]
-    if not len(gap):
-        return labels
-
     try:
-        lw = load_named(C.ASSET, "hmm_last.pkl")
-    except FileNotFoundError:
-        print(
-            "[extend] 缺少 regime_engine/saved_models/"
-            f"{C.ASSET}/hmm_last.pkl，无法外推标签——"
-            "当日状态会是空的。先跑 `python -m causual.causual_core.cli regime`。"
-        )
+        return get_port().extend(C.ASSET, feat, labels)
+    except Exception as e:  # noqa: BLE001
+        print(f"[extend] 状态层外推失败（{type(e).__name__}: {e}），本次不外推")
         return labels
-    if lw.get("fit_id") != spec.get("fit_id"):
-        print("[extend] hmm_last.pkl 与 spec 的 fit_id 不一致，不外推")
-        return labels
-
-    add = predict_labels(feat, lw, gap)
-    ext = X.classify(feat, C.EXTREME_PARAMS).reindex(add.index)
-    add.loc[ext != ""] = ext[ext != ""]
-    print(f"[extend] 用上次模型外推 {len(add)} 天标签（{add.index[0].date()} ~ {add.index[-1].date()}）")
-    return pd.concat([labels[labels != ""], add]).sort_index()
 
 
 def fit_edges(df: pd.DataFrame, spec: dict, seed: int = 42, verbose: bool = True) -> dict:

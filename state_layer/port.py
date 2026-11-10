@@ -31,6 +31,11 @@ class StatePort:
         """批量输出（date / label / label_name）。"""
         return inference.states(asset, start, end)
 
+    def extend(self, asset: str, features: pd.DataFrame,
+               labels: pd.Series | None = None) -> pd.Series:
+        """把标签外推到最新一天（给定特征矩阵）。因果层在 P2 用它。"""
+        return inference.extend(asset, features, labels)
+
     def current_state(self, asset: str = "ashare") -> dict:
         """单点输出，含 model.version 与 state_probabilities。"""
         return inference.current(asset)

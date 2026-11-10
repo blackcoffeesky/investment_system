@@ -233,3 +233,30 @@ def test_state_layer_config_matches_causual():
     assert list(ap.FEATURES) == list(ashare.FEATURES)
     assert list(gp.FEATURES) == list(gold.FEATURES)
     assert ashare.EXTREME_PARAMS.sigma == ap.C.EXTREME_PARAMS.sigma
+
+
+def test_state_extend_fills_gap():
+    """外推：给一段带空标签的序列，断档期应被填上，且不动已有标签。"""
+    import numpy as np
+    import pandas as pd
+
+    from state_layer.port import get_port
+
+    port = get_port()
+    labels = port.labels("ashare")
+    if labels.empty:
+        return
+    spaced = labels.reindex(
+        pd.bdate_range(labels.index[0], labels.index[-1] + pd.Timedelta(days=20))
+    ).fillna("").astype(str)
+    feats = pd.DataFrame(
+        np.random.default_rng(0).normal(size=(len(spaced), 9)),
+        index=spaced.index,
+        columns=["log_return", "realized_vol_20", "volume_z", "up_day_ratio",
+                 "size_mom", "margin_chg_z", "rv_ratio", "shibor_chg_z",
+                 "etf_dispersion"])
+    out = port.extend("ashare", feats, spaced)
+    assert out.index.max() > labels.index.max(), "没有外推"
+    assert (out != "").all(), "外推结果里还有空标签"
+    keep = out.reindex(labels.index)
+    assert (keep == labels).all(), "已有标签被改动"
