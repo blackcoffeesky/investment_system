@@ -60,8 +60,9 @@ def panel(series: dict) -> pd.DataFrame:
     out["close"] = close          # 时间轴画图用，不参与诊断
     out["ret"] = close.pct_change() * 100
     out["vol20"] = out["ret"].rolling(20, min_periods=10).std() * 100
-    out["amount"] = _align(_pick(series, "csi_all_amount"), out.index)
-    out["turnover"] = _align(_pick(series, "csi_all_turnover"), out.index)
+    # 成交额/换手率可能还没入库（新源）——缺了就当 NaN，页面会显示「缺」
+    out["amount"] = _align(_pick_opt(series, "csi_all_amount"), out.index)
+    out["turnover"] = _align(_pick_opt(series, "csi_all_turnover"), out.index)
 
     adv = _align(_pick_opt(series, "breadth_adv"), out.index)
     dec = _align(_pick_opt(series, "breadth_dec"), out.index)
