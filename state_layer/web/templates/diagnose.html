@@ -18,7 +18,7 @@
   </td></tr>
   {% if spec %}
   <tr><td>模型</td><td class="muted">
-    K={{ spec.k }} · 拟合 {{ spec.fit_date }} · 签名 <code>{{ spec.label_signature }}</code>
+    {{ spec.model.version }} · 拟合 {{ spec.data.fit_date }}{% if spec.metrics %} · 分离度 {{ '%.2f' | format(spec.metrics['min']) }}{% endif %}
   </td></tr>
   {% endif %}
   {% if transition %}

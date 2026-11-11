@@ -108,6 +108,33 @@ def classify(feat: pd.DataFrame, p: ExtremeParams | None = None) -> pd.Series:
     return pd.Series(out, index=feat.index, dtype=object)
 
 
+def apply(labels: pd.Series, ext: pd.Series) -> pd.Series:
+    """用极端标签覆盖统计标签（极端日走规则）。
+
+    两个序列的索引范围常不一样（统计标签只覆盖常规日），
+    这里统一按 `labels` 的索引对齐，调用方不用管。
+    """
+    out = labels.copy()
+    aligned = ext.reindex(out.index).fillna("").astype(str)
+    mask = aligned != ""
+    out.loc[mask] = aligned[mask]
+    return out
+
+
+def to_dict(p: "ExtremeParams | None") -> dict:
+    """参数 → 纯 dict（可 JSON）。"""
+    if p is None:
+        return {}
+    return {k: getattr(p, k) for k in p.__dataclass_fields__}
+
+
+def from_dict(d: dict) -> "ExtremeParams | None":
+    if not d:
+        return None
+    return ExtremeParams(**{k: v for k, v in d.items()
+                            if k in ExtremeParams.__dataclass_fields__})
+
+
 def duration_stats(labels: pd.Series) -> dict[str, float]:
     """各极端标签的平均持续天数（几何分布近似：p = 1/mean）。"""
     s = labels[labels != ""]

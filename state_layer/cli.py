@@ -2,9 +2,7 @@
 
     python -m state_layer.cli regime --asset ashare [--k 3] [--seed 42]
 
-**这是状态层唯一的写入入口**。产物仍写到 `causual/data/regime/{asset}/`
-与 `state_layer.engine/saved_models/{asset}/`（路径不变，减少迁移风险），
-但写的人从此是状态层。
+**这是状态层唯一的写入入口**。产物写到 `state_layer/models/{asset}/`。
 """
 
 from __future__ import annotations
@@ -13,11 +11,12 @@ import argparse
 import importlib
 
 from state_layer import config as cfg
-from state_layer import inference
+from state_layer import fit as fit_mod
+from state_layer import store
 
 
 def _panel_provider(asset: str):
-    """按配置里的点号路径找到面板构造函数。"""
+    """按配置里的点号路径找到原始面板构造函数。"""
     spec = cfg.get(asset).PANEL_PROVIDER
     mod_name, _, fn_name = spec.partition(":")
     mod = importlib.import_module(mod_name)
@@ -44,35 +43,24 @@ def _load_series(asset: str, provider_mod) -> tuple[dict, object]:
 
 
 def cmd_regime(args) -> int:
-    provider_mod, prepare = _panel_provider(args.asset)
+    provider_mod, load_raw = _panel_provider(args.asset)
     series, meta = _load_series(args.asset, provider_mod)
 
-    # 标签词汇表在资产包里（label 模块），状态层只是使用者
-    label_mod = importlib.import_module(f"state_layer.labels.{args.asset}")
+    # 标签词汇表在 config 里（与 K / 特征同一份配置）
+    label_mod = importlib.import_module(f"state_layer.config.{args.asset}")
 
-    # 状态层拿到的是**原始宽表**，派生列由 features 自己算
-    panel = provider_mod.load_raw(series, meta)
-    res = inference.fit(args.asset, panel, label_module=label_mod,
-                        verbose=True)
-    if args.k is not None:
-        # 显式指定 K 时重跑一次（fit 内部默认用配置里的 K）
-        from state_layer.features import build
-        from state_layer.estimators import make
+    panel = load_raw(series, meta)
+    res = fit_mod.fit(args.asset, panel, labeler=label_mod.name_states,
+                      k=args.k, seed=args.seed, verbose=True)
+    p = fit_mod.save(args.asset, res)
 
-        c = cfg.get(args.asset)
-        est = make("hmm", k=args.k, seed=args.seed)
-        res = est.fit(build(args.asset, panel),
-                      labeler_factory=label_mod.name_states,
-                      name_by_value=c.LABEL_NAME,
-                      signature_fn=label_mod.signature,
-                      asset=args.asset, extreme_params=c.EXTREME_PARAMS,
-                      verbose=True)
-
-    p = inference.save(args.asset, res)
     spec = res["spec"]
+    m, d, mt = spec["model"], spec["data"], spec["metrics"]
     print(f"\n状态模型 -> {p}")
-    print(f"  K={spec['k']}  签名={spec['label_signature']}  "
-          f"用到标签={spec['used_labels']}")
+    print(f"  {m['version']}  签名={d['label_signature']}  "
+          f"用到标签={d['used_labels']}")
+    print(f"  分离度（{mt['method']}）= {mt['min']:.3f}  "
+          f"{'通过' if mt['passed'] else '未达标'}")
     print("\n[注意] 重拟合会改变 label_signature，边快照随之失效——"
           "接着跑 `python -m causual.causual_core.cli edges --asset "
           f"{args.asset}`，否则卡片会因签名不一致被拒绝。")

@@ -214,9 +214,9 @@ def test_state_excludes_causual_inputs():
 
 def test_state_contract_fields():
     """状态层输出契约：下游只依赖这几个字段。"""
-    from state_layer import inference
+    from state_layer.port import get_port
 
-    cur = inference.current("ashare")
+    cur = get_port().current_state("ashare")
     for k in ("date", "asset", "state_id", "label", "state_probabilities",
               "confidence", "model", "as_of_date"):
         assert k in cur, f"契约缺字段 {k}"

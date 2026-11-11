@@ -9,9 +9,9 @@
 from __future__ import annotations
 
 from causual.causual_assets.gold import config as gold_cfg
-from state_layer.labels import gold as gold_label
+from state_layer.config import gold as gold_label
 from causual.causual_assets.ashare import config as ash_cfg
-from state_layer.labels import ashare as ash_label
+from state_layer.config import ashare as ash_label
 
 
 def _shared_edge(edges, source="REAL_YIELD_10Y"):

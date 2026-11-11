@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pandas as pd
 
-from state_layer.engine import bhattacharyya, hmm as H
+from state_layer import metrics
+from state_layer.model.hmm import _ops as H
 
 
 def select_k(
@@ -32,12 +33,14 @@ def select_k(
     rows = []
     for k in candidates:
         model = H.fit(X, k, seed=seed)
-        sep = bhattacharyya.pairwise(model.means_, model.covars_, bh_threshold)
+        sep = metrics.score("bhattacharyya",
+                        {"means": model.means_, "covars": model.covars_},
+                        threshold=bh_threshold)
         rows.append({
             "k": k,
             "bic": float(model.bic(X)),
             "loglik": float(model.score(X)),
-            "min_bhattacharyya": sep["min_dist"],
+            "min_bhattacharyya": sep["min"],
             "separated": sep["passed"],
         })
 

@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from state_layer import inference
+from state_layer import store
 
 ROOT = Path(__file__).resolve().parents[1]
 REGIME_DIR = ROOT / "causual" / "data" / "regime"   # P1：产物仍在原处
@@ -31,9 +31,16 @@ LABEL_NAME = {
 }
 
 
+def _current(asset: str, features=None) -> dict:
+    """延迟导入 port：port 会 import stats，模块级互相引用会成环。"""
+    from state_layer.port import get_port
+
+    return get_port().current_state(asset, features)
+
+
 def load_labels(asset: str) -> pd.Series:
     """读状态标签（走 inference，P2 之后由它统一提供）。"""
-    return inference.load_labels(asset)
+    return store.load_labels(asset)
 
 
 def current(asset: str) -> dict:

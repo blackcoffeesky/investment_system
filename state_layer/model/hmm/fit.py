@@ -1,4 +1,4 @@
-"""state_layer.engine 的唯一入口：``fit_regime``。
+"""HMM 的拟合与逐日解码（walk-forward）。
 
 引擎不知道任何资产的语义——它只负责"把特征序列切成隐状态"，
 以及"逐日因果地给出状态"（walk-forward）。把状态翻译成资产自己的标签，
@@ -13,7 +13,9 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
-from state_layer.engine import bhattacharyya, hmm as H, select as S, serialize
+from state_layer import metrics
+from state_layer.model.hmm import _ops as H
+from state_layer.model.hmm import select as S, serialize
 
 
 Labeler = Callable[[pd.DataFrame], dict[int, object]]
@@ -58,11 +60,48 @@ class RegimeFit:
             "clip_lo": self.clip_lo,
             "clip_hi": self.clip_hi,
             "seed": self.seed,
-            "min_bhattacharyya": self.separation.get("min_dist", 0.0),
+            "min_bhattacharyya": self.separation.get("min", 0.0),
+        })
+
+    def window_dict(self) -> dict:
+        """最后窗口的纯数据（在线算后验用）。字段与 walk_forward 的 last 一致。"""
+        from state_layer.model.hmm import serialize
+
+        return serialize.to_numpy({
+            "means": self.means,
+            "covars": self.covars,
+            "transmat": self.transmat,
+            "startprob": self.startprob,
+            "scaler_mean": self.scaler_mean,
+            "scaler_scale": self.scaler_scale,
+            "clip_lo": self.clip_lo.to_numpy(dtype=float),
+            "clip_hi": self.clip_hi.to_numpy(dtype=float),
+            "features": list(self.features),
+            "state_labels": {},
         })
 
     def save(self, asset: str):
         return serialize.save(self.spec(), asset)
+
+    @classmethod
+    def from_spec(cls, spec: dict) -> "RegimeFit":
+        """从 spec 字典重建（不重跑拟合），用于加载模型。"""
+        return cls(
+            k=int(spec["k"]),
+            features=list(spec.get("features", [])),
+            states=pd.Series(dtype="int64"),
+            proba=pd.DataFrame(),
+            means=np.asarray(spec["means"], dtype=float),
+            covars=np.asarray(spec["covars"], dtype=float),
+            transmat=np.asarray(spec["transmat"], dtype=float),
+            startprob=np.asarray(spec["startprob"], dtype=float),
+            scaler_mean=np.asarray(spec["scaler_mean"], dtype=float),
+            scaler_scale=np.asarray(spec["scaler_scale"], dtype=float),
+            clip_lo=pd.Series(spec["clip_lo"], index=list(spec.get("features", []))),
+            clip_hi=pd.Series(spec["clip_hi"], index=list(spec.get("features", []))),
+            seed=int(spec.get("seed", 42)),
+            separation={"min": spec.get("min_bhattacharyya", 0.0)},
+        )
 
     # ---------------------------------------------------------------- 逐日解码
     def walk_forward(
@@ -93,7 +132,7 @@ class RegimeFit:
                 hist = feat.loc[:cutoff].dropna()
                 lo, hi = H.fit_window_bounds(hist)
                 scaler = H.make_scaler(H.clip_frame(hist, lo, hi))
-                from state_layer.engine.prep import prep_features
+                from state_layer.features.common import prep_features
 
                 Xtr = prep_features(hist, scaler, lo, hi)
                 model = H.fit(Xtr, self.k, seed=self.seed)
@@ -141,7 +180,7 @@ def fit_regime(
 
     lo, hi = H.fit_window_bounds(feat)
     scaler = H.make_scaler(H.clip_frame(feat, lo, hi))
-    from state_layer.engine.prep import prep_features
+    from state_layer.features.common import prep_features
 
     X = prep_features(feat, scaler, lo, hi)
 
@@ -151,7 +190,9 @@ def fit_regime(
         H.smoothed_proba(model, X), index=feat.index,
         columns=[f"p{i}" for i in range(k)],
     )
-    sep = bhattacharyya.pairwise(model.means_, model.covars_, bh_threshold)
+    sep = metrics.score("bhattacharyya", {"means": model.means_,
+                                          "covars": model.covars_},
+                        threshold=bh_threshold)
 
     return RegimeFit(
         k=k,

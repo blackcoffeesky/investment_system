@@ -17,8 +17,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-ROOT = Path(__file__).resolve().parents[1]      # state_layer/
-MODEL_DIR = ROOT / "engine" / "saved_models"
+ROOT = Path(__file__).resolve().parents[2]      # state_layer/
+MODEL_DIR = ROOT / "models"
 
 
 def model_path(asset: str) -> Path:
@@ -73,7 +73,9 @@ def rebuild(spec: dict):
     """从参数字典重建 GaussianHMM 对象（用于在线算后验）。"""
     from hmmlearn.hmm import GaussianHMM
 
-    hmm = GaussianHMM(n_components=int(spec["k"]), covariance_type="full")
+    # 最后一个窗口的文件里没有 k，从 means 推
+    k = int(spec.get("k") or len(np.asarray(spec["means"])))
+    hmm = GaussianHMM(n_components=k, covariance_type="full")
     hmm.means_ = np.asarray(spec["means"], dtype=float)
     hmm.covars_ = np.asarray(spec["covars"], dtype=float)
     hmm.transmat_ = np.asarray(spec["transmat"], dtype=float)

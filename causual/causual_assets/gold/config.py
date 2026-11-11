@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from causual.causual_core import nodes as N
 from causual.causual_core.edge import Edge
-from state_layer.labels.gold import ORDER, VALUES, RegimeLabel
+from state_layer.config.gold import ORDER, VALUES, RegimeLabel
 
 ASSET = "gold"
 TITLE = "黄金因果状态卡"

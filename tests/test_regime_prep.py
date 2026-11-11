@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from state_layer.engine.prep import prep_features
+from state_layer.features.common import prep_features
 
 
 def _toy_features(n: int = 400) -> pd.DataFrame:
@@ -59,15 +59,17 @@ def test_prep_accepts_dict_scaler():
 
 def test_fit_and_recompute_agree():
     """fit 之后用在线路径重算最后一天后验，必须与存储值一致。"""
-    import state_layer.engine as RE
-    import state_layer.engine.serialize as S
-    from state_layer.estimators.hmm import HMMEstimator
+    from state_layer.model.hmm import fit as RE
+    from state_layer.model.hmm import serialize as S
+    from state_layer.model.hmm import _ops as H
 
     feat = _toy_features(600)
     fit = RE.fit_regime(feat, k=3, seed=0)
     labels, proba, last = fit.walk_forward(feat, labeler=lambda m: {i: f"s{i}" for i in range(len(m))},
                                            min_train=200, refit_every=100)
     spec = {**S.to_numpy(last), "fit_id": "x"}
-    est = HMMEstimator()
-    st, p = est._current(feat.loc[: labels[labels != ""].index[-1]], spec)
+    pick = feat.loc[: labels[labels != ""].index[-1]]
+    lo, hi = H.fit_window_bounds(pick)
+    X = prep_features(pick, {"mean": spec["scaler_mean"], "scale": spec["scaler_scale"]}, lo, hi)
+    p = S.rebuild(spec).predict_proba(X)[-1]
     assert np.allclose(p, proba.iloc[-1].to_numpy(), atol=1e-9)

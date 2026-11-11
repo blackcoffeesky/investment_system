@@ -11,7 +11,7 @@ from pathlib import Path
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
-from state_layer import observations
+from state_layer import observations, store
 from state_layer.port import get_port
 from service.registry import Module, register
 
@@ -143,7 +143,7 @@ def index(request: Request, asset: str = "ashare", days: int = 250):
     prof = port.profile(asset, series)
     tl = port.timeline(asset, series, days)
     avail = port.availability(series)
-    cur = port.current(asset)
+    cur = port.current_state(asset)
 
     # 市场状态区块（原卡片 §1 的内容）
     feats = None
@@ -163,9 +163,7 @@ def index(request: Request, asset: str = "ashare", days: int = 250):
     trans = port.transition(asset, feats) if feats is not None else None
     spec = {}
     try:
-        from state_layer import inference as inf
-
-        spec = inf.load_spec(asset)
+        spec = store.load_spec(asset)
     except Exception:  # noqa: BLE001
         pass
 
