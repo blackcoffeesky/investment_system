@@ -55,12 +55,12 @@ def name_states(means: pd.DataFrame, allowed: tuple[str, ...] | list[str] | None
     """按「收益排序切三段 + 组内按波动排序」给状态贴标签。
 
     阈值不再是硬编码的 ±2e-4，而是按状态收益排序切三段
-    （`regime_engine.align.three_way_groups`）：K≥3 时三组都非空，
+    （`state_layer.engine.align.three_way_groups`）：K≥3 时三组都非空，
     K=2 只分低/高两组。波动列自动识别，不硬编码列名。
 
     ``allowed`` 限定可用标签集合：先由全样本模型定词表，再逐窗命名。
     """
-    from regime_engine.align import name_states as _name
+    from state_layer.engine.align import name_states as _name
 
     ok = set(allowed) if allowed else set(VALUES)
 

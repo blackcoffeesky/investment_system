@@ -84,7 +84,7 @@ def test_cards_api_on_temp_dir():
 
 def test_sections_render_daily_vs_macro():
     """narrative 返回 section 列表，调用方按需挑选。"""
-    from causual.causual_core.narrative import Section, render
+    from causual.web.render import Section, render
 
     secs = [
         Section("header", ""),
@@ -113,7 +113,7 @@ def test_sections_render_daily_vs_macro():
 
 
 def test_sections_render_all_when_keep_none():
-    from causual.causual_core.narrative import Section, render
+    from causual.web.render import Section, render
 
     secs = [Section("header", ""), Section("state", "状态"), Section("signal", "信号")]
     secs[0].lines = ["# T"]

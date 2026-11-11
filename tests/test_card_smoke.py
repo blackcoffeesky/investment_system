@@ -26,3 +26,23 @@ def test_card_generation_smoke():
                                                "sane_lists"])
     assert "<table>" in html, "表格没渲染出来"
     assert "<p>|" not in html, "有表格没被解析"
+
+
+def test_state_features_match_prepare():
+    """状态层的特征在"原始面板"和"因果层 prepare 后的面板"上必须一致。
+
+    状态层自带最小派生（VOLUME_Z / MARGIN_CHG / SHIBOR_CHG_BP），
+    和因果层 prepare() 里的公式是两份实现——这条测试防止漂移。
+    """
+    from causual.causual_assets.ashare import pipeline as P
+    from causual.causual_core.cli import _load_series
+    from state_layer.features import build as state_build
+
+    series, meta = _load_series("ashare")
+    raw = P.load_raw(series, meta)
+    prep = P.prepare(raw)
+
+    a = state_build("ashare", raw)
+    b = state_build("ashare", prep)
+    assert a.index.equals(b.index)
+    assert float((a - b).abs().max().max()) < 1e-9

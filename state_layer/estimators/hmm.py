@@ -1,8 +1,8 @@
-"""HMM 估计器：P1 阶段先**包一层** `regime_engine`，不搬内部实现。
+"""HMM 估计器：P1 阶段先**包一层** `state_layer.engine`，不搬内部实现。
 
 为什么先包一层
 --------------
-`regime_engine` 里有几块东西和状态层职责重合（prep 的前处理、extreme 规则、
+`state_layer.engine` 里有几块东西和状态层职责重合（prep 的前处理、extreme 规则、
 align 的命名），但 causual 的边估计还在用它做分组。P1 只做"迁移接口"，
 把搬迁留到 P3——那时因果层不再依赖 regime 分组，才好动。
 
@@ -20,10 +20,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-import regime_engine
-from regime_engine import extreme as X
-from regime_engine.align import make_labeler
-from regime_engine.serialize import make_fit_id, to_numpy
+import state_layer.engine
+from state_layer.engine import extreme as X
+from state_layer.engine.align import make_labeler
+from state_layer.engine.serialize import make_fit_id, to_numpy
 
 
 class HMMEstimator:
@@ -55,13 +55,13 @@ class HMMEstimator:
         k = self.k
         k_table = None
         if k is None:
-            k, k_table = regime_engine.select_k(reg_feat, candidates=self.k_candidates,
+            k, k_table = state_layer.engine.select_k(reg_feat, candidates=self.k_candidates,
                                                 seed=self.seed)
             if verbose:
                 print(k_table.round(4).to_string())
                 print(f"-> K = {k}（候选 {self.k_candidates}）")
 
-        fit = regime_engine.fit_regime(reg_feat, k=k, seed=self.seed)
+        fit = state_layer.engine.fit_regime(reg_feat, k=k, seed=self.seed)
         ref_means = fit.raw_means()
         labeler = make_labeler(ref_means, labeler_factory(ref_means))
         reg_labels, proba, last = fit.walk_forward(
@@ -118,7 +118,7 @@ class HMMEstimator:
         if sub.empty:
             return None
         sub = sub.tail(window)
-        from regime_engine.prep import prep_features
+        from state_layer.engine.prep import prep_features
 
         scaler = {"mean": lw["scaler_mean"], "scale": lw["scaler_scale"]}
         lo = pd.Series(lw["clip_lo"], index=cols)
@@ -132,7 +132,7 @@ class HMMEstimator:
         X_in = self._prep(features, lw, window)
         if X_in is None:
             return None, None
-        hmm = regime_engine.serialize.rebuild({"k": len(lw["means"]), **lw})
+        hmm = state_layer.engine.serialize.rebuild({"k": len(lw["means"]), **lw})
         proba = np.asarray(hmm.predict_proba(X_in)[-1], dtype=float)
         return int(np.argmax(proba)), proba
 

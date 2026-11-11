@@ -57,7 +57,7 @@ def load_last_window(asset: str) -> dict:
     """最后一个窗口的模型参数（P1 仍是 pkl，和 causual 共用）。"""
     import pickle
 
-    p = ROOT / "regime_engine" / "saved_models" / asset / "hmm_last.pkl"
+    p = ROOT / "state_layer" / "engine" / "saved_models" / asset / "hmm_last.pkl"
     if not p.exists():
         raise FileNotFoundError(
             f"缺 {p}；先跑 `python -m causual.causual_core.cli regime --asset {asset}`")
@@ -289,7 +289,7 @@ def fit(asset: str, panel: pd.DataFrame, *, estimator: str = "hmm",
 def save(asset: str, result: dict) -> Path:
     """把拟合结果落盘（P3 起由状态层写）。产物路径保持不变。"""
     import pandas as pd
-    from regime_engine.serialize import save_named, to_numpy
+    from state_layer.engine.serialize import save_named, to_numpy
 
     d = _dir(asset)
     d.mkdir(parents=True, exist_ok=True)

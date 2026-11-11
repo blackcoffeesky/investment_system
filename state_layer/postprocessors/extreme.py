@@ -6,14 +6,14 @@ inference 是标准流程（特征 → 估计 → 输出），对任何模型都
 极端规则是**可选的覆盖层**，和 HMM 没有理论关系。放在这里，
 将来换 HSMM / Student-t 也能直接复用，不用改 inference。
 
-现在只是包一层 `regime_engine.extreme`；P3 可以把实现搬进来。
+现在只是包一层 `state_layer.engine.extreme`；P3 可以把实现搬进来。
 """
 
 from __future__ import annotations
 
 import pandas as pd
 
-from regime_engine import extreme as X
+from state_layer.engine import extreme as X
 
 
 def classify(features: pd.DataFrame, params: X.ExtremeParams | None) -> pd.Series:

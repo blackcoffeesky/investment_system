@@ -8,13 +8,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-import regime_engine
+import state_layer.engine
 from causual.causual_core import snapshot
 from causual.causual_core.estimators import EdgeModel, fit_all
-from causual.causual_core.narrative import build_card, build_console
+from causual.web.render import build_card, build_console
 from causual.causual_core.signal_layer import build_bundle
 from causual.causual_assets.ashare import config as C
-from causual.causual_assets.ashare import label as L
+from state_layer.labels import ashare as L
 
 def _required_tables() -> tuple[str, ...]:
     """面板用到的表清单——从映射本身推导，避免手写漏表。"""
@@ -174,7 +174,7 @@ def _extend_labels(df: pd.DataFrame, spec: dict, labels: pd.Series) -> pd.Series
     """把标签外推到最新交易日——**委托状态层做**。
 
     P2 起外推逻辑归 `state_layer`（它管模型和窗口），这里只负责
-    把特征矩阵递过去。因果层不再 import regime_engine 的推断部分。
+    把特征矩阵递过去。因果层不再 import state_layer.engine 的推断部分。
     """
     from state_layer.port import get_port
 
@@ -418,7 +418,7 @@ def make_card(df: pd.DataFrame, spec: dict, models: dict, when: pd.Timestamp,
 
 
 def make_detail_card(df: pd.DataFrame, spec: dict, models: dict, when: pd.Timestamp) -> list:
-    from causual.causual_core.narrative import build_detail_card
+    from causual.web.render import build_detail_card
 
     bundle = build_bundle(
         df, models, EDGES, label_col=LABEL_COL,

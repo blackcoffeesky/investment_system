@@ -3,7 +3,7 @@
     python -m state_layer.cli regime --asset ashare [--k 3] [--seed 42]
 
 **这是状态层唯一的写入入口**。产物仍写到 `causual/data/regime/{asset}/`
-与 `regime_engine/saved_models/{asset}/`（路径不变，减少迁移风险），
+与 `state_layer.engine/saved_models/{asset}/`（路径不变，减少迁移风险），
 但写的人从此是状态层。
 """
 
@@ -48,9 +48,10 @@ def cmd_regime(args) -> int:
     series, meta = _load_series(args.asset, provider_mod)
 
     # 标签词汇表在资产包里（label 模块），状态层只是使用者
-    label_mod = importlib.import_module(f"causual.causual_assets.{args.asset}.label")
+    label_mod = importlib.import_module(f"state_layer.labels.{args.asset}")
 
-    panel = prepare(provider_mod.load_raw(series, meta))
+    # 状态层拿到的是**原始宽表**，派生列由 features 自己算
+    panel = provider_mod.load_raw(series, meta)
     res = inference.fit(args.asset, panel, label_module=label_mod,
                         verbose=True)
     if args.k is not None:

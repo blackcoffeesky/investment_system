@@ -21,7 +21,7 @@ import pandas as pd
 
 from causual.causual_assets import load as load_asset
 from causual.causual_core import snapshot
-from causual.causual_core.narrative import build_console
+from causual.web.render import build_console
 from causual.causual_core.signal_layer import build_bundle
 
 OUT = Path("causual/output")
@@ -69,7 +69,7 @@ def run(
     if str(df.loc[when, pkg.LABEL_COL]) == "":
         raise CardRejected(
             f"{asset} 在 {when.date()} 没有状态标签——多半是 "
-            "regime_engine/saved_models/ 下的 hmm_last.pkl 缺失或与状态模型不一致；"
+            "state_layer/engine/saved_models/ 下的 hmm_last.pkl 缺失或与状态模型不一致；"
             f"先跑 `python -m causual.causual_core.cli regime --asset {asset}`")
 
     from causual.causual_core import freshness
@@ -114,7 +114,7 @@ def run(
     full_macro = pkg.make_card(df, spec, models, when, data_notes=macro_notes,
                                state_line=state_line)
 
-    from causual.causual_core import narrative
+    from causual.web import render as narrative
 
     d = when.date()
     cards = Path(out_dir) / asset / "cards" / f"{d:%Y}" / f"{d:%m}"

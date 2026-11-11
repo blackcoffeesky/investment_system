@@ -14,7 +14,7 @@ from __future__ import annotations
 from causual.causual_core import nodes as N
 from causual.causual_core.edge import Edge
 from causual.causual_core.nodes import Node
-from causual.causual_assets.ashare.label import ORDER, RegimeLabel, VALUES
+from state_layer.labels.ashare import ORDER, RegimeLabel, VALUES
 
 # 资产专用节点的传输特性：决定估计器（slow → 分布滞后，fast → 当期 DML）
 LOCAL_NODES: dict[str, Node] = {

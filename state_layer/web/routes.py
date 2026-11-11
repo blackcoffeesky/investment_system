@@ -155,8 +155,7 @@ def index(request: Request, asset: str = "ashare", days: int = 250):
 
         provider_mod, prepare = _panel_provider(asset)
         series_raw, meta = _load_series(asset, provider_mod)
-        panel = prepare(provider_mod.load_raw(series_raw, meta))
-        feats = feat_mod.build(asset, panel)
+        feats = feat_mod.build(asset, provider_mod.load_raw(series_raw, meta))
         cur = port.current_state(asset, feats)
     except Exception as e:  # noqa: BLE001
         print(f"[state] 现算后验失败：{type(e).__name__}: {e}")

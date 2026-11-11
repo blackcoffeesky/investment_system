@@ -17,8 +17,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-ROOT = Path(__file__).resolve().parents[1]
-MODEL_DIR = ROOT / "regime_engine/saved_models"
+ROOT = Path(__file__).resolve().parents[1]      # state_layer/
+MODEL_DIR = ROOT / "engine" / "saved_models"
 
 
 def model_path(asset: str) -> Path:

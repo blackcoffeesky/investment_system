@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from regime_engine.prep import prep_features
+from state_layer.engine.prep import prep_features
 
 
 def _toy_features(n: int = 400) -> pd.DataFrame:
@@ -59,8 +59,8 @@ def test_prep_accepts_dict_scaler():
 
 def test_fit_and_recompute_agree():
     """fit 之后用在线路径重算最后一天后验，必须与存储值一致。"""
-    import regime_engine as RE
-    import regime_engine.serialize as S
+    import state_layer.engine as RE
+    import state_layer.engine.serialize as S
     from state_layer.estimators.hmm import HMMEstimator
 
     feat = _toy_features(600)

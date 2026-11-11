@@ -1,4 +1,4 @@
-"""regime_engine 的唯一入口：``fit_regime``。
+"""state_layer.engine 的唯一入口：``fit_regime``。
 
 引擎不知道任何资产的语义——它只负责"把特征序列切成隐状态"，
 以及"逐日因果地给出状态"（walk-forward）。把状态翻译成资产自己的标签，
@@ -13,7 +13,7 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
-from regime_engine import bhattacharyya, hmm as H, select as S, serialize
+from state_layer.engine import bhattacharyya, hmm as H, select as S, serialize
 
 
 Labeler = Callable[[pd.DataFrame], dict[int, object]]
@@ -93,7 +93,7 @@ class RegimeFit:
                 hist = feat.loc[:cutoff].dropna()
                 lo, hi = H.fit_window_bounds(hist)
                 scaler = H.make_scaler(H.clip_frame(hist, lo, hi))
-                from regime_engine.prep import prep_features
+                from state_layer.engine.prep import prep_features
 
                 Xtr = prep_features(hist, scaler, lo, hi)
                 model = H.fit(Xtr, self.k, seed=self.seed)
@@ -141,7 +141,7 @@ def fit_regime(
 
     lo, hi = H.fit_window_bounds(feat)
     scaler = H.make_scaler(H.clip_frame(feat, lo, hi))
-    from regime_engine.prep import prep_features
+    from state_layer.engine.prep import prep_features
 
     X = prep_features(feat, scaler, lo, hi)
 

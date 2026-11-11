@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from regime_engine.extreme import ExtremeParams
+from state_layer.engine.extreme import ExtremeParams
 
 ASSET = "gold"
 TITLE = "国内黄金"
@@ -41,4 +41,4 @@ LABEL_NAME = {
 
 # 面板构造函数（点号路径，运行时动态导入）。
 # 状态层只声明"我需要一个面板"，具体怎么把原始表拼成面板是资产包的事。
-PANEL_PROVIDER = "causual.causual_assets.gold.pipeline:prepare"
+PANEL_PROVIDER = "causual.causual_assets.gold.pipeline:load_raw"

@@ -30,7 +30,7 @@ ORDER: tuple[RegimeLabel, ...] = (
     RegimeLabel.DISTRIBUTION,
 )
 
-# 常规 HMM 只产出这四个；极端日由 regime_engine.extreme 的规则给出 EXTREME_*
+# 常规 HMM 只产出这四个；极端日由 state_layer.engine.extreme 的规则给出 EXTREME_*
 REGULAR: tuple[str, ...] = tuple(l.value for l in ORDER)
 
 NAME = {
@@ -67,9 +67,9 @@ def name_states(means: pd.DataFrame, allowed: tuple[str, ...] | list[str] | None
     """按「收益排序切三段 + 组内按波动排序」命名。
 
     阈值不再是硬编码的 ±2e-4，而是**按状态收益排序切三段**（见
-    `regime_engine.align.three_way_groups`）；波动列也自动识别（A 股是 20 日）。
+    `state_layer.engine.align.three_way_groups`）；波动列也自动识别（A 股是 20 日）。
     """
-    from regime_engine.align import name_states as _name
+    from state_layer.engine.align import name_states as _name
 
     ok = set(allowed) if allowed else set(VALUES)
 
