@@ -88,6 +88,13 @@ def _ensure_meta(con: sqlite3.Connection) -> int:
         "SELECT name FROM sqlite_master WHERE type='table' "
         "AND name NOT IN ('metadata','missing','sqlite_sequence')"
         " AND name NOT LIKE 'ops_%' AND name NOT LIKE 'sqlite_%'")]
+    # 先纠正**已有表**的 market / lag：发布滞后和市场归属会变，
+    # 但这段逻辑以前只在新表分支里跑，老表永远修不到（周末被当缺口的根因）。
+    for name, (freq, market, lag) in FREQ_HINT.items():
+        if name in have:
+            con.execute("UPDATE metadata SET lag_days=?, market=?, freq=?"
+                        " WHERE name=?", (lag, market, freq, name))
+
     n = 0
     for name in names:
         if name in have:
@@ -95,10 +102,6 @@ def _ensure_meta(con: sqlite3.Connection) -> int:
         cols = [r[1] for r in con.execute(f'PRAGMA table_info("{name}")')]
         kind = "single" if cols == ["date", "value"] else "multi"
         freq, market, lag = FREQ_HINT.get(name, ("D", "NONE", 0))
-        # 已存在的表也纠正 lag_days（发布滞后会变，别让旧值一直留着）
-        if name in FREQ_HINT:
-            con.execute("UPDATE metadata SET lag_days=?, market=? WHERE name=?",
-                        (lag, market, name))
         con.execute(
             "INSERT OR IGNORE INTO metadata(name, display, freq, unit, start_date,"
             " end_date, n_rows, note, kind, columns, market, lag_days)"

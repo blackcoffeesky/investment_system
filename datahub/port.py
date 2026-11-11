@@ -73,7 +73,7 @@ class DataPort:
     def check(self) -> pd.DataFrame:
         import datahub.fin as fin
 
-        return fin.check()
+        return fin.run_check()
 
     def missing(self) -> pd.DataFrame:
         import datahub.fin as fin

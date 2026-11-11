@@ -7,7 +7,7 @@
     db.read("csi_all", column="close") # multi  → Series
     db.read_many(["vix", "usdcny"])    # 多个 single → DataFrame
     db.metadata()                      # 元数据（含 kind / columns）
-    db.check()                         # 完整性检查
+    db.run_check()                     # 完整性检查
 """
 
 from __future__ import annotations
@@ -95,18 +95,3 @@ def read_many(names: list[str], start: str | None = None,
             cols[n] = s
     return pd.DataFrame(cols).sort_index() if cols else pd.DataFrame()
 
-
-# ---
-# check() 移到 datahub/check.py（需要交易日历），这里做转发
-def check(path: Path | None = None) -> pd.DataFrame:
-    """完整性检查：用交易日历排除正常休市，只报真异常。"""
-    from datahub.fin.check import run as _run
-
-    return _run(path)
-
-
-def missing(path: Path | None = None) -> pd.DataFrame:
-    """已人工确认的正常缺口（`missing` 表；没有缺口时是空的）。"""
-    from datahub.fin.check import missing_table
-
-    return missing_table(path)
