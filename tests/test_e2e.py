@@ -224,16 +224,6 @@ def test_state_contract_fields():
     assert cur["label"] in cur["model"].get("features", []) or isinstance(cur["label"], str)
 
 
-def test_state_layer_config_matches_causual():
-    """P1 期间两边配置是副本，必须一致（P3 删掉 causual 那份后此测试失效）。"""
-    import causual.causual_assets.ashare.pipeline as ap
-    import causual.causual_assets.gold.pipeline as gp
-    from state_layer.config import ashare, gold
-
-    assert list(ap.FEATURES) == list(ashare.FEATURES)
-    assert list(gp.FEATURES) == list(gold.FEATURES)
-    assert ashare.EXTREME_PARAMS.sigma == ap.C.EXTREME_PARAMS.sigma
-
 
 def test_state_extend_fills_gap():
     """外推：给一段带空标签的序列，断档期应被填上，且不动已有标签。"""

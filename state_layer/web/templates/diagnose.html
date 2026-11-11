@@ -9,7 +9,30 @@
   <span class="muted">状态模型拟合于 {{ current.fit_date or '—' }}（K={{ current.k or '?' }}）</span>
 </div>
 
-<h2 style="margin-top:0">时间轴（近 {{ days }} 个交易日）</h2>
+<h2 style="margin-top:0">市场状态</h2>
+<table style="border-collapse:collapse;width:100%;font-size:14px;margin-bottom:10px">
+  <tr><th align="left">项目</th><th align="left">数值</th></tr>
+  <tr><td>当前状态</td><td>
+    <strong>{{ current.label_name or current.label or '—' }}</strong>
+    {% if current.confidence %}<span class="muted">（后验 {{ '%.0f%%' | format(current.confidence * 100) }}）</span>{% endif %}
+  </td></tr>
+  {% if spec %}
+  <tr><td>模型</td><td class="muted">
+    K={{ spec.k }} · 拟合 {{ spec.fit_date }} · 签名 <code>{{ spec.label_signature }}</code>
+  </td></tr>
+  {% endif %}
+  {% if transition %}
+  <tr><td>状态黏性</td><td>
+    {{ '%.0f%%' | format(transition.stay_prob * 100) }} 概率留在当前状态，
+    平均停留 {{ '%.1f' | format(transition.duration or 0) }} 个交易日
+    {% if transition.p_next %}
+      <div class="muted">若离开，最可能转向：{% for lab, p in transition.p_next %}{{ lab }} {{ '%.0f%%' | format(p * 100) }}{% if not loop.last %}、{% endif %}{% endfor %}</div>
+    {% endif %}
+  </td></tr>
+  {% endif %}
+</table>
+
+<h2>时间轴（近 {{ days }} 个交易日）</h2>
 <div class="card-body">{{ svg | safe }}</div>
 <p class="muted">上：收盘价 + 状态色带；中：成交额；下：涨跌家数比（绿线）。悬停可看当天数值。</p>
 

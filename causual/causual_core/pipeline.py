@@ -85,8 +85,34 @@ def run(
     if stale_m:
         macro_notes.append(freshness.summary(stale_m, limit=5))
 
-    full = pkg.make_card(df, spec, models, when, data_notes=data_notes)
-    full_macro = pkg.make_card(df, spec, models, when, data_notes=macro_notes)
+    # 市场状态归状态层：卡片只留一行提示，§1 的表格在 /state 页面
+    def _state_features(pkg, frame):
+        from state_layer.features import build
+
+        return build(pkg.C.ASSET, frame)
+
+    state_line = None
+    try:
+        from state_layer.port import get_port as _state_port
+
+        sp = _state_port()
+        feats = _state_features(pkg, df)
+        cur = sp.current_state(asset, feats)
+        tr = sp.transition(asset, feats)
+        bits = [str(cur.get("label_name") or cur.get("label") or "—")]
+        conf = cur.get("confidence")
+        if conf:
+            bits.append(f"后验 {float(conf):.0%}")
+        if tr and tr.get("duration"):
+            bits.append(f"平均停留 {float(tr['duration']):.0f} 天")
+        state_line = " · ".join(bits) + "（详见 /state）"
+    except Exception as e:  # noqa: BLE001
+        print(f"[state] 状态行生成失败：{type(e).__name__}: {e}")
+
+    full = pkg.make_card(df, spec, models, when, data_notes=data_notes,
+                         state_line=state_line)
+    full_macro = pkg.make_card(df, spec, models, when, data_notes=macro_notes,
+                               state_line=state_line)
 
     from causual.causual_core import narrative
 
@@ -95,7 +121,7 @@ def run(
     cards.mkdir(parents=True, exist_ok=True)
 
     # 日频卡：市场状态 + 信号层归因
-    card = narrative.render(full, keep=("state", "signal"))
+    card = narrative.render(full, keep=("signal",))
     path = cards / f"card_{d}.md"
     path.write_text(card, encoding="utf-8")
     _write_fingerprint(meta, path, when, kind="card")
@@ -117,7 +143,7 @@ def run(
         detail_sections = pkg.make_detail_card(df, spec, models, when)
         detail = narrative.render(
             detail_sections,
-            keep=("model", "edges", "betas", "lags", "contrib", "freshness"))
+            keep=("edges", "betas", "lags", "contrib", "freshness"))
         detail_path = cards / f"detail_{d}.md"
         detail_path.write_text(detail, encoding="utf-8")
         _write_fingerprint(meta, detail_path, when, kind="detail")

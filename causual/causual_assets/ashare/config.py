@@ -32,16 +32,7 @@ ASSET = "ashare"
 TITLE = "中证全指因果状态卡"
 TARGET = "CSI_ALL"
 
-from regime_engine.extreme import ExtremeParams
 
-# 极端行情判定（资产级覆盖）。abs_cap 是兜底上限：分位在样本极少时会失效。
-EXTREME_PARAMS = ExtremeParams(
-    ret_col="log_return",
-    vol_col="realized_vol_20",
-    sigma=3.0,
-    pct=0.99,
-    exit_days=1,
-)
 
 ALL = tuple(l.value for l in ORDER)
 # 极端日不走常规 regime（regime_valid=False）

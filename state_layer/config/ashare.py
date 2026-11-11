@@ -48,3 +48,7 @@ LABEL_NAME = {
     "extreme_down": "极端下行",
     "extreme_vol": "极端波动",
 }
+
+# 面板构造函数（点号路径，运行时动态导入）。
+# 状态层只声明"我需要一个面板"，具体怎么把原始表拼成面板是资产包的事。
+PANEL_PROVIDER = "causual.causual_assets.ashare.pipeline:prepare"

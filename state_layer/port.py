@@ -36,9 +36,12 @@ class StatePort:
         """把标签外推到最新一天（给定特征矩阵）。因果层在 P2 用它。"""
         return inference.extend(asset, features, labels)
 
-    def current_state(self, asset: str = "ashare") -> dict:
+    def transition(self, asset: str, features=None) -> dict | None:
+        return inference.transition(asset, features)
+
+    def current_state(self, asset: str = "ashare", features=None) -> dict:
         """单点输出，含 model.version 与 state_probabilities。"""
-        return inference.current(asset)
+        return inference.current(asset, features)
 
     def current(self, asset: str = "ashare") -> dict:
         return stats.current(asset)

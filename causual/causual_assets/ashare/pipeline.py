@@ -25,6 +25,13 @@ def _required_tables() -> tuple[str, ...]:
     return tuple(sorted(tables | set(getattr(C, "EXTRA_TABLES", ()))))
 
 
+def _state_features(df: pd.DataFrame) -> pd.DataFrame:
+    """状态特征：P3 起由状态层提供（因果层只消费标签）。"""
+    from state_layer.features import build
+
+    return build(C.ASSET, df)
+
+
 REQUIRED_TABLES = _required_tables()
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -46,9 +53,6 @@ SOURCE_COL = C.SOURCE_COL
 SIGNAL_LAG = 0
 
 # 8 维：limit_ratio 因涨停池无历史而移除（PROBLEM P20）
-FEATURES = ["log_return", "realized_vol_20", "volume_z", "up_day_ratio",
-            "size_mom", "margin_chg_z", "rv_ratio", "shibor_chg_z",
-            "etf_dispersion"]
 
 
 def prepare(df: pd.DataFrame) -> pd.DataFrame:
@@ -130,23 +134,6 @@ def _payout_series(idx: pd.DatetimeIndex) -> pd.Series:
     return pd.Series([m.get(int(y) - 1, np.nan) for y in idx.year], index=idx)
 
 
-def build_features(df: pd.DataFrame) -> pd.DataFrame:
-    out = pd.DataFrame(index=df.index)
-    ret = df["CLOSE"].pct_change()
-    out["log_return"] = np.log1p(ret)
-    out["realized_vol_20"] = ret.rolling(20).std()
-    out["volume_z"] = df["VOLUME_Z"]
-    out["up_day_ratio"] = (ret > 0).astype(float).rolling(20).mean()
-    out["size_mom"] = (df["CSI1000"] / df["CSI300"]).pct_change(20) if "CSI1000" in df else np.nan
-    out["margin_chg_z"] = df["MARGIN_CHG"].rolling(60, min_periods=20).apply(
-        lambda x: (x.iloc[-1] - x.mean()) / x.std() if x.std() > 0 else np.nan, raw=False)
-    out["rv_ratio"] = ret.rolling(5).std() / ret.rolling(20).std()
-    out["shibor_chg_z"] = df["SHIBOR_CHG_BP"].rolling(60, min_periods=20).apply(
-        lambda x: (x.iloc[-1] - x.mean()) / x.std() if x.std() > 0 else np.nan, raw=False)
-    out["etf_dispersion"] = df.get("ETF_DISPERSION", pd.Series(np.nan, index=df.index))
-    return out[FEATURES]
-
-
 def load_raw(series, meta=None) -> pd.DataFrame:
     """面板 = 由调用方传入的原始表拼出来的日频宽表（见 `panel.py`）。"""
     from causual.causual_assets.ashare import panel as _panel
@@ -172,35 +159,6 @@ def load_labels() -> pd.Series:
     return pd.read_csv(p, index_col=0, parse_dates=True).iloc[:, 0].astype(str)
 
 
-def fit_regime(df: pd.DataFrame, k: int | None = None, seed: int = 42, verbose: bool = True) -> dict:
-    """极端规则 + 常规 HMM 两层装配（共用 causual_core/regime_pipeline.py）。"""
-    from causual.causual_core.regime_fit import fit_asset
-
-    return fit_asset(
-        df, build_features(df),
-        labeler_factory=L.name_states,
-        name_by_value={**L.NAME_BY_VALUE, **getattr(L, "EXTREME_NAMES", {})},
-        signature_fn=L.signature,
-        asset=C.ASSET,
-        extreme_params=C.EXTREME_PARAMS,
-        k=k, seed=seed, verbose=verbose,
-    )
-
-
-def save_regime(result: dict) -> Path:
-    REGIME_DIR.mkdir(parents=True, exist_ok=True)
-    p = _spec_path()
-    p.write_text(json.dumps(result["spec"], ensure_ascii=False, indent=2), encoding="utf-8")
-    result["labels"].rename("label").to_frame().to_csv(REGIME_DIR / "labels.csv", encoding="utf-8-sig")
-    result["fit"].save(C.ASSET)
-    from regime_engine.serialize import save_named, to_numpy
-
-    if result.get("last"):
-        save_named({**to_numpy(result["last"]), "fit_id": result["spec"]["fit_id"]},
-                   C.ASSET, "hmm_last.pkl")
-    return p
-
-
 def build_panel(asof: str | None = None, series=None, meta=None) -> tuple[pd.DataFrame, dict]:
     df = prepare(load_raw(series, meta))
     spec = load_spec()
@@ -220,7 +178,7 @@ def _extend_labels(df: pd.DataFrame, spec: dict, labels: pd.Series) -> pd.Series
     """
     from state_layer.port import get_port
 
-    feat = build_features(df)
+    feat = _state_features(df)
     try:
         return get_port().extend(C.ASSET, feat, labels)
     except Exception as e:  # noqa: BLE001
@@ -346,28 +304,6 @@ def validate_insider(df: pd.DataFrame, seed: int = 42, n_seg: int = 4) -> pd.Dat
     return out
 
 
-def transition_info(df: pd.DataFrame, spec: dict, cur_label: str | None = None) -> dict | None:
-    """今日后验 × 转移矩阵 → 状态黏性 / 切换预警（当前状态锚定卡片标签）。"""
-    from causual.causual_core.regime_infer import current, transition_view
-    from regime_engine.serialize import load_named
-
-    try:
-        lw = load_named(C.ASSET, "hmm_last.pkl")
-    except FileNotFoundError:
-        return None
-    if lw.get("fit_id") != spec.get("fit_id"):
-        print("[warn] hmm_last.pkl 与 spec 的 fit_id 不一致，跳过状态预览")
-        return None
-
-    _, p = current(build_features(df), lw)
-    if p is None:
-        return None
-
-    labels = {int(k): str(v) for k, v in lw["state_labels"].items()}
-    cur_sid = next((sid for sid, lab in labels.items() if lab == cur_label), None)
-    return transition_view(lw, p, cur_sid)
-
-
 def supply_items(df: pd.DataFrame) -> list[dict]:
     """供需层：**位置（历史分位）× 边际（在变好还是变差）**。
 
@@ -456,7 +392,8 @@ def supply_detail_items(df: pd.DataFrame) -> list[dict]:
 
 
 def make_card(df: pd.DataFrame, spec: dict, models: dict, when: pd.Timestamp,
-              data_notes: list[str] | None = None) -> list:
+              data_notes: list[str] | None = None,
+              state_line: str | None = None) -> list:
     from causual.causual_core.macro_layer import structural_state, describe_series  # noqa: F401
 
     bundle = build_bundle(
@@ -473,10 +410,10 @@ def make_card(df: pd.DataFrame, spec: dict, models: dict, when: pd.Timestamp,
         target_cols=TARGET_COLS,
         separation={"min_dist": spec.get("min_bhattacharyya", 0.0),
                     "passed": spec.get("min_bhattacharyya", 0.0) >= 0.4},
-        transition=transition_info(df.loc[:when], spec, str(df.loc[when, LABEL_COL])),
         structural=structural_state(asof=when),
         supply=supply_items(df),
         data_notes=data_notes,
+        state_line=state_line,
     )
 
 

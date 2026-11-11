@@ -26,6 +26,13 @@ def _required_tables() -> tuple[str, ...]:
     return tuple(sorted(tables | set(getattr(C, "EXTRA_TABLES", ()))))
 
 
+def _state_features(df: pd.DataFrame) -> pd.DataFrame:
+    """状态特征：P3 起由状态层提供（因果层只消费标签）。"""
+    from state_layer.features import build
+
+    return build(C.ASSET, df)
+
+
 REQUIRED_TABLES = _required_tables()
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -45,9 +52,6 @@ TREATMENT_COL = C.TREATMENT_COL
 SOURCE_COL = C.SOURCE_COL
 SIGNAL_LAG = 1
 
-FEATURES = ["log_return", "realized_vol_5d", "range_pct", "vol_z",
-            "usdcny_vol_5d", "vix_level", "mom_20", "rv_ratio", "gap"]
-
 
 # ------------------------------------------------------------------ 数据
 def prepare(df: pd.DataFrame) -> pd.DataFrame:
@@ -66,23 +70,6 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
     oi = df["OPEN_INTEREST"].replace(0, np.nan)
     df["OI_CHG_PCT"] = (oi.pct_change() * 100.0).clip(-50, 50)
     return df
-
-
-def build_features(df: pd.DataFrame) -> pd.DataFrame:
-    """状态识别用的 9 维特征（与 A 股完全不同，所以各自实现）。"""
-    out = pd.DataFrame(index=df.index)
-    ret = df["CLOSE"].pct_change()
-    out["log_return"] = np.log1p(ret)
-    out["realized_vol_5d"] = ret.rolling(5).std()
-    out["range_pct"] = (df["HIGH"] - df["LOW"]) / df["CLOSE"].replace(0, np.nan)
-    vol = out["realized_vol_5d"]
-    out["vol_z"] = (vol - vol.rolling(60, min_periods=20).mean()) / vol.rolling(60, min_periods=20).std()
-    out["usdcny_vol_5d"] = df["USDCNY"].pct_change().rolling(5).std()
-    out["vix_level"] = df["VIX"] / 100.0
-    out["mom_20"] = df["CLOSE"] / df["CLOSE"].shift(20) - 1.0
-    out["rv_ratio"] = ret.rolling(5).std() / ret.rolling(20).std()
-    out["gap"] = df["OPEN"] / df["CLOSE"].shift(1) - 1.0
-    return out[FEATURES]
 
 
 def load_raw(series, meta=None) -> pd.DataFrame:
@@ -112,40 +99,6 @@ def load_labels() -> pd.Series:
     return s.astype(str)
 
 
-def fit_regime(df: pd.DataFrame, k: int | None = None, seed: int = 42, verbose: bool = True) -> dict:
-    """极端规则 + 常规 HMM 两层装配（共用 causual_core/regime_pipeline.py）。"""
-    from causual.causual_core.regime_fit import fit_asset
-
-    return fit_asset(
-        df, build_features(df),
-        labeler_factory=L.name_states,
-        name_by_value={**L.NAME_BY_VALUE, **getattr(L, "EXTREME_NAMES", {})},
-        signature_fn=L.signature,
-        asset=C.ASSET,
-        extreme_params=C.EXTREME_PARAMS,
-        k=k, seed=seed, verbose=verbose,
-    )
-
-
-
-def save_regime(result: dict) -> Path:
-    REGIME_DIR.mkdir(parents=True, exist_ok=True)
-    p = _spec_path()
-    p.write_text(json.dumps(result["spec"], ensure_ascii=False, indent=2), encoding="utf-8")
-    result["labels"].rename("label").to_frame().to_csv(REGIME_DIR / "labels.csv", encoding="utf-8-sig")
-    # HMM 参数按资产隔离保存（纯 dict，不存对象）
-    result["fit"].save(C.ASSET)
-    # 最后一个 walk-forward 窗口的模型：放在**模型库**而不是 spec，
-    # 两者生命周期不同；用 fit_id 保证一定对得上。
-    from regime_engine.serialize import save_named, to_numpy
-
-    if result.get("last"):
-        save_named({**to_numpy(result["last"]), "fit_id": result["spec"]["fit_id"]},
-                   C.ASSET, "hmm_last.pkl")
-    return p
-
-
-# ------------------------------------------------------------------ 组装
 def build_panel(asof: str | None = None, series=None, meta=None) -> tuple[pd.DataFrame, dict]:
     df = prepare(load_raw(series, meta))
     spec = load_spec()
@@ -165,7 +118,7 @@ def _extend_labels(df: pd.DataFrame, spec: dict, labels: pd.Series) -> pd.Series
     """
     from state_layer.port import get_port
 
-    feat = build_features(df)
+    feat = _state_features(df)
     try:
         return get_port().extend(C.ASSET, feat, labels)
     except Exception as e:  # noqa: BLE001
@@ -198,36 +151,9 @@ def fit_edges(df: pd.DataFrame, spec: dict, seed: int = 42, verbose: bool = True
     return {"models": models, "path": path}
 
 
-def transition_info(df: pd.DataFrame, spec: dict, cur_label: str | None = None) -> dict | None:
-    """今日后验 × 转移矩阵 → 状态黏性 / 切换预警。
-
-    当前状态**锚定到卡片上显示的那个标签**（而不是再推一次 Viterbi 状态）：
-    Viterbi 路径与后验 argmax 本来就可能不同，锚定标签能保证"当前状态"和
-    "留在哪个状态"两句话说的是同一个东西。
-    """
-    from causual.causual_core.regime_infer import current, transition_view
-    from regime_engine.serialize import load_named
-
-    try:
-        lw = load_named(C.ASSET, "hmm_last.pkl")
-    except FileNotFoundError:
-        return None
-    # 漂移保护：模型文件的 fit_id 必须和当前 spec 一致
-    if lw.get("fit_id") != spec.get("fit_id"):
-        print(f"[warn] hmm_last.pkl 与 spec 的 fit_id 不一致，跳过状态预览")
-        return None
-
-    _, p = current(build_features(df), lw)
-    if p is None:
-        return None
-
-    labels = {int(k): str(v) for k, v in lw["state_labels"].items()}
-    cur_sid = next((sid for sid, lab in labels.items() if lab == cur_label), None)
-    return transition_view(lw, p, cur_sid)
-
-
 def make_card(df: pd.DataFrame, spec: dict, models: dict, when: pd.Timestamp,
-              data_notes: list[str] | None = None) -> list:
+              data_notes: list[str] | None = None,
+              state_line: str | None = None) -> list:
     bundle = build_bundle(
         df, models, EDGES, label_col=LABEL_COL,
         treatment_col=TREATMENT_COL, target=C.TARGET, signal_lag=SIGNAL_LAG,
@@ -242,10 +168,10 @@ def make_card(df: pd.DataFrame, spec: dict, models: dict, when: pd.Timestamp,
         target_cols=TARGET_COLS,
         separation={"min_dist": spec.get("min_bhattacharyya", 0.0),
                     "passed": spec.get("min_bhattacharyya", 0.0) >= 0.4},
-        transition=transition_info(df.loc[:when], spec, str(df.loc[when, LABEL_COL])),
         structural=None,          # 黄金不做结构层（制度/政策不适用）
         supply=supply_items(df),
         data_notes=data_notes,
+        state_line=state_line,
     )
 
 

@@ -14,16 +14,6 @@ ASSET = "gold"
 TITLE = "黄金因果状态卡"
 TARGET = "GOLD_CNY"
 
-# 极端行情的判定参数（资产级覆盖；默认值见 regime_engine.extreme.ExtremeParams）
-from regime_engine.extreme import ExtremeParams
-
-EXTREME_PARAMS = ExtremeParams(
-    ret_col="log_return",
-    vol_col="realized_vol_5d",
-    sigma=3.0,
-#     abs_cap=0.02,          # 黄金单日 ±2% 已是极端
-)
-
 ALL = tuple(l.value for l in ORDER)
 # 极端日不走常规 regime（regime_valid=False），所以这里只有四个常规标签。
 # 原“只在 stress 有效”的 GEO/VIX 两条边改为全常规有效——stress 已交给极端规则。

@@ -145,10 +145,36 @@ def index(request: Request, asset: str = "ashare", days: int = 250):
     avail = port.availability(series)
     cur = port.current(asset)
 
+    # 市场状态区块（原卡片 §1 的内容）
+    feats = None
+    try:
+        from state_layer import features as feat_mod
+
+        provider_mod, prepare = None, None
+        from state_layer.cli import _load_series, _panel_provider
+
+        provider_mod, prepare = _panel_provider(asset)
+        series_raw, meta = _load_series(asset, provider_mod)
+        panel = prepare(provider_mod.load_raw(series_raw, meta))
+        feats = feat_mod.build(asset, panel)
+        cur = port.current_state(asset, feats)
+    except Exception as e:  # noqa: BLE001
+        print(f"[state] 现算后验失败：{type(e).__name__}: {e}")
+
+    trans = port.transition(asset, feats) if feats is not None else None
+    spec = {}
+    try:
+        from state_layer import inference as inf
+
+        spec = inf.load_spec(asset)
+    except Exception:  # noqa: BLE001
+        pass
+
     return _tpl(request).TemplateResponse(
         request, "diagnose.html",
         {"asset": asset, "profile": prof, "svg": _svg(tl), "avail": avail,
-         "current": cur, "groups": observations.GROUPS,
+         "current": cur, "spec": spec, "transition": trans,
+         "groups": observations.GROUPS,
          "excluded": observations.EXCLUDED_TABLES, "days": days})
 
 

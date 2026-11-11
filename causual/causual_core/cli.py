@@ -19,14 +19,17 @@ from causual.causual_assets import load as load_asset
 
 
 def cmd_regime(args) -> int:
-    pkg = load_asset(args.asset)
-    df = pkg.prepare(pkg.load_raw())
-    res = pkg.fit_regime(df, k=args.k, seed=args.seed, verbose=True)
-    p = pkg.save_regime(res)
-    spec = res["spec"]
-    print(f"\n状态模型 -> {p}")
-    print(f"  K={spec['k']}  签名={spec['label_signature']}  用到标签={spec['used_labels']}")
-    return 0
+    """已迁移到状态层：`python -m state_layer.cli regime --asset X`。
+
+    这里保留转发只是为了不打断旧脚本/书签。
+    """
+    from state_layer.cli import main as state_main
+
+    print("[提示] regime 拟合已归状态层：python -m state_layer.cli regime")
+    argv = ["regime", "--asset", args.asset, "--seed", str(args.seed)]
+    if args.k is not None:
+        argv += ["--k", str(args.k)]
+    return state_main(argv)
 
 
 def cmd_edges(args) -> int:

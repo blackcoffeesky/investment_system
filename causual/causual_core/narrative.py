@@ -150,6 +150,7 @@ def build_card(
     treatment_col: dict[str, str],
     source_col: dict[str, str],
     data_notes: list[str] | None = None,
+    state_line: str | None = None,
     target: str,
     target_cols: dict[str, str],
     separation: dict | None = None,
@@ -184,12 +185,15 @@ def build_card(
     if extra_header:
         for k, v in extra_header.items():
             a(f"> {k}：{v}  ")
-    a(f"> **{name}** ｜ 激活机制 {len(active)}/{len(direct)} 条"
+    a(f"> 激活机制 {len(active)}/{len(direct)} 条"
       f"（其中关联层 {len([c for c in active if c.edge.layer == 'associative'])} 条）")
     a(f"> α(当期归因) = {alpha:+.2f}　｜　当期归因原值 {_bp(predicted)}")
+    if state_line:
+        # 市场状态归状态层：这里只留一行，细节看 /state
+        a(f"> 当前状态：{state_line}")
     a("")
-    a("> α 只做**当期归因**（t 日读数 → t 日收益，分布滞后边只取 lag0），不含任何滞后累加。"
-      "滞后效应（lag1..N）见详情卡第 4 节，仅作时间结构参考。")
+    a("> α 只做**当期归因**（t 日读数 → t 日收益，分布滞后边只取 lag0），"
+      "不含任何滞后累加；滞后效应见详情卡，仅作时间结构参考。")
     a("")
     for note in (data_notes or []):
         a(f"> ⚠ **数据滞后**：{note}。卡片里用到它们的部分按旧值计算，"
@@ -304,7 +308,8 @@ def build_card(
     _b.s("signal", "净指向分解（信号层，计入 α）")
     a("")
     a("> 本表是 **t 日读数** 对 **t 日收益** 的当期归因，**只覆盖信号层**。"
-      "长期趋势（结构层、供需层）不进 α，见第 2、3 节。「边全正但市场在跌」是正常现象：只是部分归因，只计算在信号层因果图的总效应。")
+      "长期趋势（结构层、供需层）不进 α，见月频卡与 /state 页。"
+      "「边全正但市场在跌」是正常现象：只是部分归因。")
     a("")
     a("| 机制 | 关系 | 读数 | z | 敏感度 | 权重 | 贡献 | 一致性 |")
     a("|---|---|---|---|---|---|---|---|")

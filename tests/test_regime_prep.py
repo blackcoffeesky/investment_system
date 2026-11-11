@@ -61,12 +61,13 @@ def test_fit_and_recompute_agree():
     """fit 之后用在线路径重算最后一天后验，必须与存储值一致。"""
     import regime_engine as RE
     import regime_engine.serialize as S
-    from causual.causual_core.regime_infer import current
+    from state_layer.estimators.hmm import HMMEstimator
 
     feat = _toy_features(600)
     fit = RE.fit_regime(feat, k=3, seed=0)
     labels, proba, last = fit.walk_forward(feat, labeler=lambda m: {i: f"s{i}" for i in range(len(m))},
                                            min_train=200, refit_every=100)
     spec = {**S.to_numpy(last), "fit_id": "x"}
-    st, p = current(feat.loc[: labels[labels != ""].index[-1]], spec)
+    est = HMMEstimator()
+    st, p = est._current(feat.loc[: labels[labels != ""].index[-1]], spec)
     assert np.allclose(p, proba.iloc[-1].to_numpy(), atol=1e-9)

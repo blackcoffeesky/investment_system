@@ -207,12 +207,74 @@ def extend(asset: str, features: pd.DataFrame,
     return pd.concat([filled, add]).sort_index()
 
 
+def transition(asset: str, features: pd.DataFrame | None = None) -> dict | None:
+    """今日后验 × 转移矩阵：留在原状态的概率、平均停留、最可能转向。
+
+    从 `regime_infer.transition_view` 迁来（P3 删掉那边）。
+    没有特征或模型文件时返回 None，调用方自己降级。
+    """
+    import numpy as np
+
+    try:
+        lw = load_last_window(asset)
+    except FileNotFoundError:
+        return None
+    if not lw:
+        return None
+
+    labels = {int(k): str(v) for k, v in lw.get("state_labels", {}).items()}
+    proba = None
+    if features is not None and len(features):
+        try:
+            est = make("hmm")
+            res = est.latest(features, lw)
+            proba = res.get("proba") if res else None
+        except Exception:  # noqa: BLE001
+            proba = None
+    if not proba:
+        return None
+
+    p_today = np.asarray(proba, dtype=float)
+    P = np.asarray(lw["transmat"], dtype=float)
+    p_next = p_today @ P
+
+    by_label: dict[str, float] = {}
+    for sid, pr in enumerate(p_next):
+        lab = labels.get(int(sid))
+        if lab is not None:
+            by_label[lab] = by_label.get(lab, 0.0) + float(pr)
+
+    cur_sid = int(np.argmax(p_today))
+    cur_label = labels.get(cur_sid, "")
+    durations = {labels[i]: float(1.0 / max(1e-9, 1.0 - P[i, i]))
+                 for i in range(len(P)) if i in labels}
+    nxt = sorted(((k, v) for k, v in by_label.items() if k != cur_label),
+                 key=lambda kv: -kv[1])
+    return {
+        "label": cur_label,
+        "stay_prob": float(by_label.get(cur_label, 0.0)),
+        "duration": durations.get(cur_label),
+        "p_next": nxt[:2],
+        "posterior": {labels.get(i, str(i)): float(p) for i, p in enumerate(p_today)},
+        "confident": bool(np.max(p_today) >= 0.6),
+    }
+
+
 def fit(asset: str, panel: pd.DataFrame, *, estimator: str = "hmm",
-        labeler_factory, signature_fn, verbose: bool = True) -> dict:
-    """训练并返回 {spec, labels, last, profile, k_table}（不落盘）。"""
+        labeler_factory=None, signature_fn=None,
+        label_module=None, verbose: bool = True) -> dict:
+    """训练。`labeler_factory` / `signature_fn` 由调用方给（标签词汇表是资产的）。
+
+    `label_module` 可以传一个带 `name_states` / `signature` / `NAME_BY_VALUE`
+    的模块，省得调用方拆开传。
+    """
     from state_layer.features import build
 
     c = cfg.get(asset)
+    if label_module is not None:
+        labeler_factory = getattr(label_module, "name_states", labeler_factory)
+        signature_fn = getattr(label_module, "signature", signature_fn)
+
     feats = build(asset, panel)
     est = make(estimator, k=c.K)
     res = est.fit(feats, labeler_factory=labeler_factory,
@@ -222,3 +284,27 @@ def fit(asset: str, panel: pd.DataFrame, *, estimator: str = "hmm",
     ext = extreme.classify(feats, c.EXTREME_PARAMS)
     res["labels"] = extreme.apply(res["labels"], ext)
     return res
+
+
+def save(asset: str, result: dict) -> Path:
+    """把拟合结果落盘（P3 起由状态层写）。产物路径保持不变。"""
+    import pandas as pd
+    from regime_engine.serialize import save_named, to_numpy
+
+    d = _dir(asset)
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / "current.json"
+    p.write_text(json.dumps(result["spec"], ensure_ascii=False, indent=2),
+                 encoding="utf-8")
+    labels = result["labels"]
+    pd.DataFrame({"date": labels.index, "label": labels.values}).to_csv(
+        d / "labels.csv", index=False, encoding="utf-8-sig")
+    if result.get("fit") is not None:
+        result["fit"].save(asset)
+    if result.get("last"):
+        from typing import cast
+
+        payload = dict(cast(dict, to_numpy(result["last"])))
+        payload["fit_id"] = result["spec"]["fit_id"]
+        save_named(payload, asset, "hmm_last.pkl")
+    return p

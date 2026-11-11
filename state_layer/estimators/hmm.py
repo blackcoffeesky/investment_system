@@ -81,7 +81,7 @@ class HMMEstimator:
             "min_bhattacharyya": float(getattr(fit, "min_bhattacharyya", 0.0) or 0.0),
             "fit_id": make_fit_id(asset, features, k),
         }
-        return {"spec": spec, "labels": labels, "last": last,
+        return {"spec": spec, "labels": labels, "fit": fit, "last": last,
                 "profile": self._profile(labels, name_by_value),
                 "k_table": k_table}
 
