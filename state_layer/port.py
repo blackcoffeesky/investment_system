@@ -15,7 +15,7 @@ from typing import cast
 import numpy as np
 import pandas as pd
 
-from state_layer import config as cfg
+from state_layer import state_assets
 from state_layer import observations, stats, store
 from state_layer.model import extreme
 from state_layer.model.hmm import GaussianHMM
@@ -29,7 +29,7 @@ REQUIRED_TABLES = (
 
 def _payload(asset: str, date, label: str, sid: int | None,
              proba: list[float] | None, spec: dict) -> dict:
-    c = cfg.get(asset)
+    c = state_assets.load(asset).config
     m = spec.get("model", {})
     d = spec.get("data", {})
     return {
@@ -75,7 +75,7 @@ class StatePort:
             s = cast(pd.Series, s[s.index >= pd.Timestamp(start)])
         if end:
             s = cast(pd.Series, s[s.index <= pd.Timestamp(end)])
-        c = cfg.get(asset)
+        c = state_assets.load(asset).config
         return pd.DataFrame({
             "date": s.index,
             "label": s.values,
@@ -125,7 +125,7 @@ class StatePort:
         if lab.empty or features is None or features.empty:
             return lab
 
-        c = cfg.get(asset)
+        c = state_assets.load(asset).config
         spec = store.load_spec(asset)
         filled = cast(pd.Series, lab[lab.astype(str) != ""])
         if filled.empty:

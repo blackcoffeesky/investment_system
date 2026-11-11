@@ -36,13 +36,14 @@ def test_state_features_match_prepare():
     """
     from causual.causual_assets.ashare import pipeline as P
     from causual.causual_core.cli import _load_series
-    from state_layer.features import build as state_build
+    from state_layer import state_assets
 
     series, meta = _load_series("ashare")
     raw = P.load_raw(series, meta)
     prep = P.prepare(raw)
 
-    a = state_build("ashare", raw)
-    b = state_build("ashare", prep)
+    pkg = state_assets.load("ashare")
+    a = pkg.features.build(raw)
+    b = pkg.features.build(prep)
     assert a.index.equals(b.index)
     assert float((a - b).abs().max().max()) < 1e-9

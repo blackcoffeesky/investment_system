@@ -14,7 +14,7 @@ from causual.causual_core.estimators import EdgeModel, fit_all
 from causual.web.render import build_card, build_console
 from causual.causual_core.signal_layer import build_bundle
 from causual.causual_assets.gold import config as C
-from state_layer.config import gold as L
+from state_layer.state_assets.gold import config as L
 
 def _required_tables() -> tuple[str, ...]:
     """面板用到的表清单——从映射本身推导，避免手写漏表。"""
@@ -27,9 +27,10 @@ def _required_tables() -> tuple[str, ...]:
 
 def _state_features(df: pd.DataFrame) -> pd.DataFrame:
     """状态特征：P3 起由状态层提供（因果层只消费标签）。"""
-    from state_layer.features import build
+    from state_layer.state_assets.gold.features import build
 
-    return build(C.ASSET, df)
+    # 因果层的 df 已经是 prepare 后的面板，状态特征直接吃它
+    return build(df)
 
 
 REQUIRED_TABLES = _required_tables()

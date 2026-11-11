@@ -52,7 +52,7 @@ class GaussianHMM(Model):
         """用最后一个窗口的模型，逐日给出样本外状态与后验。"""
         if self.last_window is None:
             raise RuntimeError("模型还没 fit / 没有 last_window")
-        from state_layer.features.common import prep_features
+        from state_layer.prep import prep_features
         from state_layer.model.hmm import _ops as H
 
         cols = list(self.last_window["features"])

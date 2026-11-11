@@ -16,9 +16,7 @@ from typing import Any
 
 import pandas as pd
 
-from state_layer import config as cfg
-from state_layer import store
-from state_layer.features import build as build_features
+from state_layer import state_assets, store
 from state_layer.model import MODELS, extreme
 from state_layer.model.hybrid import RuleGated
 from state_layer.metrics import score as score_metric
@@ -46,8 +44,9 @@ def fit(
     verbose: bool = True,
 ) -> dict[str, Any]:
     """在面板上训练状态模型，返回 {spec, labels, model, metrics}（不落盘）。"""
-    c = cfg.get(asset)
-    feats = build_features(asset, panel)
+    pkg = state_assets.load(asset)
+    c = pkg.config
+    feats = pkg.features.build(panel)
     k_use = c.K if k is None else k
 
     inner = MODELS[model_name]()

@@ -87,9 +87,11 @@ def run(
 
     # 市场状态归状态层：卡片只留一行提示，§1 的表格在 /state 页面
     def _state_features(pkg, frame):
-        from state_layer.features import build
+        from state_layer import state_assets
 
-        return build(pkg.C.ASSET, frame)
+        a = state_assets.load(pkg.C.ASSET)
+        # frame 已经是 prepare 后的面板，直接算特征
+        return a.features.build(frame)
 
     state_line = None
     try:

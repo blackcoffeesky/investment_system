@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from state_layer.config import gold as C
+from state_layer.state_assets.gold import config as C
 
 
 def _derive(df: pd.DataFrame) -> pd.DataFrame:

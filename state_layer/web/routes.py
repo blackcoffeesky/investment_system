@@ -145,17 +145,15 @@ def index(request: Request, asset: str = "ashare", days: int = 250):
     avail = port.availability(series)
     cur = port.current_state(asset)
 
-    # 市场状态区块（原卡片 §1 的内容）
+    # 市场状态区块：特征由状态层自己的资产包算，不经过因果层
     feats = None
     try:
-        from state_layer import features as feat_mod
+        from state_layer import state_assets
+        from state_layer.cli import load_series
 
-        provider_mod, prepare = None, None
-        from state_layer.cli import _load_series, _panel_provider
-
-        provider_mod, prepare = _panel_provider(asset)
-        series_raw, meta = _load_series(asset, provider_mod)
-        feats = feat_mod.build(asset, provider_mod.load_raw(series_raw, meta))
+        pkg = state_assets.load(asset)
+        series_raw, meta = load_series(asset)
+        feats = pkg.features.build(pkg.panel(series_raw, meta))
         cur = port.current_state(asset, feats)
     except Exception as e:  # noqa: BLE001
         print(f"[state] 现算后验失败：{type(e).__name__}: {e}")

@@ -5,7 +5,7 @@
 模型只管数组，不认文件；`port` 只管对外接口，不认路径。
 把「存哪儿、什么格式」收在这里，将来换存储（比如进数据库）只改这一个文件。
 
-产物目录：`state_layer/models/{asset}/`
+产物目录：`state_layer/saved_models/{asset}/`
     hmm.pkl        模型参数（dict，pickle 壳；内容是可 JSON 的纯数据）
     hmm_last.pkl   最后一个窗口（在线算后验用）
     current.json   spec（model / data / metrics 三段）
@@ -21,7 +21,7 @@ from pathlib import Path
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
-MODEL_DIR = ROOT / "state_layer" / "models"
+MODEL_DIR = ROOT / "state_layer" / "saved_models"
 
 
 def asset_dir(asset: str) -> Path:

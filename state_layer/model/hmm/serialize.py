@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[2]      # state_layer/
-MODEL_DIR = ROOT / "models"
+MODEL_DIR = ROOT / "saved_models"
 
 
 def model_path(asset: str) -> Path:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from causual.causual_assets import common
+from datahub import panel as common
 
 SHARED = {
     "VIX": "vix",
