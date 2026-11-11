@@ -143,7 +143,10 @@ def index(request: Request, asset: str = "ashare", days: int = 250):
     prof = port.profile(asset, series)
     tl = port.timeline(asset, series, days)
     avail = port.availability(series)
-    cur = port.current_state(asset)
+    try:
+        cur = port.current_state(asset)
+    except FileNotFoundError:
+        cur = {}          # 还没拟合过模型：页面照常打开，只是没有状态信息
 
     # 市场状态区块：特征由状态层自己的资产包算，不经过因果层
     feats = None

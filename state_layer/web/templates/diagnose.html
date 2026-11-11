@@ -6,7 +6,10 @@
   {% for a in ["ashare"] %}
   <a class="btn" href="/state?asset={{ a }}" style="{{ 'border-color:var(--accent)' if a == asset else '' }}">{{ a }}</a>
   {% endfor %}
-  <span class="muted">状态模型拟合于 {{ current.fit_date or '—' }}（K={{ current.k or '?' }}）</span>
+  <span class="muted">
+  {% if spec %}模型拟合于 {{ spec.data.fit_date or '—' }}（K={{ spec.model.k or '?' }}）
+  {% else %}还没拟合过状态模型（python -m state_layer.cli regime --asset {{ asset }}）{% endif %}
+  </span>
 </div>
 
 <h2 style="margin-top:0">市场状态</h2>
