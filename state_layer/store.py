@@ -111,6 +111,19 @@ def save_model(asset: str, name: str, data: dict) -> Path:
     return p
 
 
+def save_chain(asset: str, chain: list[dict]) -> Path:
+    """保存整条模型链（顺序即处理次序）。"""
+    return save_model(asset, "chain.pkl", {"chain": chain})
+
+
+def load_chain(asset: str) -> list:
+    """读模型链；没有 chain.pkl 时回退到旧的单模型 hmm.pkl。"""
+    try:
+        return load_model(asset, "chain.pkl")["chain"]
+    except FileNotFoundError:
+        return [load_model(asset, "hmm.pkl")]
+
+
 def load_model(asset: str, name: str) -> dict:
     p = asset_dir(asset) / name
     if not p.exists():

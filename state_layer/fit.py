@@ -1,12 +1,11 @@
-"""拟合编排：把「配置 + 特征 + 模型 + 评价」串成一次 fit。
+"""拟合编排：按 `MODEL_CHAIN` 依次跑模型，谁认领什么由模型自己决定。
 
-这一层是状态层的"训练入口"，负责：
-1. 按 config 构造特征与模型
-2. 调模型的 fit（walk-forward，产出样本外标签）
-3. 用 metrics 评价（模型不评价自己）
-4. 组装 spec（model / data / metrics 三段）并落盘
+这一层只做三件事：
+1. 从 config 读链与参数，按次序构造模型
+2. 串起来：上一个模型返回的"没认领日期"喂给下一个
+3. 把最后那个统计模型的参数交给 `metrics` 评价，组装 spec 落盘
 
-模型、评价、存储都不在这层里面——这里只做编排。
+模型、评价、存储都不在这里面。
 """
 
 from __future__ import annotations
@@ -17,9 +16,8 @@ from typing import Any
 import pandas as pd
 
 from state_layer import state_assets, store
-from state_layer.model import MODELS, extreme
-from state_layer.model.hybrid import RuleGated
 from state_layer.metrics import score as score_metric
+from state_layer.model import MODELS
 
 
 def _signature(labels: pd.Series) -> str:
@@ -28,7 +26,12 @@ def _signature(labels: pd.Series) -> str:
     return hashlib.sha1(s.encode("utf-8")).hexdigest()[:12]
 
 
-def _profile(labels, feats: pd.DataFrame) -> list[dict]:
+def _fit_id(asset: str, chain: tuple[str, ...], fit_date: str) -> str:
+    raw = f"{asset}|{','.join(chain)}|{fit_date}"
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+
+
+def _profile(labels: pd.Series, feats: pd.DataFrame) -> list[dict]:
     """每个标签的画像：占比、平均持续、日均收益、日波动。卡片直接渲染这张表。"""
     valid = labels[labels != ""]
     if not len(valid):
@@ -55,84 +58,78 @@ def _profile(labels, feats: pd.DataFrame) -> list[dict]:
     return rows
 
 
-def _fit_id(asset: str, k: int, features: list[str], fit_date: str) -> str:
-    raw = f"{asset}|{k}|{','.join(features)}|{fit_date}"
-    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
-
-
-def fit(
+def fit_pipeline(
     asset: str,
     panel: pd.DataFrame,
     *,
-    model_name: str = "hmm",
     labeler=None,
-    k: int | None = None,
-    seed: int = 42,
     verbose: bool = True,
 ) -> dict[str, Any]:
-    """在面板上训练状态模型，返回 {spec, labels, model, metrics}（不落盘）。"""
+    """在面板上依次跑模型链，返回 {spec, labels, models, chain}（不落盘）。"""
     pkg = state_assets.load(asset)
     c = pkg.config
     feats = pkg.features.build(panel)
-    k_use = c.K if k is None else k
 
-    inner = MODELS[model_name]()
-    model = RuleGated(inner, params=c.EXTREME_PARAMS)
+    chain = tuple(getattr(c, "MODEL_CHAIN", ("hmm",)))
+    params = dict(getattr(c, "MODEL_PARAMS", {}))
 
-    ext = extreme.classify(feats, c.EXTREME_PARAMS)
-    feats_regular = feats.loc[ext == ""]
+    labels = pd.Series("", index=feats.index, dtype=object)
+    # 起点是**有特征的行**：NaN 行谁都认领不了，不该算进"已认领"
+    remaining = feats.dropna().index
+    models: list[Any] = []
 
-    # K 的默认**来自 config**：拟合是可复现操作，不该每次悄悄换状态数。
-    # 想让数据自己选，显式传 k="auto"。
-    picked_k, k_table = k_use, None
-    if k == "auto":
-        from state_layer.model.hmm import select as S
-
-        picked_k, k_table = S.select_k(feats_regular, seed=seed)
+    for name in chain:
+        model = MODELS[name](params.get(name))
+        unclaimed = model.fit(feats, claim=remaining, labeler=labeler)
+        claimed = remaining.difference(unclaimed)
+        if model.labels_ is not None and len(model.labels_):
+            labels.loc[claimed] = model.labels_.reindex(claimed).astype(str)
+        models.append(model)
+        remaining = unclaimed
         if verbose:
-            print(k_table.round(4).to_string())
-            print(f"-> K = {picked_k}")
+            print(f"  [{name}] 认领 {len(claimed)} 天，剩 {len(remaining)} 天")
+        if not len(remaining):
+            break
 
-    model.fit(feats_regular, k=picked_k, seed=seed, labeler=labeler)
-    labels = model.labels_ if model.labels_ is not None else pd.Series(dtype=object)
-    labels = extreme.apply(labels, ext).reindex(feats.index).fillna("")
+    if len(remaining):
+        # 链没覆盖全部日期：不抛错，下游拿不到标签自然会发现
+        print(f"[warn] {asset} 有 {len(remaining)} 天没有被任何模型认领")
 
-    metrics = score_metric(c.METRICS["separation"], model.inner.state_params(),
-                           threshold=c.METRICS.get("min_separation", 0.4))
+    labels = labels.fillna("")
+    stat = next((m for m in reversed(models) if m.state_params() is not None), None)
+    metrics = {"method": None, "min": None, "passed": None}
+    if stat is not None:
+        method = c.METRICS["separation"]
+        metrics = score_metric(method, stat.state_params(),
+                               threshold=c.METRICS.get("min_separation", 0.4))
 
+    k_used = getattr(stat, "k_used", None)
     fit_date = str(feats.dropna().index[-1].date())
+    version = f"{'+'.join(chain)}" + (f"-k{k_used}" if k_used else "") + f"-{_fit_id(asset, chain, fit_date)}"
+
     spec = {
         "asset": asset,
-        "model": {
-            "kind": model_name,
-            "k": int(picked_k),
-            "version": f"{model_name}-k{picked_k}-{_fit_id(asset, picked_k, list(feats.columns), fit_date)}",
-        },
+        "chain": list(chain),
+        "model": {"kind": "+".join(chain), "k": k_used, "version": version},
         "data": {
             "features": list(feats.columns),
             "fit_date": fit_date,
             "label_signature": _signature(labels),
             "used_labels": sorted({v for v in labels if v}),
             "profile": _profile(labels, feats),
-            "fit_id": _fit_id(asset, picked_k, list(feats.columns), fit_date),
+            "fit_id": _fit_id(asset, chain, fit_date),
         },
         "metrics": metrics,
     }
-    return {"spec": spec, "labels": labels, "model": model, "k_table": k_table}
+    return {"spec": spec, "labels": labels, "models": models, "chain": chain}
 
 
 def save(asset: str, result: dict[str, Any]) -> Path:
-    """落盘：spec + labels + 模型参数 + 最后窗口。"""
-    model = result["model"]
+    """落盘：spec + labels + 整条链。"""
     store.save_spec(asset, result["spec"])
     store.save_labels(asset, result["labels"])
-    store.save_model(asset, "hmm.pkl", model.to_dict())
-    inner = getattr(model, "inner", None)
-    lw = getattr(inner, "last_window", None)
-    if lw:
-        store.save_model(asset, "hmm_last.pkl", lw)
+    store.save_chain(asset, [m.to_dict() for m in result["models"]])
     return store.asset_dir(asset) / "current.json"
 
 
-# `Path` 只用于类型标注，放最后避免与上面的函数名冲突
-from pathlib import Path  # noqa: E402
+from pathlib import Path  # noqa: E402  （只用于类型标注，放最后避免和上面的名字冲突）

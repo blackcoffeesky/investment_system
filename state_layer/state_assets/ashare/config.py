@@ -15,7 +15,18 @@ ASSET = "ashare"
 TITLE = "中证全指"
 
 # 状态数：None 表示按 BIC 自动选（现有实现选出来是 3）
-K = 3
+
+# ---------------- 模型链（顺序即处理次序）
+# 每个模型只认领一部分日期，没认领的交给下一个；
+# 最后一个模型通常认领"剩下的全部"。
+MODEL_CHAIN = ("extreme", "hmm")
+MODEL_PARAMS = {
+    "extreme": dict(
+        ret_col="log_return", vol_col="realized_vol_20", sigma=3.0,
+        pct=0.99, abs_cap=0.05,
+    ),
+    "hmm": {"k": 3},          # k=None 表示让模型自己按 BIC+分离度选
+}
 
 # 评价用哪个指标、及格线多少。模型不评价自己，由 state_layer.metrics 算。
 METRICS = {"separation": "bhattacharyya", "min_separation": 0.40}

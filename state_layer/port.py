@@ -18,7 +18,8 @@ import pandas as pd
 from state_layer import state_assets
 from state_layer import store
 from state_layer.analysis import observations, stats
-from state_layer.model import extreme
+from state_layer.model import MODELS
+from state_layer.model.extreme import rules as extreme_rules
 from state_layer.model.hmm import GaussianHMM
 
 REQUIRED_TABLES = (
@@ -54,6 +55,12 @@ def _payload(asset: str, date, label: str, sid: int | None,
     }
 
 
+def _extreme_params(asset: str):
+    """链里 extreme 那一环的参数，转成 ExtremeParams。"""
+    pkg = state_assets.load(asset)
+    return extreme_rules.from_dict(pkg.config.MODEL_PARAMS.get("extreme") or {})
+
+
 class StatePort:
     # ---------------- 装配数据
     def required_tables(self, asset: str = "ashare") -> tuple[str, ...]:
@@ -86,12 +93,16 @@ class StatePort:
         })
 
     # ---------------- 现算
-    def _model(self, asset: str) -> GaussianHMM | None:
+    def _model(self, asset: str):
+        """链里的统计模型（extreme 不参与概率计算）。"""
         try:
-            data = store.load_model(asset, "hmm.pkl")
+            chain = store.load_chain(asset)
         except FileNotFoundError:
             return None
-        return GaussianHMM.from_dict(data)
+        for data in chain:
+            if data.get("kind", "hmm") != "extreme":
+                return MODELS[data.get("kind", "hmm")].from_dict(data)
+        return None
 
     def current_state(self, asset: str = "ashare", features=None) -> dict:
         spec = store.load_spec(asset)
@@ -156,8 +167,8 @@ class StatePort:
         if add.empty:
             return lab
 
-        ext = extreme.classify(features, c.EXTREME_PARAMS).reindex(add.index)
-        add = extreme.apply(add, ext)
+        ext = extreme_rules.classify(features, _extreme_params(asset)).reindex(add.index)
+        add = extreme_rules.apply(add, ext)
         span = pd.DatetimeIndex(add.index)
         print(f"[state] 外推 {len(add)} 天标签"
               f"（{span[0].date()} ~ {span[-1].date()}）")

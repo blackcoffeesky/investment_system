@@ -1,55 +1,16 @@
-"""极端行情的规则层：HMM 管常规 regime，规则管极端事件。
+"""极端行情的判定规则：什么时候算极端、叫什么名字。
 
-为什么不用 HMM 识别极端
-----------------------
-极端样本占比通常 <1%，HMM 的 BIC 会把它并进相邻状态；即使分出来，
-状态均值也会被少量样本拖得不稳。极端行情的定义本身有很强的业务直觉
-（暴跌、暴涨、波动爆表），用规则更直接、更可解释。
-
-设计
-----
-* **进入**：任一条件触发即进入
-    - ``|log_return| > sigma × 滚动 60 日 σ``
-    - ``realized_vol_20 > 滚动 252 日的 pct 分位``
-    - ``|log_return| > abs_cap``（兜底上限，防止分位在样本极小时失效）
-* **标签**：按当日收益符号定 EXTREME_UP / EXTREME_DOWN；
-  方向不明显但波动爆表 → EXTREME_VOL
-* **退出**：「企稳条件」——连续 ``exit_days`` 日不再触发才退出
-* **持续期**：几何分布近似，p = 1/均值持续天数
-
-资产可以在自己的 config 里覆盖全部参数。
+这里**只有规则**，不做任何模型拟合——它和 HMM 无关，换个统计模型照样能用。
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-
 import numpy as np
 import pandas as pd
 
-EXTREME_UP = "extreme_up"
-EXTREME_DOWN = "extreme_down"
-EXTREME_VOL = "extreme_vol"
-EXTREME_LABELS: tuple[str, ...] = (EXTREME_UP, EXTREME_DOWN, EXTREME_VOL)
-
-
-@dataclass(frozen=True)
-class ExtremeParams:
-    enabled: bool = True
-    ret_col: str = "log_return"
-    vol_col: str = "realized_vol_20"
-    sigma: float = 3.0          # |ret| > sigma × 滚动 σ
-    sigma_window: int = 252
-    pct: float = 0.99           # 波动率分位
-    pct_window: int = 252
-    abs_cap: float = 0.05       # 兜底：|ret| > 5%
-    abs_cap_enabled: bool = False
-    exit_days: int = 1          # 连续 N 日不触发才退出
-    # 方向判定：|ret| 小于这个比例 × 触发阈值时，认为"方向不明" → EXTREME_VOL
-    direction_ratio: float = 0.35
-
-    def with_overrides(self, **kw) -> "ExtremeParams":
-        return replace(self, **{k: v for k, v in kw.items() if k in self.__dataclass_fields__})
+from state_layer.model.extreme.params import (EXTREME_DOWN, EXTREME_LABELS,
+                                              EXTREME_UP, EXTREME_VOL,
+                                              ExtremeParams)
 
 
 def _raw_flags(feat: pd.DataFrame, p: ExtremeParams) -> tuple[pd.Series, pd.Series, pd.Series]:

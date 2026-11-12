@@ -40,8 +40,8 @@ def cmd_regime(args) -> int:
     series, meta = load_series(args.asset)
     panel = pkg.panel(series, meta)
 
-    res = fit_mod.fit(args.asset, panel, labeler=pkg.config.name_states,
-                      k=args.k, seed=args.seed, verbose=True)
+    res = fit_mod.fit_pipeline(args.asset, panel,
+                               labeler=pkg.config.name_states, verbose=True)
     p = fit_mod.save(args.asset, res)
 
     spec = res["spec"]

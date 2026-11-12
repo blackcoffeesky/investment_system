@@ -30,8 +30,10 @@ def load(asset: str):
         REQUIRED_TABLES = getattr(mod.panel, "REQUIRED_TABLES", ())
 
         # 常用配置代理，省得总写 pkg.config.X
-        K = cfg.K
+        K = getattr(cfg, "K", cfg.MODEL_PARAMS.get("hmm", {}).get("k"))
         FEATURES = cfg.FEATURES
+        MODEL_CHAIN = cfg.MODEL_CHAIN
+        MODEL_PARAMS = cfg.MODEL_PARAMS
 
     return _Pkg
 
