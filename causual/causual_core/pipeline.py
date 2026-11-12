@@ -36,6 +36,7 @@ def run(
     series: dict,
     meta: pd.DataFrame | None = None,
     *,
+    state: dict | None = None,
     asof: str | None = None,
     out_dir: str | Path = OUT,
     max_age: int = 250,
@@ -44,7 +45,7 @@ def run(
 ) -> Path:
     pkg = load_asset(asset)
 
-    df, spec = pkg.build_panel(asof, series=series, meta=meta)
+    df, spec = pkg.build_panel(asof, series=series, meta=meta, state=state)
     try:
         models, snap_meta = snapshot.load(asset, pkg.EDGES)
     except FileNotFoundError as e:
@@ -68,9 +69,9 @@ def run(
 
     if str(df.loc[when, pkg.LABEL_COL]) == "":
         raise CardRejected(
-            f"{asset} 在 {when.date()} 没有状态标签——多半是 "
-            "state_layer/engine/saved_models/ 下的 hmm_last.pkl 缺失或与状态模型不一致；"
-            f"先跑 `python -m causual.causual_core.cli regime --asset {asset}`")
+            f"{asset} 在 {when.date()} 没有状态标签——调用方传进来的 state 里没有这一天；"
+            "检查状态层是否已拟合（python -m state_layer.cli regime）"
+            "且标签已外推到最新交易日")
 
     from causual.causual_core import freshness
 
@@ -85,31 +86,8 @@ def run(
     if stale_m:
         macro_notes.append(freshness.summary(stale_m, limit=5))
 
-    # 市场状态归状态层：卡片只留一行提示，§1 的表格在 /state 页面
-    def _state_features(pkg, frame):
-        from state_layer import state_assets
-
-        a = state_assets.load(pkg.C.ASSET)
-        # frame 已经是 prepare 后的面板，直接算特征
-        return a.features.build(frame)
-
-    state_line = None
-    try:
-        from state_layer.port import get_port as _state_port
-
-        sp = _state_port()
-        feats = _state_features(pkg, df)
-        cur = sp.current_state(asset, feats)
-        tr = sp.transition(asset, feats)
-        bits = [str(cur.get("label_name") or cur.get("label") or "—")]
-        conf = cur.get("confidence")
-        if conf:
-            bits.append(f"后验 {float(conf):.0%}")
-        if tr and tr.get("duration"):
-            bits.append(f"平均停留 {float(tr['duration']):.0f} 天")
-        state_line = " · ".join(bits) + "（详见 /state）"
-    except Exception as e:  # noqa: BLE001
-        print(f"[state] 状态行生成失败：{type(e).__name__}: {e}")
+    # 市场状态由调用方算好传来（state["line"]），因果层不碰状态层
+    state_line = (state or {}).get("line")
 
     full = pkg.make_card(df, spec, models, when, data_notes=data_notes,
                          state_line=state_line)
@@ -213,7 +191,7 @@ def console(asset: str, series: dict, meta: pd.DataFrame | None = None,
             asof: str | None = None) -> str:
     """命令行预览（不落盘）。"""
     pkg = load_asset(asset)
-    df, spec = pkg.build_panel(asof, series=series, meta=meta)
+    df, spec = pkg.build_panel(asof, series=series, meta=meta, state=state)
     models, _ = snapshot.load(asset, pkg.EDGES)
     bundle = build_bundle(
         df, models, pkg.EDGES, label_col=pkg.LABEL_COL,

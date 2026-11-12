@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from datahub import panel as common
+from datahub import align as common
 
 SHARED = {
     "VIX": "vix",

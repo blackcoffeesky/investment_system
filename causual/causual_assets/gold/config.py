@@ -8,16 +8,22 @@ from __future__ import annotations
 
 from causual.causual_core import nodes as N
 from causual.causual_core.edge import Edge
-from state_layer.state_assets.gold.config import ORDER, VALUES, RegimeLabel
 
 ASSET = "gold"
 TITLE = "黄金因果状态卡"
 TARGET = "GOLD_CNY"
 
-ALL = tuple(l.value for l in ORDER)
+# 状态标签：因果层只用到这几个字符串做**分组**（哪些边在什么行情下有效）。
+# 完整词表在状态层；这里不 import 它，靠 test_label_vocab_matches_state 守着一致。
+RANGE = "range"
+TREND_UP = "trend_up"
+TREND_DOWN = "trend_down"
+DISTRIBUTION = "distribution"
+ORDER = (RANGE, TREND_UP, TREND_DOWN, DISTRIBUTION)
+ALL = ORDER
 # 极端日不走常规 regime（regime_valid=False），所以这里只有四个常规标签。
 # 原“只在 stress 有效”的 GEO/VIX 两条边改为全常规有效——stress 已交给极端规则。
-STRESS = tuple(l.value for l in ORDER)
+STRESS = ORDER
 
 # 列名映射：DAG 节点 -> 面板列
 TREATMENT_COL: dict[str, str] = {

@@ -12,13 +12,16 @@ from service.ops.messages import Message, MessageLevel, StateResult
 ASSETS = ("ashare", "gold")
 
 
-def _load_series(data, cards, asset: str) -> dict:
+def _load_series(data, cards, asset: str, state=None) -> dict:
     """按模块声明的表清单把数据读成 {表名: Series}。
 
-    数据层给什么就是什么；多列表拆成 "表名:列名" 的键。
+    因果层要的表 ∪ 状态层要的表，一次读齐，两边共用同一份快照。
     """
+    tables = list(cards.required_tables(asset))
+    if state is not None:
+        tables += [t for t in state.required_tables(asset) if t not in tables]
     out: dict = {}
-    for t in cards.required_tables(asset):
+    for t in tables:
         s = data.read(t)
         if s is None:
             continue
@@ -58,8 +61,11 @@ class GenerateMacroState(BaseState):
                 if cards.exists(asset, month, kind="macro"):
                     skipped.append(f"{asset} {month}")
                     continue
-                series = _load_series(data, cards, asset)
-                cards.generate_macro(asset, month, series, data.metadata())
+                state_view = ctx.services["state"]
+                series = _load_series(data, cards, asset, state_view)
+                view = state_view.causual_view(asset, series, data.metadata())
+                cards.generate_macro(asset, month, series, data.metadata(),
+                                     state=view)
                 made.append(f"{asset} {month}")
             except Exception as e:  # noqa: BLE001
                 failed.append((asset, f"{type(e).__name__}: {e}"))
@@ -108,7 +114,8 @@ class GenerateCardsState(BaseState):
         made, skipped, failed = [], [], []
         for asset in ASSETS:
             try:
-                series = _load_series(data, cards, asset)
+                state_view = ctx.services["state"]
+                series = _load_series(data, cards, asset, state_view)
                 date = cards.last_data_date(asset, series)
             except Exception as e:  # noqa: BLE001
                 failed.append((asset, f"取不到最后交易日：{type(e).__name__}: {e}"))
@@ -118,7 +125,8 @@ class GenerateCardsState(BaseState):
                 if cards.exists(asset, date):
                     skipped.append(f"{asset} {date}")
                     continue
-                cards.generate(asset, series, meta, date=date)
+                view = state_view.causual_view(asset, series, meta)
+                cards.generate(asset, series, meta, date=date, state=view)
                 made.append(f"{asset} {date}")
             except Exception as e:  # noqa: BLE001
                 failed.append((asset, f"{type(e).__name__}: {e}"))

@@ -56,13 +56,18 @@ def cmd_audit(args) -> int:
     return 0
 
 
-def _load_series(asset: str):
-    """命令行入口负责装配数据：causual 库代码不碰数据层，入口文件可以。"""
+def _load_series(asset: str, state=None):
+    """命令行入口负责装配数据：causual 库代码不碰数据层，入口文件可以。
+
+    传了 `state` 端口就把状态层要的表一起读了（两边共用一份快照）。
+    """
     from datahub.port import get_port
 
     pkg = load_asset(asset)
     port = get_port()
-    tables = pkg.REQUIRED_TABLES
+    tables = list(pkg.REQUIRED_TABLES)
+    if state is not None:
+        tables += [t for t in state.required_tables(asset) if t not in tables]
     series = {}
     for t in tables:
         s = port.read(t)
@@ -79,9 +84,14 @@ def _load_series(asset: str):
 def cmd_daily(args) -> int:
     from causual.causual_core import pipeline
 
-    series, meta = _load_series(args.asset)
+    # CLI 是允许直接取数的：这里把状态视图一起装配好传下去
+    from state_layer.port import get_port as state_port
+
+    sp = state_port()
+    series, meta = _load_series(args.asset, state=sp)
+    view = sp.causual_view(args.asset, series, meta)
     try:
-        pipeline.run(args.asset, series, meta, asof=args.asof,
+        pipeline.run(args.asset, series, meta, state=view, asof=args.asof,
                      force=getattr(args, "force", False))
     except pipeline.CardRejected as e:
         print(f"[拒绝] {e}")

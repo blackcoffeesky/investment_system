@@ -55,8 +55,10 @@ def _payload(asset: str, date, label: str, sid: int | None,
 
 class StatePort:
     # ---------------- 装配数据
-    def required_tables(self) -> tuple[str, ...]:
-        return REQUIRED_TABLES
+    def required_tables(self, asset: str = "ashare") -> tuple[str, ...]:
+        """状态层要的数据 = 页面观测用的 + 该资产特征用的。"""
+        pkg = state_assets.load(asset)
+        return tuple(sorted(set(REQUIRED_TABLES) | set(pkg.REQUIRED_TABLES)))
 
     # ---------------- 读
     def labels(self, asset: str = "ashare") -> pd.Series:
@@ -170,6 +172,43 @@ class StatePort:
         except FileNotFoundError:
             return None
         return model.transition(features)
+
+    # ---------------- 给因果层的视图
+    def causual_view(self, asset: str, series: dict, meta=None) -> dict:
+        """因果层需要的状态数据，一次给全。
+
+        因果层不知道状态层的存在，只消费这个 dict：
+        `{labels, label_name, labels_order, version, line}`。
+        """
+        pkg = state_assets.load(asset)
+        panel = pkg.panel(series, meta)
+        feats = pkg.features.build(panel)
+
+        labels = self.extend(asset, feats)
+        c = pkg.config
+        cur = self.current_state(asset, feats)
+        tr = self.transition(asset, feats) or {}
+
+        bits = [str(cur.get("label_name") or cur.get("label") or "—")]
+        conf = cur.get("confidence")
+        if conf:
+            bits.append(f"后验 {float(conf):.0%}")
+        if tr.get("duration"):
+            bits.append(f"平均停留 {float(tr['duration']):.0f} 天")
+
+        try:
+            spec = store.load_spec(asset)
+            version = spec.get("model", {}).get("version")
+        except FileNotFoundError:
+            version = None
+
+        return {
+            "labels": labels,
+            "label_name": dict(c.LABEL_NAME),
+            "labels_order": tuple(c.VALUES),
+            "version": version,
+            "line": " · ".join(bits) + "（详见 /state）",
+        }
 
     # ---------------- 展示
     def panel(self, series: dict) -> pd.DataFrame:

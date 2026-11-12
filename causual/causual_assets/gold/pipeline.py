@@ -14,7 +14,6 @@ from causual.causual_core.estimators import EdgeModel, fit_all
 from causual.web.render import build_card, build_console
 from causual.causual_core.signal_layer import build_bundle
 from causual.causual_assets.gold import config as C
-from state_layer.state_assets.gold import config as L
 
 def _required_tables() -> tuple[str, ...]:
     """面板用到的表清单——从映射本身推导，避免手写漏表。"""
@@ -25,18 +24,10 @@ def _required_tables() -> tuple[str, ...]:
     return tuple(sorted(tables | set(getattr(C, "EXTRA_TABLES", ()))))
 
 
-def _state_features(df: pd.DataFrame) -> pd.DataFrame:
-    """状态特征：P3 起由状态层提供（因果层只消费标签）。"""
-    from state_layer.state_assets.gold.features import build
-
-    # 因果层的 df 已经是 prepare 后的面板，状态特征直接吃它
-    return build(df)
-
-
 REQUIRED_TABLES = _required_tables()
 
 ROOT = Path(__file__).resolve().parents[3]
-DATA = ROOT / "causual" / "data"   # 模型产物跟代码一起走，不跟原始数据混
+DATA = ROOT / "causual" / "data"   # 状态模型产物由状态层写，这里只读
 PANEL = DATA / "gold_macro.csv"
 REGIME_DIR = DATA / "regime" / C.ASSET
 
@@ -44,16 +35,18 @@ ASSET = C.ASSET
 TITLE = C.TITLE
 TARGET = C.TARGET
 LABEL_COL = "regime_label"
+LONG_REGIME_COL = "long_regime"
 TARGET_COLS = {"close": "CLOSE", "ret": "GOLD_RET", "open": "OPEN"}
-LABELS = L.VALUES
-LABEL_NAME = {**L.NAME_BY_VALUE, **getattr(L, "EXTREME_NAMES", {})}
+# 状态标签词表由调用方注入（set_state_vocab），因果层不 import 状态层
+LABELS: tuple[str, ...] = ()
+LABEL_NAME: dict[str, str] = {}
 EDGES = C.EDGES
 TREATMENT_COL = C.TREATMENT_COL
 SOURCE_COL = C.SOURCE_COL
 SIGNAL_LAG = 1
 
 
-# ------------------------------------------------------------------ 数据
+
 def prepare(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df.index = pd.DatetimeIndex(df.index)
@@ -99,31 +92,37 @@ def load_labels() -> pd.Series:
     return s.astype(str)
 
 
-def build_panel(asof: str | None = None, series=None, meta=None) -> tuple[pd.DataFrame, dict]:
+def build_panel(asof: str | None = None, series=None, meta=None,
+                state: dict | None = None) -> tuple[pd.DataFrame, dict]:
+    """拼面板。
+
+    `state` 由**调用方**给出（service 从状态层端口取、CLI 直接取），
+    结构 `{"labels": Series, "label_name": dict, "version": str}`。
+    因果层不 import 状态层——只消费传进来的标签。
+    """
     df = prepare(load_raw(series, meta))
     spec = load_spec()
-    labels = load_labels().reindex(df.index).fillna("").astype(str)
-    labels = _extend_labels(df, spec, labels)
-    df[LABEL_COL] = labels.reindex(df.index).fillna("").astype(str)
+
+    set_state_vocab(state)
+    # 注意不能写 `x or default`：Series 的真值有歧义
+    labels = (state or {}).get("labels")
+    if labels is None:
+        labels = pd.Series(dtype=str)
+    labels = labels.reindex(df.index).fillna("").astype(str)
+    df[LABEL_COL] = labels
     if asof:
         df = df.loc[: pd.Timestamp(asof)]
     return df, spec
 
 
-def _extend_labels(df: pd.DataFrame, spec: dict, labels: pd.Series) -> pd.Series:
-    """把标签外推到最新交易日——**委托状态层做**。
+def set_state_vocab(state: dict | None) -> None:
+    """把状态层的标签词表装进本模块（卡片分组、展示名要用）。"""
+    global LABELS, LABEL_NAME
+    if not state:
+        return
+    LABELS = tuple(state.get("labels_order") or LABELS)
+    LABEL_NAME = dict(state.get("label_name") or LABEL_NAME)
 
-    P2 起外推逻辑归 `state_layer`（它管模型和窗口），这里只负责
-    把特征矩阵递过去。因果层不再 import 状态层的推断部分。
-    """
-    from state_layer.port import get_port
-
-    feat = _state_features(df)
-    try:
-        return get_port().extend(C.ASSET, feat, labels)
-    except Exception as e:  # noqa: BLE001
-        print(f"[extend] 状态层外推失败（{type(e).__name__}: {e}），本次不外推")
-        return labels
 
 
 def fit_edges(df: pd.DataFrame, spec: dict, seed: int = 42, verbose: bool = True) -> dict:
@@ -162,7 +161,7 @@ def make_card(df: pd.DataFrame, spec: dict, models: dict, when: pd.Timestamp,
     profile = pd.DataFrame(spec["profile"]).set_index("label")
     return build_card(
         C.ASSET, C.TITLE, df, when,
-        label_col=LABEL_COL, label_name=LABEL_NAME, label_order=list(L.VALUES),
+        label_col=LABEL_COL, label_name=LABEL_NAME, label_order=list(LABELS),
         profile=profile, edges=EDGES, models=models, bundle=bundle,
         treatment_col=TREATMENT_COL, source_col=SOURCE_COL, target=C.TARGET,
         target_cols=TARGET_COLS,

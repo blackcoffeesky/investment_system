@@ -152,11 +152,21 @@ def index(request: Request, asset: str = "ashare", days: int = 250):
     feats = None
     try:
         from state_layer import state_assets
-        from state_layer.cli import load_series
 
+        # 数据只从 datahub 服务端口取（web 也不能自己连库）
+        data = request.app.state.services["datahub"]
         pkg = state_assets.load(asset)
-        series_raw, meta = load_series(asset)
-        feats = pkg.features.build(pkg.panel(series_raw, meta))
+        series_raw: dict = {}
+        for t in pkg.REQUIRED_TABLES:
+            v = data.read(t)
+            if v is None:
+                continue
+            if hasattr(v, "columns"):
+                for c in v.columns:
+                    series_raw[f"{t}:{c}"] = v[c]
+            else:
+                series_raw[t] = v
+        feats = pkg.features.build(pkg.panel(series_raw, data.metadata()))
         cur = port.current_state(asset, feats)
     except Exception as e:  # noqa: BLE001
         print(f"[state] 现算后验失败：{type(e).__name__}: {e}")

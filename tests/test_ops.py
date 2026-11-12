@@ -68,12 +68,12 @@ class FakeCards:
     def exists(self, asset, date):
         return False
 
-    def generate(self, asset, series, meta=None, date=None):
+    def generate(self, asset, series, meta=None, date=None, state=None):
         if asset in self.fail:
             raise RuntimeError("假失败")
         return Path(f"/tmp/{asset}_{date}.md")
 
-    def generate_macro(self, asset, month, series, meta=None):
+    def generate_macro(self, asset, month, series, meta=None, state=None):
         if asset in self.fail:
             raise RuntimeError("假失败")
         return Path(f"/tmp/{asset}_{month}.md")
@@ -85,13 +85,28 @@ class FakeCards:
         return False
 
 
+class FakeState:
+    """假的状态端口：只返回一份标签。"""
+
+    def required_tables(self, asset):
+        return ("csi_all",)
+
+    def causual_view(self, asset, series, meta=None):
+        import pandas as pd
+
+        return {"labels": pd.Series(dtype=str), "label_name": {},
+                "labels_order": (), "version": "fake", "line": "假状态"}
+
+
 def _tmp():
     d = tempfile.mkdtemp()
     return Path(d) / "ops.sqlite"
 
 
 def _mgr(path, cards=None, ds=None):
-    bag = ServiceBag({"datahub": ds or FakeDS(), "causual": cards or FakeCards()})
+    bag = ServiceBag({"datahub": ds or FakeDS(),
+                      "causual": cards or FakeCards(),
+                      "state": FakeState()})
     return Manager(STATES, bag, path)
 
 

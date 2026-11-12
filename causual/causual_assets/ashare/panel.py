@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from datahub import panel as common
+from datahub import align as common
 
 # 共享宏观：两个资产都用同一份
 SHARED = {
@@ -45,6 +45,8 @@ ASHARE = {
     "TOTAL_SHARES": "total_shares",
     "TOTAL_MKTCAP": "total_mktcap",
     "EQUITY_FIN_MONTHLY": "equity_fin_monthly",
+    # 年度分红率：payout_ratio 只存在于 dividend_annual 的 payout_ratio 列
+    "PAYOUT": ("dividend_annual", "payout_ratio"),
 }
 
 # 旧面板有、数据层没有的列：补空列，避免下游 KeyError

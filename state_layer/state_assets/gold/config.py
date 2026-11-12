@@ -96,6 +96,8 @@ EXTREME_NAMES: dict[str, str] = {
 }
 
 VALUES: tuple[str, ...] = tuple(l.value for l in ORDER)
+# 别名：因果层的 `labels_order` 用这个名字
+ALL = VALUES
 NAME_BY_VALUE: dict[str, str] = {l.value: NAME[l] for l in ORDER}
 
 

@@ -57,10 +57,11 @@ def card_path(asset: str, date: str, kind: str = "card") -> Path:
     return cards_root(asset) / y / m / f"{PREFIX[kind]}_{date}.md"
 
 
-def _check_fingerprint(path: Path) -> tuple[bool, int]:
-    """卡片生成时的各表 end_date 与现在比，有几张变了 → 该重生成。"""
-    from datahub.port import get_port
+def _check_fingerprint(path: Path, meta=None) -> tuple[bool, int]:
+    """卡片生成时的各表 end_date 与现在比，有几张变了 → 该重生成。
 
+    `meta` 由调用方传入（service 从 datahub 端口取），这里不读库。
+    """
     meta_path = path.with_suffix(".meta.json")
     if not meta_path.exists():
         return False, 0
@@ -71,7 +72,9 @@ def _check_fingerprint(path: Path) -> tuple[bool, int]:
     if not old:
         return False, 0
     try:
-        cur = {r["name"]: str(r["end_date"]) for _, r in get_port().metadata().iterrows()
+        if meta is None or not len(meta):
+            return False, 0
+        cur = {r["name"]: str(r["end_date"]) for _, r in meta.iterrows()
                if r.get("end_date")}
     except Exception:  # noqa: BLE001
         return False, 0
@@ -84,7 +87,9 @@ class CausalPort:
 
     # ---------------- 卡片文件
     def list_cards(self, asset: str, start: str | None = None,
-                   end: str | None = None) -> list[CardMeta]:
+                   end: str | None = None,
+                   table_meta=None) -> list[CardMeta]:
+        """`table_meta` 是 datahub 的 metadata 表（判断卡片是否该重生成）。"""
         root = cards_root(asset)
         if not root.exists():
             return []
@@ -107,9 +112,9 @@ class CausalPort:
                 kind = "detail"
             else:
                 kind = "card"
-            meta = CardMeta(asset, d, kind, p, p.stat().st_size)
-            meta.stale, meta.changed = _check_fingerprint(p)
-            out.append(meta)
+            cm = CardMeta(asset, d, kind, p, p.stat().st_size)
+            cm.stale, cm.changed = _check_fingerprint(p, table_meta)
+            out.append(cm)
         return sorted(out, key=lambda c: (c.date, c.kind), reverse=True)
 
     def get_card(self, asset: str, date: str, kind: str = "card") -> str:
@@ -159,7 +164,8 @@ class CausalPort:
         return card_path(asset, date, kind).exists()
 
     def generate(self, asset: str, series: dict, meta=None,
-                 date: str | None = None) -> Path:
+                 date: str | None = None,
+                 state: dict | None = None) -> Path:
         if date is None:
             date = self.last_data_date(asset, series)
         path = card_path(asset, date)
@@ -167,23 +173,24 @@ class CausalPort:
             return path
         from causual.causual_core import pipeline
 
-        return pipeline.run(asset, series, meta, asof=date, quiet=True)
+        return pipeline.run(asset, series, meta, state=state, asof=date, quiet=True)
 
     def generate_macro(self, asset: str, month: str, series: dict,
-                       meta=None) -> Path:
+                       meta=None, state: dict | None = None) -> Path:
         path = card_path(asset, month, "macro")
         if path.exists():
             return path
         from causual.causual_core import pipeline
 
-        pipeline.run(asset, series, meta, quiet=True)
+        pipeline.run(asset, series, meta, state=state, quiet=True)
         return card_path(asset, month, "macro")
 
-    def regenerate(self, asset: str, date: str, series: dict, meta=None) -> Path:
+    def regenerate(self, asset: str, date: str, series: dict, meta=None,
+                   state: dict | None = None) -> Path:
         path = card_path(asset, date)
         if path.exists():
             path.unlink()
-        return self.generate(asset, series, meta, date=date)
+        return self.generate(asset, series, meta, date=date, state=state)
 
 
 _INSTANCE: CausalPort | None = None

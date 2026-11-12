@@ -14,7 +14,6 @@ from __future__ import annotations
 from causual.causual_core import nodes as N
 from causual.causual_core.edge import Edge
 from causual.causual_core.nodes import Node
-from state_layer.state_assets.ashare.config import ORDER, RegimeLabel, VALUES
 
 # 资产专用节点的传输特性：决定估计器（slow → 分布滞后，fast → 当期 DML）
 LOCAL_NODES: dict[str, Node] = {
@@ -34,10 +33,17 @@ TARGET = "CSI_ALL"
 
 
 
-ALL = tuple(l.value for l in ORDER)
+# 状态标签：因果层只用到这几个字符串做**分组**（哪些边在什么行情下有效）。
+# 完整词表在状态层；这里不 import 它，靠 test_label_vocab_matches_state 守着一致。
+RANGE = "range"
+TREND_UP = "trend_up"
+TREND_DOWN = "trend_down"
+DISTRIBUTION = "distribution"
+ORDER = (RANGE, TREND_UP, TREND_DOWN, DISTRIBUTION)
+ALL = ORDER
 # 极端日不走常规 regime（regime_valid=False）
-RISK_OFF = (RegimeLabel.TREND_DOWN.value,)
-BULL = (RegimeLabel.TREND_UP.value,)
+RISK_OFF = (TREND_DOWN,)
+BULL = (TREND_UP,)
 
 TREATMENT_COL: dict[str, str] = {
     N.FED_RATE: "FED_CHG_BP",

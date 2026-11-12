@@ -11,8 +11,12 @@ def test_card_generation_smoke():
     from causual.causual_core import pipeline
     from causual.causual_core.cli import _load_series
 
-    series, meta = _load_series("ashare")
-    path = pipeline.run("ashare", series, meta, quiet=True)
+    from state_layer.port import get_port
+
+    sp = get_port()
+    series, meta = _load_series("ashare", state=sp)
+    view = sp.causual_view("ashare", series, meta)
+    path = pipeline.run("ashare", series, meta, state=view, quiet=True)
     text = Path(path).read_text(encoding="utf-8")
 
     assert "α(当期归因)" in text

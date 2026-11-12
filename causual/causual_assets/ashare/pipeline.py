@@ -13,7 +13,6 @@ from causual.causual_core.estimators import EdgeModel, fit_all
 from causual.web.render import build_card, build_console
 from causual.causual_core.signal_layer import build_bundle
 from causual.causual_assets.ashare import config as C
-from state_layer.state_assets.ashare import config as L
 
 def _required_tables() -> tuple[str, ...]:
     """面板用到的表清单——从映射本身推导，避免手写漏表。"""
@@ -24,18 +23,10 @@ def _required_tables() -> tuple[str, ...]:
     return tuple(sorted(tables | set(getattr(C, "EXTRA_TABLES", ()))))
 
 
-def _state_features(df: pd.DataFrame) -> pd.DataFrame:
-    """状态特征：P3 起由状态层提供（因果层只消费标签）。"""
-    from state_layer.state_assets.ashare.features import build
-
-    # 因果层的 df 已经是 prepare 后的面板，状态特征直接吃它
-    return build(df)
-
-
 REQUIRED_TABLES = _required_tables()
 
 ROOT = Path(__file__).resolve().parents[3]
-DATA = ROOT / "causual" / "data"   # 模型产物跟代码一起走，不跟原始数据混
+DATA = ROOT / "causual" / "data"   # 状态模型产物由状态层写，这里只读
 PANEL = DATA / "ashare_macro.csv"
 REGIME_DIR = DATA / "regime" / C.ASSET
 
@@ -45,14 +36,14 @@ TARGET = C.TARGET
 LABEL_COL = "regime_label"
 LONG_REGIME_COL = "long_regime"
 TARGET_COLS = {"close": "CLOSE", "ret": "RET", "open": "OPEN"}
-LABELS = L.VALUES
-LABEL_NAME = {**L.NAME_BY_VALUE, **getattr(L, "EXTREME_NAMES", {})}
+# 状态标签词表由调用方注入（set_state_vocab），因果层不 import 状态层
+LABELS: tuple[str, ...] = ()
+LABEL_NAME: dict[str, str] = {}
 EDGES = C.EDGES
 TREATMENT_COL = C.TREATMENT_COL
 SOURCE_COL = C.SOURCE_COL
 SIGNAL_LAG = 0
 
-# 8 维：limit_ratio 因涨停池无历史而移除（PROBLEM P20）
 
 
 def prepare(df: pd.DataFrame) -> pd.DataFrame:
@@ -89,7 +80,7 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
 
     # 股东回报：全市场分红 / 归母净利润（年度）。年报次年才影响市场，
     # 所以用 (年份 - 1) 的值，避免把当年年报提前到年内使用。
-    df["PAYOUT_RATIO"] = _payout_series(df.index)
+    df["PAYOUT_RATIO"] = _payout_series(df)
 
     # 供需派生：**先在月频上算，再 ffill 回日频**。
     # 直接在日频上 diff 会得到 0（日频是 ffill 的），ΔM1 会恒等于 0。
@@ -117,21 +108,18 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _payout_series(idx: pd.DatetimeIndex) -> pd.Series:
-    """年度分红率：直接读 datahub 的 `dividend_annual`。
+def _payout_series(df: pd.DataFrame) -> pd.Series:
+    """年度分红率：直接取面板里的 `PAYOUT` 列。
 
-    用上一年度的值（今年年报还没出），避免前视。
+    用上一年度的值（今年年报还没出），避免前视。数据由面板负责取，
+    资产管线不自己去读库。
     """
-    try:
-        from datahub.fin import read
-
-        d = read("dividend_annual")
-        if not isinstance(d, pd.DataFrame) or not len(d):
-            return pd.Series(np.nan, index=idx)
-        m = {int(y): float(v) for y, v in zip(d.index.year, d["payout_ratio"])}
-    except Exception:  # noqa: BLE001
-        return pd.Series(np.nan, index=idx)
-    return pd.Series([m.get(int(y) - 1, np.nan) for y in idx.year], index=idx)
+    if "PAYOUT" not in df.columns:
+        return pd.Series(np.nan, index=df.index)
+    base = df["PAYOUT"].resample("YE").last().dropna()
+    m = {int(y.year): float(v) for y, v in base.items()}
+    return pd.Series([m.get(int(y) - 1, np.nan) for y in df.index.year],
+                     index=df.index)
 
 
 def load_raw(series, meta=None) -> pd.DataFrame:
@@ -159,31 +147,37 @@ def load_labels() -> pd.Series:
     return pd.read_csv(p, index_col=0, parse_dates=True).iloc[:, 0].astype(str)
 
 
-def build_panel(asof: str | None = None, series=None, meta=None) -> tuple[pd.DataFrame, dict]:
+def build_panel(asof: str | None = None, series=None, meta=None,
+                state: dict | None = None) -> tuple[pd.DataFrame, dict]:
+    """拼面板。
+
+    `state` 由**调用方**给出（service 从状态层端口取、CLI 直接取），
+    结构 `{"labels": Series, "label_name": dict, "version": str}`。
+    因果层不 import 状态层——只消费传进来的标签。
+    """
     df = prepare(load_raw(series, meta))
     spec = load_spec()
-    labels = load_labels().reindex(df.index).fillna("").astype(str)
-    labels = _extend_labels(df, spec, labels)
-    df[LABEL_COL] = labels.reindex(df.index).fillna("").astype(str)
+
+    set_state_vocab(state)
+    # 注意不能写 `x or default`：Series 的真值有歧义
+    labels = (state or {}).get("labels")
+    if labels is None:
+        labels = pd.Series(dtype=str)
+    labels = labels.reindex(df.index).fillna("").astype(str)
+    df[LABEL_COL] = labels
     if asof:
         df = df.loc[: pd.Timestamp(asof)]
     return df, spec
 
 
-def _extend_labels(df: pd.DataFrame, spec: dict, labels: pd.Series) -> pd.Series:
-    """把标签外推到最新交易日——**委托状态层做**。
+def set_state_vocab(state: dict | None) -> None:
+    """把状态层的标签词表装进本模块（卡片分组、展示名要用）。"""
+    global LABELS, LABEL_NAME
+    if not state:
+        return
+    LABELS = tuple(state.get("labels_order") or LABELS)
+    LABEL_NAME = dict(state.get("label_name") or LABEL_NAME)
 
-    P2 起外推逻辑归 `state_layer`（它管模型和窗口），这里只负责
-    把特征矩阵递过去。因果层不再 import 状态层的推断部分。
-    """
-    from state_layer.port import get_port
-
-    feat = _state_features(df)
-    try:
-        return get_port().extend(C.ASSET, feat, labels)
-    except Exception as e:  # noqa: BLE001
-        print(f"[extend] 状态层外推失败（{type(e).__name__}: {e}），本次不外推")
-        return labels
 
 
 def fit_edges(df: pd.DataFrame, spec: dict, seed: int = 42, verbose: bool = True) -> dict:
@@ -212,7 +206,7 @@ def fit_edges(df: pd.DataFrame, spec: dict, seed: int = 42, verbose: bool = True
 
         e = next(x for x in EDGES if x.source == "USDCNY")
         m_nc = fit_dml_edge(
-            df, replace(e, confounders=()), labels=list(L.VALUES),
+            df, replace(e, confounders=()), labels=list(LABELS),
             tcol=TREATMENT_COL["USDCNY"], ycol="RET", label_col=LABEL_COL, seed=seed,
         )
         with_c = models.get(e.key)
@@ -404,7 +398,7 @@ def make_card(df: pd.DataFrame, spec: dict, models: dict, when: pd.Timestamp,
     profile = pd.DataFrame(spec["profile"]).set_index("label")
     return build_card(
         C.ASSET, C.TITLE, df, when,
-        label_col=LABEL_COL, label_name=LABEL_NAME, label_order=list(L.VALUES),
+        label_col=LABEL_COL, label_name=LABEL_NAME, label_order=list(LABELS),
         profile=profile, edges=EDGES, models=models, bundle=bundle,
         treatment_col=TREATMENT_COL, source_col=SOURCE_COL, target=C.TARGET,
         target_cols=TARGET_COLS,
