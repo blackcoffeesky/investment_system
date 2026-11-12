@@ -11,7 +11,8 @@ from pathlib import Path
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
-from state_layer import observations, store
+from state_layer import store
+from state_layer.analysis import observations
 from state_layer.port import get_port
 from service.registry import Module, register
 

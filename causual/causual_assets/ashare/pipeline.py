@@ -28,7 +28,6 @@ REQUIRED_TABLES = _required_tables()
 ROOT = Path(__file__).resolve().parents[3]
 DATA = ROOT / "causual" / "data"   # 状态模型产物由状态层写，这里只读
 PANEL = DATA / "ashare_macro.csv"
-REGIME_DIR = DATA / "regime" / C.ASSET
 
 ASSET = C.ASSET
 TITLE = C.TITLE
@@ -129,22 +128,7 @@ def load_raw(series, meta=None) -> pd.DataFrame:
     return _panel.panel(series, meta)
 
 
-def _spec_path() -> Path:
-    return REGIME_DIR / "current.json"
 
-
-def load_spec() -> dict:
-    p = _spec_path()
-    if not p.exists():
-        raise FileNotFoundError(f"没有 {C.ASSET} 的状态模型：{p}")
-    return json.loads(p.read_text(encoding="utf-8"))
-
-
-def load_labels() -> pd.Series:
-    p = REGIME_DIR / "labels.csv"
-    if not p.exists():
-        raise FileNotFoundError(f"没有 {C.ASSET} 的逐日标签：{p}")
-    return pd.read_csv(p, index_col=0, parse_dates=True).iloc[:, 0].astype(str)
 
 
 def build_panel(asof: str | None = None, series=None, meta=None,
@@ -155,8 +139,12 @@ def build_panel(asof: str | None = None, series=None, meta=None,
     结构 `{"labels": Series, "label_name": dict, "version": str}`。
     因果层不 import 状态层——只消费传进来的标签。
     """
+    if not state or "spec" not in state:
+        raise RuntimeError(
+            f"{C.ASSET} 缺少状态模型的 spec——调用方要把 state['spec'] 传进来"
+            "（state_layer.port.causual_view 会给）")
     df = prepare(load_raw(series, meta))
-    spec = load_spec()
+    spec = state["spec"]
 
     set_state_vocab(state)
     # 注意不能写 `x or default`：Series 的真值有歧义
@@ -197,7 +185,7 @@ def fit_edges(df: pd.DataFrame, spec: dict, seed: int = 42, verbose: bool = True
         label_col=LABEL_COL, return_col="RET", train=train, seed=seed,
         local_nodes=C.LOCAL_NODES,
     )
-    path = snapshot.save(C.ASSET, models, spec["label_signature"], fit_date=str(df.index[-1].date()))
+    path = snapshot.save(C.ASSET, models, spec["data"]["label_signature"], fit_date=str(df.index[-1].date()))
 
     # 对照实验：USDCNY 若**不控制** USD_INDEX，会不会把美元指数的效果算到汇率头上
     try:
@@ -394,8 +382,8 @@ def make_card(df: pd.DataFrame, spec: dict, models: dict, when: pd.Timestamp,
         df, models, EDGES, label_col=LABEL_COL,
         treatment_col=TREATMENT_COL, target=C.TARGET, signal_lag=SIGNAL_LAG,
     )
-    bundle.label_signature = spec["label_signature"]
-    profile = pd.DataFrame(spec["profile"]).set_index("label")
+    bundle.label_signature = spec["data"]["label_signature"]
+    profile = pd.DataFrame(spec["data"]["profile"]).set_index("label")
     return build_card(
         C.ASSET, C.TITLE, df, when,
         label_col=LABEL_COL, label_name=LABEL_NAME, label_order=list(LABELS),
@@ -418,8 +406,8 @@ def make_detail_card(df: pd.DataFrame, spec: dict, models: dict, when: pd.Timest
         df, models, EDGES, label_col=LABEL_COL,
         treatment_col=TREATMENT_COL, target=C.TARGET, signal_lag=SIGNAL_LAG,
     )
-    bundle.label_signature = spec["label_signature"]
-    profile = pd.DataFrame(spec["profile"]).set_index("label")
+    bundle.label_signature = spec["data"]["label_signature"]
+    profile = pd.DataFrame(spec["data"]["profile"]).set_index("label")
     return build_detail_card(
         C.ASSET, C.TITLE, df, when,
         label_col=LABEL_COL, label_name=LABEL_NAME, profile=profile,

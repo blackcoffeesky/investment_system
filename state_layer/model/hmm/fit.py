@@ -132,7 +132,7 @@ class RegimeFit:
                 hist = feat.loc[:cutoff].dropna()
                 lo, hi = H.fit_window_bounds(hist)
                 scaler = H.make_scaler(H.clip_frame(hist, lo, hi))
-                from state_layer.prep import prep_features
+                from shared.data_processing import prep_features
 
                 Xtr = prep_features(hist, scaler, lo, hi)
                 model = H.fit(Xtr, self.k, seed=self.seed)
@@ -180,7 +180,7 @@ def fit_regime(
 
     lo, hi = H.fit_window_bounds(feat)
     scaler = H.make_scaler(H.clip_frame(feat, lo, hi))
-    from state_layer.prep import prep_features
+    from shared.data_processing import prep_features
 
     X = prep_features(feat, scaler, lo, hi)
 

@@ -24,7 +24,7 @@ from causual.causual_core import snapshot
 from causual.web.render import build_console
 from causual.causual_core.signal_layer import build_bundle
 
-OUT = Path("causual/output")
+OUT = Path("causual/data/output")
 
 
 class CardRejected(RuntimeError):
@@ -51,7 +51,7 @@ def run(
     except FileNotFoundError as e:
         raise CardRejected(f"没有边快照：{e}") from e
 
-    if snap_meta["label_signature"] != spec["label_signature"]:
+    if snap_meta["label_signature"] != spec["data"]["label_signature"]:
         raise CardRejected(
             "标签体系不一致："
             f"状态模型 {spec['label_signature']} vs 边快照 {snap_meta['label_signature']}；"
@@ -197,6 +197,6 @@ def console(asset: str, series: dict, meta: pd.DataFrame | None = None,
         df, models, pkg.EDGES, label_col=pkg.LABEL_COL,
         treatment_col=pkg.TREATMENT_COL, target=pkg.C.TARGET,
         signal_lag=pkg.SIGNAL_LAG)
-    bundle.label_signature = spec["label_signature"]
+    bundle.label_signature = spec["data"]["label_signature"]
     when = pd.Timestamp(asof) if asof else df.index[-1]
     return build_console(df, when, models, bundle, pkg.EDGES, spec=spec)

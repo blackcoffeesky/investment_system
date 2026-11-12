@@ -16,7 +16,7 @@ from pathlib import Path
 import markdown as _md
 
 ROOT = Path(__file__).resolve().parents[1]
-OUTPUT = ROOT / "causual" / "output"
+OUTPUT = ROOT / "causual" / "data" / "output"
 
 ASSET_NAME = {"ashare": "A 股中证全指", "gold": "国内黄金"}
 PREFIX = {"card": "card", "detail": "detail",

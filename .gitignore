@@ -22,7 +22,6 @@ causual/data/
 regime_engine/data/
 
 # 卡片（含投资判断，仓库公开时不外泄）
-causual/output/
 
 # ---- 归档与大件 ----
 trash/

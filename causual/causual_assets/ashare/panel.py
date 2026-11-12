@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from datahub import align as common
+from shared import panel_align as common
 
 # 共享宏观：两个资产都用同一份
 SHARED = {

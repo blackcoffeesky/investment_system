@@ -69,6 +69,8 @@ def _migrate(spec: dict, asset: str) -> dict:
             "label_signature": sig,
             "used_labels": spec.get("used_labels", []),
             "fit_id": spec.get("fit_id"),
+            # 卡片要的状态画像（每个标签的占比、持续、收益、波动）
+            "profile": spec.get("profile", []),
         },
         "metrics": {
             "method": "bhattacharyya",

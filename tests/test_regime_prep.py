@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from state_layer.prep import prep_features
+from shared.data_processing import prep_features
 
 
 def _toy_features(n: int = 400) -> pd.DataFrame:

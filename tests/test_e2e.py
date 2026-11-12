@@ -206,7 +206,7 @@ def test_state_page_renders():
 
 def test_state_excludes_causual_inputs():
     """诊断层不许读 causual 的信号输入（两套系统输入不相交）。"""
-    from state_layer import observations
+    from state_layer.analysis import observations
 
     used = {t for o in observations.OBSERVATIONS for t in o.sources}
     assert not (used & set(observations.EXCLUDED_TABLES)), used

@@ -13,6 +13,7 @@
 
 ```
 quant/
+├── shared/          跨模块纯工具（面板对齐 / 标准化 / 滚动 z）
 ├── datahub/         数据层：SQLite + 手工入库 + /data 页面
 ├── state_layer/     状态层：市场观测 → 市场状态 + /state 页面（因果层的上游）
 ├── causual/         因果层：机制 → 方向 → 强度 → 卡片 + /cards /fit 页面

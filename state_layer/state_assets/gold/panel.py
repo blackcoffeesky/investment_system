@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from datahub import align as P
+from shared import panel_align as P
 
 REQUIRED_TABLES = (
     "gold_cny",     # OHLCV 主价格

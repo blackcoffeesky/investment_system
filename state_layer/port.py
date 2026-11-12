@@ -16,7 +16,8 @@ import numpy as np
 import pandas as pd
 
 from state_layer import state_assets
-from state_layer import observations, stats, store
+from state_layer import store
+from state_layer.analysis import observations, stats
 from state_layer.model import extreme
 from state_layer.model.hmm import GaussianHMM
 
@@ -196,17 +197,14 @@ class StatePort:
         if tr.get("duration"):
             bits.append(f"平均停留 {float(tr['duration']):.0f} 天")
 
-        try:
-            spec = store.load_spec(asset)
-            version = spec.get("model", {}).get("version")
-        except FileNotFoundError:
-            version = None
+        spec = store.load_spec(asset)
 
         return {
             "labels": labels,
             "label_name": dict(c.LABEL_NAME),
             "labels_order": tuple(c.VALUES),
-            "version": version,
+            "version": spec.get("model", {}).get("version"),
+            "spec": spec,
             "line": " · ".join(bits) + "（详见 /state）",
         }
 

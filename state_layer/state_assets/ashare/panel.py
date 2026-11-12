@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from datahub import align as P
+from shared import panel_align as P
 
 # 需要 datahub 提供的原始表（CLI / service 按这个清单装数据）
 REQUIRED_TABLES = (

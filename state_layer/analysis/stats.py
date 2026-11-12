@@ -10,15 +10,9 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 import pandas as pd
 
 from state_layer import store
-
-ROOT = Path(__file__).resolve().parents[1]
-REGIME_DIR = ROOT / "causual" / "data" / "regime"   # P1：产物仍在原处
 
 # 标签 → 中文名（与 causual 的命名保持一致）
 LABEL_NAME = {
@@ -44,10 +38,11 @@ def load_labels(asset: str) -> pd.Series:
 
 
 def current(asset: str) -> dict:
-    p = REGIME_DIR / asset / "current.json"
-    if not p.exists():
+    """当前 spec（模型产物统一在 state_layer/saved_models）。"""
+    try:
+        return store.load_spec(asset)
+    except FileNotFoundError:
         return {}
-    return json.loads(p.read_text(encoding="utf-8"))
 
 
 def profile(asset: str, obs: pd.DataFrame) -> pd.DataFrame:

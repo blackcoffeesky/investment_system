@@ -28,6 +28,33 @@ def _signature(labels: pd.Series) -> str:
     return hashlib.sha1(s.encode("utf-8")).hexdigest()[:12]
 
 
+def _profile(labels, feats: pd.DataFrame) -> list[dict]:
+    """每个标签的画像：占比、平均持续、日均收益、日波动。卡片直接渲染这张表。"""
+    valid = labels[labels != ""]
+    if not len(valid):
+        return []
+    total = len(valid)
+    run = (valid != valid.shift()).cumsum()
+    run_len = valid.groupby(run).size()
+    run_first = valid.groupby(run).first()
+    ret = feats["log_return"] if "log_return" in feats else None
+
+    rows = []
+    for lab in sorted(set(valid)):
+        mask = run_first == lab
+        n = int((valid == lab).sum())
+        sub = ret.reindex(valid.index)[valid == lab] if ret is not None else None
+        rows.append({
+            "label": lab,
+            "n": n,
+            "share": n / total,
+            "avg_duration": float(run_len[mask].mean()) if mask.any() else 0.0,
+            "mean_ret": float(sub.mean() * 100) if sub is not None and len(sub) else None,
+            "vol": float(sub.std() * 100) if sub is not None and len(sub) else None,
+        })
+    return rows
+
+
 def _fit_id(asset: str, k: int, features: list[str], fit_date: str) -> str:
     raw = f"{asset}|{k}|{','.join(features)}|{fit_date}"
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
@@ -86,6 +113,7 @@ def fit(
             "fit_date": fit_date,
             "label_signature": _signature(labels),
             "used_labels": sorted({v for v in labels if v}),
+            "profile": _profile(labels, feats),
             "fit_id": _fit_id(asset, picked_k, list(feats.columns), fit_date),
         },
         "metrics": metrics,
