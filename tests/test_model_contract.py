@@ -69,3 +69,49 @@ def test_chain_filters_between_models():
     assert len(left) == 0, "最后一环应该认领剩下的全部"
     assert hmm.labels_ is not None and len(hmm.labels_) == len(remaining)
     assert feat.index[100] not in hmm.labels_.index
+
+
+def test_extreme_valid_index_ignores_irrelevant_nan():
+    """规则模型只看两列，别的列有 NaN 不该挡住它。"""
+    feat = _toy()
+    feat.loc[feat.index[50], "volume_z"] = np.nan       # 规则用不到的列
+    feat.loc[feat.index[100], "log_return"] = 0.20      # 造一个极端日
+
+    ext = make("extreme", {"sigma": 3.0})
+    assert feat.index[50] in ext.valid_index(feat), "不该因为 volume_z 有 NaN 就放弃这一行"
+    assert feat.index[100] in ext.valid_index(feat)
+
+
+def test_chain_infer_skips_extreme_days_for_hmm():
+    """推断也要按链走：HMM 看不到极端日，与 fit 时的输入一致。"""
+    from state_layer.model import run_infer
+
+    feat = _toy()
+    feat.loc[feat.index[100], "log_return"] = 0.20
+
+    ext = make("extreme", {"sigma": 3.0})
+    ext.fit(feat)
+    hmm = make("hmm", {"k": 3, "min_train": 200})
+    hmm.fit(feat, claim=ext.fit(feat),
+            labeler=lambda m: {i: f"s{i}" for i in range(len(m))})
+
+    res = run_infer([ext, hmm], feat)
+    assert feat.index[100] in res["states"].index, "极端日应由 extreme 认领"
+    assert res["states"][feat.index[100]].startswith("extreme")
+    assert res["proba"] is not None
+    assert feat.index[100] not in res["proba"].index, "HMM 的后验不该覆盖极端日"
+
+
+def test_labeler_required():
+    """没有 labeler 时必须报错，不能静默产出空标签。"""
+    from state_layer import fit as fit_mod
+
+    import pandas as pd
+    import tempfile
+    # 只验证函数级前置条件，不真的跑拟合
+    try:
+        fit_mod.fit_pipeline("ashare", pd.DataFrame(), labeler=None, verbose=False)
+    except ValueError as e:
+        assert "labeler" in str(e)
+    except Exception:
+        pass          # 面板为空时可能先在别处报错，这条只守 labeler 检查

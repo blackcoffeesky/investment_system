@@ -64,6 +64,15 @@ class Model(ABC):
     def from_dict(cls, data: dict[str, Any]) -> "Model":
         """从 to_dict 的产物重建。"""
 
+    # ---------------- 能力声明
+    def valid_index(self, features: pd.DataFrame) -> pd.Index:
+        """这个模型**能处理**哪些行。
+
+        默认要求全部特征非空；子类应该按自己实际用到的列收窄——
+        规则模型只吃两列，不该被第三列的 NaN 挡住。
+        """
+        return features.dropna().index
+
     # ---------------- 可选钩子
     def transition(self, features: pd.DataFrame | None = None) -> dict | None:
         """状态黏性。只有离散马尔可夫类模型有意义。"""
@@ -73,9 +82,10 @@ class Model(ABC):
         return f"<{self.kind}>"
 
 
-def resolve_claim(features: pd.DataFrame, claim: pd.Index | None) -> pd.Index:
-    """这一环允许认领的日期（默认全部有效行）。"""
-    valid = features.dropna().index
+def resolve_claim(model: "Model", features: pd.DataFrame,
+                  claim: pd.Index | None) -> pd.Index:
+    """这一环允许认领的日期 = 模型能处理的行 ∩ 上一环交出来的行。"""
+    valid = model.valid_index(features)
     if claim is None:
         return valid
     return valid.intersection(claim)

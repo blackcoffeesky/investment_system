@@ -36,11 +36,17 @@ class GaussianHMM(Model):
         self.k_table: pd.DataFrame | None = None
         self.k_used: int | None = None
 
+    # ---------------- 能力：模型自己记录的列
+    def valid_index(self, features: pd.DataFrame) -> pd.Index:
+        cols = list(self.params.get("features") or features.columns)
+        cols = [c for c in cols if c in features.columns]
+        return features[cols].dropna().index if cols else features.dropna().index
+
     # ---------------- 训练
     def fit(self, features: pd.DataFrame, *, claim: pd.Index | None = None,
             labeler=None, **kw) -> pd.Index:
         p = self.params
-        allowed = resolve_claim(features, claim)
+        allowed = resolve_claim(self, features, claim)
         sub = features.loc[allowed]
 
         k = p.get("k")
@@ -64,7 +70,9 @@ class GaussianHMM(Model):
             if last:
                 self.last_window = last
         else:
-            self.labels_ = pd.Series(dtype=object)
+            # 没有标签器：至少把状态编号留下，别让下游拿到一片空
+            dec = self._fit.states.reindex(allowed)
+            self.labels_ = dec.map(lambda v: f"s{int(v)}" if pd.notna(v) else "")
 
         return allowed.difference(allowed)      # 全部认领，下游拿到空
 
@@ -73,7 +81,7 @@ class GaussianHMM(Model):
               claim: pd.Index | None = None) -> dict:
         if self.last_window is None:
             raise RuntimeError("模型还没 fit / 没有 last_window")
-        allowed = resolve_claim(features, claim)
+        allowed = resolve_claim(self, features, claim)
 
         from shared.data_processing import prep_features
 

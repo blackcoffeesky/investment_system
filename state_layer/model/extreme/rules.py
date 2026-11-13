@@ -89,9 +89,10 @@ def to_dict(p: "ExtremeParams | None") -> dict:
     return {k: getattr(p, k) for k in p.__dataclass_fields__}
 
 
-def from_dict(d: dict) -> "ExtremeParams | None":
+def from_dict(d: dict) -> "ExtremeParams":
+    """参数 dict → ExtremeParams。空值给默认参数，绝不返回 None。"""
     if not d:
-        return None
+        return ExtremeParams()
     return ExtremeParams(**{k: v for k, v in d.items()
                             if k in ExtremeParams.__dataclass_fields__})
 

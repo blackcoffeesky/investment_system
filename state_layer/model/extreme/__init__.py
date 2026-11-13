@@ -37,10 +37,16 @@ class ExtremeModel(Model):
         super().__init__(rules.to_dict(p))
         self.params_obj = p
 
+    # ---------------- 能力：只关心 ret_col / vol_col
+    def valid_index(self, features: pd.DataFrame) -> pd.Index:
+        cols = [c for c in (self.params_obj.ret_col, self.params_obj.vol_col)
+                if c in features.columns]
+        return features[cols].dropna().index if cols else features.index
+
     # ---------------- 训练：只认领极端日
     def fit(self, features: pd.DataFrame, *, claim: pd.Index | None = None,
             **kw) -> pd.Index:
-        allowed = resolve_claim(features, claim)
+        allowed = resolve_claim(self, features, claim)
         ext = rules.classify(features, self.params_obj)
         claimed = allowed.intersection(ext[ext != ""].index)
         self.labels_ = ext.reindex(claimed).astype(str)
@@ -49,7 +55,7 @@ class ExtremeModel(Model):
     # ---------------- 推断
     def infer(self, features: pd.DataFrame, *,
               claim: pd.Index | None = None) -> dict:
-        allowed = resolve_claim(features, claim)
+        allowed = resolve_claim(self, features, claim)
         ext = rules.classify(features, self.params_obj)
         claimed = allowed.intersection(ext[ext != ""].index)
         states = ext.reindex(claimed).astype(str)

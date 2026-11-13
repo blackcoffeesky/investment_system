@@ -18,9 +18,7 @@ import pandas as pd
 from state_layer import state_assets
 from state_layer import store
 from state_layer.analysis import observations, stats
-from state_layer.model import MODELS
-from state_layer.model.extreme import rules as extreme_rules
-from state_layer.model.hmm import GaussianHMM
+from state_layer.model import MODELS, run_infer
 
 REQUIRED_TABLES = (
     "csi_all", "csi_all_amount", "csi_all_turnover",
@@ -55,12 +53,6 @@ def _payload(asset: str, date, label: str, sid: int | None,
     }
 
 
-def _extreme_params(asset: str):
-    """链里 extreme 那一环的参数，转成 ExtremeParams。"""
-    pkg = state_assets.load(asset)
-    return extreme_rules.from_dict(pkg.config.MODEL_PARAMS.get("extreme") or {})
-
-
 class StatePort:
     # ---------------- 装配数据
     def required_tables(self, asset: str = "ashare") -> tuple[str, ...]:
@@ -93,16 +85,35 @@ class StatePort:
         })
 
     # ---------------- 现算
-    def _model(self, asset: str):
-        """链里的统计模型（extreme 不参与概率计算）。"""
+    def _models(self, asset: str) -> list:
+        """重建整条模型链。
+
+        **结构以 config.MODEL_CHAIN 为准**，参数优先用落盘的那份；
+        落盘里没有的环节（比如旧版本只存了 hmm.pkl）按 config 现场构造，
+        这样"旧模型 + 新链结构"也能正确跑，不用先重拟合。
+        """
+        pkg = state_assets.load(asset)
+        chain_names = list(getattr(pkg.config, "MODEL_CHAIN", ("hmm",)))
+        params = dict(getattr(pkg.config, "MODEL_PARAMS", {}))
+
         try:
-            chain = store.load_chain(asset)
+            saved = {d.get("kind", "hmm"): d for d in store.load_chain(asset)}
         except FileNotFoundError:
-            return None
-        for data in chain:
-            if data.get("kind", "hmm") != "extreme":
-                return MODELS[data.get("kind", "hmm")].from_dict(data)
-        return None
+            saved = {}
+
+        out = []
+        for name in chain_names:
+            data = saved.get(name)
+            m = (MODELS[name].from_dict(data) if data
+                 else MODELS[name](params.get(name)))
+            if m.kind != "extreme":
+                # 最后窗口以 hmm_last.pkl 为准：里面有 state_labels 和 fit_id
+                try:
+                    m.last_window = store.load_model(asset, "hmm_last.pkl")
+                except FileNotFoundError:
+                    pass
+            out.append(m)
+        return out
 
     def current_state(self, asset: str = "ashare", features=None) -> dict:
         spec = store.load_spec(asset)
@@ -115,15 +126,14 @@ class StatePort:
 
         if features is not None and len(features):
             try:
-                model = self._model(asset)
-                if model is not None:
-                    lw = store.load_model(asset, "hmm_last.pkl")
-                    model.last_window = lw
-                    res = model.infer(features)
+                models = self._models(asset)
+                if models:
+                    res = run_infer(models, features)
                     st = res.get("states")
                     pb = res.get("proba")
                     if st is not None and len(st):
                         label = str(st.iloc[-1])
+                        date = st.index[-1]
                     if pb is not None and len(pb):
                         proba = [float(x) for x in pb.iloc[-1].to_numpy()]
                         sid = int(np.argmax(proba))
@@ -139,13 +149,13 @@ class StatePort:
         if lab.empty or features is None or features.empty:
             return lab
 
-        c = state_assets.load(asset).config
         spec = store.load_spec(asset)
         filled = cast(pd.Series, lab[lab.astype(str) != ""])
         if filled.empty:
             return lab
-        valid = features.dropna().index
-        gap = valid[valid > filled.index.max()]
+        gap = features.index[features.index > filled.index.max()]
+        if not len(gap):
+            return lab
         if not len(gap):
             return lab
 
@@ -158,32 +168,36 @@ class StatePort:
             print(f"[state] hmm_last.pkl 与 spec 的 fit_id 不一致，不外推")
             return lab
 
-        model = self._model(asset)
-        if model is None:
+        models = self._models(asset)
+        if not models:
             return lab
-        model.last_window = lw
-        add = model.infer(features.loc[gap])["states"]
-        add = cast(pd.Series, add[add != ""])
+        sub = features.loc[features.index <= gap.max()]
+        raw = cast(pd.Series, run_infer(models, sub)["states"])
+        keep = raw.astype(str) != ""
+        add = cast(pd.Series, raw.loc[keep])
+        add = cast(pd.Series, add.loc[add.index > filled.index.max()])
         if add.empty:
             return lab
-
-        ext = extreme_rules.classify(features, _extreme_params(asset)).reindex(add.index)
-        add = extreme_rules.apply(add, ext)
         span = pd.DatetimeIndex(add.index)
         print(f"[state] 外推 {len(add)} 天标签"
               f"（{span[0].date()} ~ {span[-1].date()}）")
-        return pd.concat([filled, add]).sort_index()
+        return pd.concat([filled, add.astype(str)]).sort_index()
 
     def transition(self, asset: str, features=None) -> dict | None:
         """状态黏性：留在原状态的概率、平均停留、最可能转向。"""
-        model = self._model(asset)
-        if model is None:
+        models = self._models(asset)
+        if not models:
             return None
-        try:
-            model.last_window = store.load_model(asset, "hmm_last.pkl")
-        except FileNotFoundError:
+        stat = next((m for m in models if m.kind != "extreme"), None)
+        if stat is None or stat.last_window is None:
             return None
-        return model.transition(features)
+        if features is None or not len(features):
+            return stat.transition(None)
+        # 只有非极端日才有后验，和 fit 时喂给 HMM 的是同一批日子
+        res = run_infer(models, features)
+        non_extreme = res["states"].index.intersection(features.index)
+        hmm_part = features.loc[non_extreme]
+        return stat.transition(hmm_part if len(hmm_part) else None)
 
     # ---------------- 给因果层的视图
     def causual_view(self, asset: str, series: dict, meta=None) -> dict:

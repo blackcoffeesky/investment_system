@@ -73,14 +73,21 @@ def fit_pipeline(
     chain = tuple(getattr(c, "MODEL_CHAIN", ("hmm",)))
     params = dict(getattr(c, "MODEL_PARAMS", {}))
 
+    if labeler is None:
+        raise ValueError(f"{asset} 的 fit_pipeline 需要 labeler（把状态编号翻译成标签）")
+
     labels = pd.Series("", index=feats.index, dtype=object)
-    # 起点是**有特征的行**：NaN 行谁都认领不了，不该算进"已认领"
-    remaining = feats.dropna().index
+    # 起点是**全部行**；哪些能被认领由每个模型自己的 valid_index 决定
+    # （规则模型只看两列，不该被别的列的 NaN 挡住）
+    remaining = feats.index
+    handleable = pd.Index([])
     models: list[Any] = []
 
     for name in chain:
         model = MODELS[name](params.get(name))
-        unclaimed = model.fit(feats, claim=remaining, labeler=labeler)
+        handleable = handleable.union(model.valid_index(feats))
+        unclaimed = model.fit(feats, claim=remaining,
+                              labeler=labeler if model.kind == "hmm" else None)
         claimed = remaining.difference(unclaimed)
         if model.labels_ is not None and len(model.labels_):
             labels.loc[claimed] = model.labels_.reindex(claimed).astype(str)
@@ -91,9 +98,10 @@ def fit_pipeline(
         if not len(remaining):
             break
 
-    if len(remaining):
-        # 链没覆盖全部日期：不抛错，下游拿不到标签自然会发现
-        print(f"[warn] {asset} 有 {len(remaining)} 天没有被任何模型认领")
+    # 只在"本该能处理却没处理"时告警；特征本身不全的行不算漏
+    missed = remaining.intersection(handleable)
+    if len(missed):
+        print(f"[warn] {asset} 有 {len(missed)} 天能处理却没被认领")
 
     labels = labels.fillna("")
     stat = next((m for m in reversed(models) if m.state_params() is not None), None)
