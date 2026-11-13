@@ -15,6 +15,9 @@ from datahub.fin.read import metadata, read, read_many, tables
 # 注意：不要再叫 `check`。`datahub.fin.check` 是子模块，一旦有人 `import datahub.fin.check`，包属性 `check` 会被替换成模块对象，
 # 于是 `fin.check()` 报 "'module' object is not callable"。
 from datahub.fin.check import missing_table as missing
+from datahub.fin.long import read as read_long
+from datahub.fin.long import stats as long_stats
 from datahub.fin.check import run as run_check
 
-__all__ = ["read", "read_many", "metadata", "tables", "run_check", "missing"]
+__all__ = ["read", "read_many", "metadata", "tables", "run_check",
+           "missing", "read_long", "long_stats"]

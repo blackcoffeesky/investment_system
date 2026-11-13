@@ -68,17 +68,7 @@ def _load_series(asset: str, state=None):
     tables = list(pkg.REQUIRED_TABLES)
     if state is not None:
         tables += [t for t in state.required_tables(asset) if t not in tables]
-    series = {}
-    for t in tables:
-        s = port.read(t)
-        if s is None:
-            continue
-        if isinstance(s, pd.DataFrame):
-            for c in s.columns:
-                series[f"{t}:{c}"] = s[c]
-        else:
-            series[t] = s
-    return series, port.metadata()
+    return port.series_map(tables), port.metadata()
 
 
 def cmd_daily(args) -> int:

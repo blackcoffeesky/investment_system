@@ -58,6 +58,11 @@ def read(name: str, *, column: str | None = None,
          path: Path | None = None):
     """按 kind 分派：single → Series；multi → DataFrame（或指定 column 取 Series）。"""
     k = kind_of(name, path)
+    if k == "long":
+        from datahub.fin import long as L
+
+        return L.read(name, start=start, end=end, path=path)
+
     cond, args = [], []
     if start:
         cond.append("date >= ?")

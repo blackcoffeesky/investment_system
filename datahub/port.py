@@ -60,6 +60,42 @@ class DataPort:
 
         return fin.read_many(names, start=start, end=end)
 
+    def series_map(self, names: list[str]) -> dict[str, pd.Series]:
+        """把若干张表读成 {key: Series}，供资产面板使用。
+
+        - single → `{表名: Series}`
+        - multi  → `{表名: 列名}`
+        - long   → pivot 成宽表后 `{表名: 代码}`（代码多时请自己先过滤）
+
+        装配规则只写在这一个地方，四个调用方（两个 CLI、service、web）
+        不用各写一遍。
+        """
+        import datahub.fin as fin
+        from datahub.fin import long as L
+        from datahub.fin.read import kind_of
+
+        out: dict[str, pd.Series] = {}
+        for t in names:
+            kind = kind_of(t)
+            if kind == "long":
+                df = fin.read_long(t)
+                if df.empty:
+                    continue
+                value = "close" if "close" in df.columns else L.columns_of(t)[0]
+                wide = L.pivot(df, value)
+                for code in wide.columns:
+                    out[f"{t}:{code}"] = wide[code]
+            else:
+                s = fin.read(t)
+                if s is None:
+                    continue
+                if hasattr(s, "columns"):
+                    for c in s.columns:
+                        out[f"{t}:{c}"] = s[c]
+                else:
+                    out[t] = s
+        return out
+
     def tables(self) -> list[str]:
         import datahub.fin as fin
 

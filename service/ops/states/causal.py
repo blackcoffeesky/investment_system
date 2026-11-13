@@ -20,17 +20,7 @@ def _load_series(data, cards, asset: str, state=None) -> dict:
     tables = list(cards.required_tables(asset))
     if state is not None:
         tables += [t for t in state.required_tables(asset) if t not in tables]
-    out: dict = {}
-    for t in tables:
-        s = data.read(t)
-        if s is None:
-            continue
-        if hasattr(s, "columns"):
-            for c in s.columns:
-                out[f"{t}:{c}"] = s[c]
-        else:
-            out[t] = s
-    return out
+    return data.series_map(tables)
 
 
 class GenerateMacroState(BaseState):

@@ -21,7 +21,7 @@ from state_layer.analysis import observations, stats
 from state_layer.model import MODELS, run_infer
 
 REQUIRED_TABLES = (
-    "csi_all", "csi_all_amount", "csi_all_turnover",
+    "csi_all",
     "breadth_adv", "breadth_dec", "breadth_limitup",
     "csi1000", "csi300",
 )

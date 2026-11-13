@@ -51,6 +51,10 @@ class FakeDS:
         idx = pd.bdate_range("2026-10-01", "2026-11-04")
         return pd.Series(np.linspace(100, 110, len(idx)), index=idx, name=name)
 
+    def series_map(self, tables):
+        idx = pd.bdate_range("2026-01-01", periods=5)
+        return {f"{t}:close": pd.Series(1.0, index=idx) for t in tables}
+
     def check(self):
         return pd.DataFrame()
 
@@ -61,6 +65,7 @@ class FakeCards:
 
     def required_tables(self, asset):
         return ("csi_all",)
+
 
     def last_data_date(self, asset, series):
         return "2026-11-02"

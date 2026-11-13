@@ -193,3 +193,26 @@ python -m datahub.fin.check --ack vix:2026-10-20 --reason "美股休市数据源
 | `geopolitic_risk` | FRED 无此序列，旧数据冻结；新数据改用 `world_tension`（2026-03 起） |
 | `etf_shares` | 各列起始日跨度大（2016-01 ~ 2025-04），部分列有采集空洞 |
 | `cb_holdings` | 2026Q2 有 23/87 国 `AWAITED`，按 Q1 补齐 → 低估 |
+
+## 三种表
+
+| kind | 形状 | 例 |
+|---|---|---|
+| `single` | `date, value` | `vix`、`csi300` |
+| `multi` | `date, 列…` | `csi_all`（OHLCV + 成交额/换手） |
+| `long` | `code, date, 字段…` | `stock_daily`、`etf_shares`、`adj_factor` |
+
+`long` 用于"标的是数据而不是结构"的场景（五千只股票没法一列一只）。
+schema 登记在 `datahub/fin/long.py` 的 `LONG_SCHEMAS`，建表按登记来。
+
+读取：
+
+```python
+from datahub import fin
+df = fin.read_long("stock_daily", start="2026-01-01", codes=["000001"])
+wide = fin.long.pivot(df, "close")      # long → 日期 × 代码
+```
+
+装配给资产面板用 `DataPort.series_map(tables)`——single/multi/long 都统一成 `{key: Series}`。
+
+`freq="SPARSE"` 的表（事件表、份额快照）不做逐日缺口检查，只看是否很久没更新。

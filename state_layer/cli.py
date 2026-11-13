@@ -22,17 +22,7 @@ def load_series(asset: str) -> tuple[dict, object]:
 
     port = get_port()
     pkg = state_assets.load(asset)
-    series: dict = {}
-    for t in pkg.REQUIRED_TABLES:
-        s = port.read(t)
-        if s is None:
-            continue
-        if hasattr(s, "columns"):
-            for c in s.columns:
-                series[f"{t}:{c}"] = s[c]
-        else:
-            series[t] = s
-    return series, port.metadata()
+    return port.series_map(list(pkg.REQUIRED_TABLES)), port.metadata()
 
 
 def cmd_regime(args) -> int:

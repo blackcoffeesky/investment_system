@@ -38,8 +38,8 @@ OBSERVATIONS: tuple[Obs, ...] = (
     # ---- 组 1：市场结果
     Obs("ret", 1, "日收益", ("csi_all",), "%"),
     Obs("vol20", 1, "20日波动", ("csi_all",), "%"),
-    Obs("amount", 1, "成交额", ("csi_all_amount",), "亿元"),
-    Obs("turnover", 1, "换手率", ("csi_all_turnover",), "%"),
+    Obs("amount", 1, "成交额", ("csi_all", "amount"), "亿元"),
+    Obs("turnover", 1, "换手率", ("csi_all", "turnover"), "%"),
     # ---- 组 2：资金活动代理
     Obs("advance_ratio", 2, "涨跌家数比", ("breadth_adv", "breadth_dec"), "",
          note="上涨/(上涨+下跌)；只有从建表起的快照，历史不可回溯"),
@@ -60,9 +60,9 @@ def panel(series: dict) -> pd.DataFrame:
     out["close"] = close          # 时间轴画图用，不参与诊断
     out["ret"] = close.pct_change() * 100
     out["vol20"] = out["ret"].rolling(20, min_periods=10).std() * 100
-    # 成交额/换手率可能还没入库（新源）——缺了就当 NaN，页面会显示「缺」
-    out["amount"] = _align(_pick_opt(series, "csi_all_amount"), out.index)
-    out["turnover"] = _align(_pick_opt(series, "csi_all_turnover"), out.index)
+    # 成交额/换手率现在和 OHLCV 同一张表（csi_all），列名 amount / turnover
+    out["amount"] = _align(_pick_opt(series, "csi_all", "amount"), out.index)
+    out["turnover"] = _align(_pick_opt(series, "csi_all", "turnover"), out.index)
 
     adv = _align(_pick_opt(series, "breadth_adv"), out.index)
     dec = _align(_pick_opt(series, "breadth_dec"), out.index)

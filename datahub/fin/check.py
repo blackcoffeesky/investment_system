@@ -116,7 +116,21 @@ def run(path: Path | None = None, recent_days: int = 90) -> pd.DataFrame:
             rows.append({"name": name, "issues": "空表"})
             continue
 
-        actual = set(str(d.date()) for d in obj.index)
+        if str(m["kind"] or "single") == "long":
+            # long 表一行一个 (标的, 日期)：只关心"有哪些交易日"
+            dates = pd.DatetimeIndex(pd.to_datetime(obj["date"]).unique())
+        else:
+            dates = pd.DatetimeIndex(obj.index)
+
+        if str(m["freq"] or "").upper() == "SPARSE":
+            # 稀疏表（事件表、份额快照）：只要求不是很久没更新，不查逐日缺口
+            last = str(dates[-1].date()) if len(dates) else ""
+            if last < cutoff:
+                rows.append({"name": name, "freq": "SPARSE",
+                             "n": len(obj), "issues": f"最近一条停在 {last or '无'}"})
+            continue
+
+        actual = set(str(d.date()) for d in dates)
         start, end = min(actual), max(actual)
         freq = str(m["freq"] or "D")
         market = str(m["market"] or "CN")

@@ -39,17 +39,7 @@ def _tpl(request: Request):
 def _series_for(request: Request) -> dict:
     data = request.app.state.services["datahub"]
     port = get_port()
-    out: dict = {}
-    for t in port.required_tables():
-        s = data.read(t)
-        if s is None:
-            continue
-        if hasattr(s, "columns"):
-            for c in s.columns:
-                out[f"{t}:{c}"] = s[c]
-        else:
-            out[t] = s
-    return out
+    return data.series_map(list(port.required_tables("ashare")))
 
 
 def _svg(rows: list[dict], width: int = 900, height: int = 260) -> str:
@@ -157,16 +147,7 @@ def index(request: Request, asset: str = "ashare", days: int = 250):
         # 数据只从 datahub 服务端口取（web 也不能自己连库）
         data = request.app.state.services["datahub"]
         pkg = state_assets.load(asset)
-        series_raw: dict = {}
-        for t in pkg.REQUIRED_TABLES:
-            v = data.read(t)
-            if v is None:
-                continue
-            if hasattr(v, "columns"):
-                for c in v.columns:
-                    series_raw[f"{t}:{c}"] = v[c]
-            else:
-                series_raw[t] = v
+        series_raw = data.series_map(list(pkg.REQUIRED_TABLES))
         feats = pkg.features.build(pkg.panel(series_raw, data.metadata()))
         cur = port.current_state(asset, feats)
     except Exception as e:  # noqa: BLE001
