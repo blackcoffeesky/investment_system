@@ -37,3 +37,4 @@ httpx2>=2.0
 # ---- 测试 ----
 # 测试运行器 `tests/run_tests.py` 不需要 pytest；装了也能用 `pytest tests`
 # pytest>=8.0
+pyarrow
