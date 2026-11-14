@@ -2,6 +2,50 @@
 
 ---
 
+# v5.41（2026-11-14）：新鲜度监控复活 + 派生列去 inf
+
+## 一、`WATCH_MACRO` 的表名全过期 → 宏观层过期永远不会被报出来
+
+`freshness.WATCH_MACRO` 写着 `cn_cpi / cn_ppi / cn_m2 / cn_exports / cn_social_fin`，
+但数据层早就改成 `cpi_yoy / ppi_yoy / m1_yoy / m2_yoy / exports_yoy`。
+`check()` 里是 `if t not in idx.index: continue` —— **8 个名字只命中 3 个，
+剩下 5 个静默跳过**。后果不是报错，而是"没有过期表"这个结论永远成立：
+你以为有人在看，其实没有。
+
+同一批过期名字在 `pipeline._month_of()` 里还有**第二份副本**，影响更大：
+A 股的月频卡归档月实际由 `cb_holdings` / `gold_etf_holdings`（**黄金的表**）
+决定，凑巧都是 2026-09-30 才没露出来。
+
+| 改动 | 说明 |
+|---|---|
+| `MONTH_TABLES` | 月/季频宏观表清单，**只有一份**；`WATCH_MACRO = MONTH_TABLES + ("dividend_annual",)`（年频不能进归档月计算） |
+| `_period_end("Y")` | 新增：上年末算"已结束的年度"。原先没有这一支 → 年频表永远 `continue` |
+| `scoped(tables, required)` | 按 `pkg.REQUIRED_TABLES` 收窄。`metadata()` 是全局的，不收窄的话 A 股卡会报「gold_cpi_surprise 停在 …」 |
+| `check()` 告警 | 清单里的名字在 metadata 找不到时 **stderr 打印**，不再静默 `continue` |
+
+**行为变化**：A 股月频卡的归档月 `2026-09` → **`2026-10`**（现在由 A 股自己的
+PMI/CPI/PPI/insider 决定，`macro_2026-10.md`）。
+
+## 二、`SIZE_FLOW` 的 42 个 `±inf`
+
+ETF 上市前份额是 0，`pct_change()` 在首日给出 `inf`（实测 42 个，全在 2016 年初）。
+inf 本身不报错，但一旦进 z-score / 分位就把整列污染成 inf 或 nan。
+`_derived` 里四条派生量统一过 `_finite()`（±inf → NaN）。
+
+## 三、测试
+
+新增 `tests/test_freshness_watchlist.py`（5 条）：
+
+- 清单里每个名字都存在于 `DataPort.tables()`（**故意 fail-closed**：删表/改名要红）
+- 清单里每张表的 `freq` 都能被判过期（W / SPARSE 不行，防止"加进清单也不生效"）
+- `check()` 真的能抓出过期的月/季表，且不误报新鲜的
+- `freq="Y"` 能被检查（不是永远跳过）
+- 清单写了不存在的表时**必须出声**
+
+`tests/test_causual_panel_derived.py` 的 `_bad_derived()` 增加 `±inf` 判定。
+
+---
+
 # v5.40（2026-11-14）：ETF 代码归一，派生列复活
 
 ## 一、bug：四列派生量整体消失，且全程无报错

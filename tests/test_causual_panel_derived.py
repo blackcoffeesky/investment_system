@@ -24,6 +24,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 # 允许落后最近交易日的交易日数。etf_shares / 宏观表本身有 lag_days，
@@ -72,6 +73,9 @@ def _bad_derived(panel, close) -> dict[str, str]:
     """派生列体检：返回 {列: 问题}；空 dict = 通过。
 
     这是本文件的核心判定——**打桩让派生列消失时，它必须返回非空**。
+
+    也盯 `±inf`：ETF 上市前份额是 0，`pct_change` 会给出 inf（`SIZE_FLOW`
+    曾经有 42 个）。inf 不报错，但进 z-score / 分位就污染整列，和 NaN 一样隐蔽。
     """
     bad: dict[str, str] = {}
     if close.empty:
@@ -79,6 +83,10 @@ def _bad_derived(panel, close) -> dict[str, str]:
     for col in DERIVED_COLS:
         if col not in panel.columns:
             bad[col] = "派生列不存在（_derived 返回空 dict？）"
+            continue
+        n_inf = int(np.isinf(panel[col]).sum())
+        if n_inf:
+            bad[col] = f"有 {n_inf} 个 ±inf（除零？进 z-score 会污染整列）"
             continue
         valid = panel[col].dropna()
         if valid.empty:

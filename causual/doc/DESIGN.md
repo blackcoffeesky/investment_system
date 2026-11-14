@@ -75,6 +75,7 @@ causual/output/{asset}/cards/
 | `estimators.py` | DML / 分布滞后 / 事件研究 / OLS(HAC) 四类估计器 |
 | `signal_layer.py` | 读边快照 → 算当期 z → 剂量×敏感性 → 汇总 α |
 | `macro_layer.py` | 供需层：`pair_view`（位置 × 边际）、`describe_series`、结构层读取 |
+| `freshness.py` | 数据新鲜度：`WATCH`（日频）/ `MONTH_TABLES`（月季频）/ `WATCH_MACRO`；`scoped()` 按资产收窄；名字必须与数据层一致 |
 | `narrative.py` | 渲染总览卡与详情卡（Markdown） |
 | `snapshot.py` | 边快照的读写（`causual/data/snapshots/`） |
 | `regime_fit.py` | 拟合 HMM 状态模型并落盘 |
@@ -207,6 +208,19 @@ python -m datahub.fin.check
 |---|---|
 | 代码归一 `bare_code()`：列名与 `GROUPS` 两侧同口径 | `ashare/panel.py` |
 | 计数盘点：`REQUIRED_TABLES` 有数据 + 派生列新鲜 + 每条边的列都在面板里 | `tests/test_causual_panel_derived.py` |
+
+**监控清单也会静默失效**：`freshness.WATCH*` 里的表名一旦与数据层不一致，
+`check()` 就 `continue`，于是"没有过期表"这个结论永远成立。所以：
+
+| 约定 | 为什么 |
+|---|---|
+| 清单里的名字必须真实存在于 `DataPort.tables()` | 名字漂移 = 监控失效 |
+| 清单里的表 `freq` 必须是 D/M/Q/Y | 其它频率 `_period_end()` 返回 None，同样静默跳过 |
+| 清单**只有一份** `MONTH_TABLES`，`pipeline._month_of()` 也读它 | 原先两处各抄一份，一起烂掉 |
+| `check()` 遇到认不出的名字要 **stderr 告警** | 别让"没报错"被当成"没问题" |
+| `scoped()` 按 `pkg.REQUIRED_TABLES` 收窄 | `metadata()` 是全局的，A 股卡不该报黄金表 |
+
+守卫：`tests/test_freshness_watchlist.py`（清单存在性 + freq 可判 + 行为验证 + 告警）。
 
 ---
 

@@ -9,15 +9,21 @@
 --------
 对每张表，用 `metadata.freq` + `lag_days` 推算**期望的最新期**：
 
-    期望期 = 最近一个已结束的周期（日=上一交易日，月=上月末，季=上季末）
+    期望期 = 最近一个已结束的周期（日=上一交易日，月=上月末，季=上季末，年=上年末）
     可用日 = 期望期 + lag_days
     若 今天 >= 可用日 且 实际 end_date < 期望期  →  过期
 
-只对**日频**严格（差一个交易日就算过期）；月/季频按 lag 放宽；年频不检查。
+只对 **D / M / Q / Y** 严格；`W`（COT 按周发布）与 `SPARSE`（不定期）的
+"该有了"没有定义，**有意不判**——不是漏掉。
+
+⚠ WATCH / WATCH_MACRO 里的名字**必须真实存在于 `DataPort.tables()`**，
+否则 `check()` 里 `if t not in idx.index: continue` 会静默跳过整张表：
+监控清单漂移 = 监控失效。`tests/test_freshness_watchlist.py` 守着这件事。
 """
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 
 import pandas as pd
@@ -29,11 +35,30 @@ WATCH = (
     "shibor3m", "margin_balance",
 )
 
-# 月/季频：宏观层依赖的表
-WATCH_MACRO = (
-    "cn_cpi", "cn_ppi", "cn_m2", "cn_exports", "cn_social_fin",
-    "cb_holdings", "gold_etf_holdings", "dividend_annual",
+# 月/季频：宏观层（月频卡 + 供需层）依赖的表。
+#
+# 历史坑（2026-11-14 修）：这里原先写的是 `cn_cpi / cn_ppi / cn_m2 / cn_exports /
+# cn_social_fin`——**数据层的表名早就改了**（`cpi_yoy / ppi_yoy / m1_yoy …`），
+# 于是 8 个名字只命中 2 个，宏观表过期再也不会被报出来。名字必须与数据层一致，
+# 而且只能放 `_period_end()` 认得的 freq（D/M/Q/Y）。
+#
+# 这**一份**清单供两处用：
+#   1. `WATCH_MACRO`：宏观表新鲜度
+#   2. `pipeline._month_of()`：月频卡的归档月（不能含年频，否则会把月份拖回上一年）
+MONTH_TABLES = (
+    # ---- A 股：供需层直接读的宏观表
+    "cpi_yoy", "ppi_yoy", "pmi",
+    "m1_level", "m1_yoy", "m2_level", "m2_yoy",
+    "retail_sales", "retail_sales_mom",
+    "industrial_yoy", "exports_yoy",
+    "equity_fin_monthly", "insider_net",
+    "total_mktcap", "total_shares",
+    # ---- 黄金：季/月频供需
+    "cb_holdings", "gold_etf_holdings", "gold_cpi_surprise",
 )
+
+# 年频另放：`_period_end("Y")` 判得了过期，但归档月不能用它
+WATCH_MACRO = MONTH_TABLES + ("dividend_annual",)
 
 
 @dataclass
@@ -54,6 +79,7 @@ class Freshness:
 
 
 def _period_end(freq: str, today: pd.Timestamp) -> pd.Timestamp | None:
+    """最近一个"已结束的周期"的期末；不判过期的频率返回 None。"""
     if freq == "D":
         # 上一交易日：用工作日近似（周末不判过期）
         d = today
@@ -65,12 +91,37 @@ def _period_end(freq: str, today: pd.Timestamp) -> pd.Timestamp | None:
     if freq == "Q":
         q_end = today.to_period("Q").start_time - pd.Timedelta(days=1)
         return pd.Timestamp(q_end).normalize()
+    if freq == "Y":
+        # 年频（如 dividend_annual）：上年末才算"已结束的年度"。
+        # 早前这里没这一支 → 返回 None → 年频表永远被跳过，等于没监控。
+        return pd.Timestamp(year=today.year - 1, month=12, day=31)
+    # 其余（W 周频、SPARSE 不定期）有意不判：见模块 docstring
     return None
+
+
+def scoped(tables, required) -> tuple[str, ...]:
+    """把全局清单收窄到**本资产真正用到**的表。
+
+    `metadata()` 是全局的（两个资产共用一张表），所以 `WATCH_MACRO` 里既列了
+    A 股的 CPI/PPI，也列了黄金的 `cb_holdings`。不收窄的话，A 股宏观卡会报
+    「gold_cpi_surprise 停在 …」这种跟自己无关的告警。
+
+    收窄后为空（资产包没声明 REQUIRED_TABLES）就退回全清单——
+    宁可按全清单报，也不要悄悄不监控。
+    """
+    want = set(required)
+    keep = tuple(t for t in tables if t in want)
+    return keep or tuple(tables)
 
 
 def check(meta: pd.DataFrame, tables: tuple[str, ...] = WATCH,
           today: pd.Timestamp | None = None) -> list[Freshness]:
-    """返回所有"该有数据但没到"的表。"""
+    """返回所有"该有数据但没到"的表。
+
+    监控清单里的名字在 `metadata` 里找不到时**打印告警**而不是静默跳过——
+    2026-11 那次就是清单写着一批已改名的表，`continue` 之后整个宏观层
+    假装"没有过期表"。
+    """
     if meta is None or not len(meta):
         return []
     today = (today or pd.Timestamp.today()).normalize()
@@ -79,6 +130,8 @@ def check(meta: pd.DataFrame, tables: tuple[str, ...] = WATCH,
     out: list[Freshness] = []
     for t in tables:
         if t not in idx.index:
+            print(f"[新鲜度] 监控清单里的 {t!r} 不在 metadata 里（改名/删表了？"
+                  f"这张表的新鲜度没人看）", file=sys.stderr)
             continue
         row = idx.loc[t]
         freq = str(row.get("freq") or "D")

@@ -76,12 +76,16 @@ def run(
     from causual.causual_core import freshness
 
     data_notes: list[str] = []
-    stale = freshness.stale_only(meta, today=pd.Timestamp(when))
+    # 清单按资产收窄：metadata 是全局的，不收窄就会把黄金表报到 A 股卡上
+    daily_tables = freshness.scoped(freshness.WATCH, pkg.REQUIRED_TABLES)
+    stale = freshness.stale_only(meta, tables=daily_tables,
+                                 today=pd.Timestamp(when))
     if stale:
         data_notes.append(freshness.summary(stale, limit=6))
 
     macro_notes: list[str] = []
-    stale_m = freshness.stale_only(meta, tables=freshness.WATCH_MACRO,
+    macro_tables = freshness.scoped(freshness.WATCH_MACRO, pkg.REQUIRED_TABLES)
+    stale_m = freshness.stale_only(meta, tables=macro_tables,
                                    today=pd.Timestamp(when))
     if stale_m:
         macro_notes.append(freshness.summary(stale_m, limit=5))
@@ -153,16 +157,23 @@ def _month_of(meta: pd.DataFrame | None) -> str:
 
     用"数据能支撑的最新月"而不是自然月：11-01 时 CPI 还停在 9 月，
     这时候出「11 月宏观卡」是自欺欺人。
+
+    清单来自 `freshness.MONTH_TABLES`（**只有一份**）。原先这里硬编码了
+    `cn_cpi / cn_ppi / cn_m2 / cn_exports` —— 那些名字数据层早就不用了，
+    实际只靠 `cb_holdings` / `gold_etf_holdings` 命中，于是 **A 股的归档月
+    是由黄金的表决定的**（凑巧都是 09-30 才没露出来）。
     """
-    macro_tables = ("cn_cpi", "cn_ppi", "cn_m2", "cn_exports", "cb_holdings",
-                    "gold_etf_holdings")
+    from causual.causual_core import freshness
+
     ends: list[str] = []
     if meta is not None and len(meta):
         idx = meta.set_index("name")
-        for t in macro_tables:
+        for t in freshness.MONTH_TABLES:
             if t in idx.index and idx.loc[t, "end_date"]:
                 ends.append(str(idx.loc[t, "end_date"]))
     if not ends:
+        print("[月频卡] 没有任何宏观表在 metadata 里，归档月退回自然月",
+              file=sys.stderr)
         return pd.Timestamp.today().strftime("%Y-%m")
     return max(ends)[:7]
 

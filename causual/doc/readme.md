@@ -518,6 +518,8 @@ python -m causual.causual_assets.ashare.dividend
 | 慢变量用固定期数摊销 | 真实滞后分布被压平 |
 | 结构层是人工文本 | 与供需层的实证可能互相矛盾，卡片不会自动调和 |
 | 状态模型靠外推 | 模型超过 2 个月没重训就会失真，卡片只标"龄期"不阻断 |
+| 新鲜度只看 `freshness.WATCH*` 里的表 | 不在清单里的表过期了没人报；清单里的名字与数据层不一致时**曾经静默失效**，现在会 stderr 告警并由 `tests/test_freshness_watchlist.py` 拦住 |
+| 新鲜度按 `lag_days` 判"该不该有" | `lag_days` 描述的是**发布节律**，判不出"连续 15 个月没更新"这类停更——只能靠卡片的"数据滞后"提示与 readme 第 4.5 节人工盯 |
 
 ## 11. 使用建议
 
@@ -530,4 +532,4 @@ python -m causual.causual_assets.ashare.dividend
 
 ## 12. 版本
 
-当前 v5.40（2026-11-14）。逐版变更见 [`CHANGES.md`](CHANGES.md)。
+当前 v5.41（2026-11-14）。逐版变更见 [`CHANGES.md`](CHANGES.md)。

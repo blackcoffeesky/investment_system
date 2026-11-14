@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import sys
 
+import numpy as np
 import pandas as pd
 
 from shared import panel_align as common
@@ -81,6 +82,16 @@ def _warn(msg: str) -> None:
     print(f"[面板] {msg}", file=sys.stderr)
 
 
+def _finite(s: pd.Series) -> pd.Series:
+    """±inf → NaN。
+
+    ETF 在**上市前份额是 0**，`pct_change()` 会给出 `inf`（首日 0 → 正数）。
+    实测 `SIZE_FLOW` 有 42 个 inf，全在 2016 年初。inf 本身不报错，但一旦进
+    z-score / 分位 / 相关系数就会把整列污染成 inf 或 nan——所以在这里掐掉。
+    """
+    return s.replace([np.inf, -np.inf], np.nan)
+
+
 def _multi(table: str, series: dict) -> pd.DataFrame:
     """把 series 里 "表名:列名" 的若干列拼回宽表。"""
     cols = {k.split(":", 1)[1]: v for k, v in series.items()
@@ -120,21 +131,22 @@ def _derived(idx: pd.DatetimeIndex, series) -> dict[str, pd.Series]:
 
         small, large = group("CSI1000"), group("CSI300")
         if small is not None and large is not None:
-            out["SIZE_FLOW"] = (small.pct_change() - large.pct_change()).reindex(
-                idx, method="ffill")
+            out["SIZE_FLOW"] = _finite(
+                (small.pct_change() - large.pct_change()).reindex(
+                    idx, method="ffill"))
 
         parts = [g.pct_change() for g in
                  (group("SSE50"), group("CSI300"), group("CSI1000")) if g is not None]
         if len(parts) >= 2:
-            out["ETF_DISPERSION"] = pd.concat(parts, axis=1).std(axis=1).reindex(
-                idx, method="ffill")
+            out["ETF_DISPERSION"] = _finite(
+                pd.concat(parts, axis=1).std(axis=1).reindex(idx, method="ffill"))
 
         wide = [g for g in (group("SSE50"), group("CSI300")) if g is not None]
         if not wide:
             _warn("SSE50 / CSI300 一个都没匹配上，NATIONAL_ETF 缺席")
             return out
         nat = sum(wide).diff()
-        out["NATIONAL_ETF"] = nat.reindex(idx, method="ffill")
+        out["NATIONAL_ETF"] = _finite(nat.reindex(idx, method="ffill"))
         q95 = nat.rolling(60, min_periods=40).quantile(0.95)
         out["NATIONAL_ETF_EVENT"] = (nat > q95).astype(float).reindex(
             idx, method="ffill").fillna(0)
