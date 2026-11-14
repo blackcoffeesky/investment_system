@@ -23,6 +23,7 @@ from pathlib import Path
 import pandas as pd
 
 from datahub import DB_PATH, ROOT
+from datahub.core.conn import connect
 from datahub.core.schema import DATA_DDL, migrate_data_tables, migrate_metadata
 from datahub.fin.read import (LONG_SCHEMAS, STATIC_SCHEMAS,
                               _long_columns, _static_columns)
@@ -344,6 +345,48 @@ def run(start: str = "2000-01-01", end: str | None = None,
     return pd.DataFrame(results)
 
 
+def backfill(table: str, *, chunk_calls: int = 10, **kw) -> dict:
+    """**逐批落库**地跑一个源（只对 `financials` 这类"一次抓一批"的源有意义）。
+
+    和 `run()` 的区别：`run()` 是"源函数全部返回后写一次"，中途被杀就颗粒无收
+    （2026-11-14 一次 100 次调用、1000 只的尝试全白抓）。这里每 `chunk_calls` 次
+    取数就 `write_long` + `commit`，中断只丢最后不足一批的部分。
+
+    续跑不靠状态：源函数本身只抓"库里还没有的 code"，重跑自然接着补。
+    `kw` 透传给源函数（如 `max_calls=`、`chunk_calls=`）。
+    """
+    src = next((s for s in SOURCES if s.table == table), None)
+    if src is None:
+        raise KeyError(f"没有注册表 {table!r}；可用：{[s.table for s in SOURCES]}")
+
+    con = connect()
+    con.executescript(DATA_DDL)
+    written = [0]
+    chunks = [0]
+
+    def flush(df: pd.DataFrame) -> None:
+        if not isinstance(df, pd.DataFrame) or df.empty:
+            return
+        written[0] += write_long(con, table, df)
+        chunks[0] += 1
+        print(f"  落库第 {chunks[0]} 批：累计 {written[0]} 行")
+
+    try:
+        rest = src.func(table=table, on_chunk=flush, chunk_calls=chunk_calls,
+                        **src.params, **kw)
+        flush(rest)                      # 收尾：最后不足一批的行
+        if not written[0]:
+            print(f"  {table}：这次没有可抓的（库里已齐或上游无数据）")
+            return {"table": table, "rows": 0, "chunks": 0}
+        _mark_synced(con, table)
+        _apply_note(con, src, [table])
+        _ensure_meta(con)
+        refresh_metadata(con)
+        return {"table": table, "rows": written[0], "chunks": chunks[0]}
+    finally:
+        con.close()
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--start", default="2000-01-01", help="起始日期")
@@ -351,7 +394,16 @@ if __name__ == "__main__":
     ap.add_argument("--only", default=None, help="只更新这些表，逗号分隔")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--force", action="store_true", help="忽略频率判断，强制更新")
+    ap.add_argument("--backfill", default=None,
+                    help="逐批落库地回填这张表（如 financials）；配合 --max-calls")
+    ap.add_argument("--max-calls", type=int, default=100,
+                    help="--backfill 时本轮最多打几次接口（默认 100 = 专业版日额度）")
+    ap.add_argument("--chunk-calls", type=int, default=10,
+                    help="--backfill 时每几次接口落一次库（默认 10）")
     a = ap.parse_args()
+    if a.backfill:
+        print(backfill(a.backfill, chunk_calls=a.chunk_calls, max_calls=a.max_calls))
+        raise SystemExit(0)
     df = run(start=a.start, end=a.end,
              only=[x.strip() for x in a.only.split(",")] if a.only else None,
              dry_run=a.dry_run, force=a.force)

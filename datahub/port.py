@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 
@@ -82,8 +83,6 @@ class DataPort:
         from datahub.fin.read import _long_columns, kind_of
         from datahub.fin.read import pivot as pivot_long
 
-        from typing import cast
-
         out: dict[str, pd.Series] = {}
         for t in names:
             kind = kind_of(t)
@@ -139,6 +138,62 @@ class DataPort:
             if s.enabled:
                 out.update(x.strip() for x in s.table.split("|"))
         return out
+
+    # ---------------- 派生量（现算，不落表）
+    def breadth(self, start: str | None = None, end: str | None = None) -> pd.DataFrame:
+        """市场宽度（现算，不落表）。
+
+        index=date，列 `adv / dec / flat / limit_up / limit_down / total`。
+        口径见 `datahub/fin/derive.py` 的模块 docstring。
+        """
+        from datahub.fin.derive import breadth as _breadth
+
+        return _breadth(start, end)
+
+    def dividend_yield(self, year: int | None = None) -> pd.DataFrame:
+        """年度股息率（**百分数**，2.1258 = 2.13%）。现算，不落表。
+
+        index=year(int)，列 `yield_mcap_weighted / yield_median / n_stocks`。
+
+        ⚠️ 一次约 3.7 秒（要扫一遍 `stock_daily` 取各股年末价）——
+        **一次拿全表，不要在循环里按年调**。
+        """
+        from datahub.fin.derive import dividend_yield as _dividend_yield
+
+        return _dividend_yield(year)
+
+    def catalog(self) -> pd.DataFrame:
+        """所有表 + 派生量清单（`name/kind/source/depends/freq/n_rows/start_date/end_date/note`）。
+
+        ⚠️ **描述性、不稳定、仅供展示与调度决策——不要当契约。**
+        字段名与行数都可能随数据层内部调整而变；**要取数据请用 `read` / `read_many` /
+        `series_map` / 本类上的派生量方法**，别按这里的列写死依赖。
+
+        派生量（`breadth` / `dividend_yield`）也在里面，`kind="derived"`、
+        `source="derived"`、`depends` 写明依赖，`n_rows` 留空（现算，没有行数）。
+        """
+        import datahub.fin as fin
+
+        cols = ["name", "kind", "source", "depends", "freq",
+                "n_rows", "start_date", "end_date", "note"]
+        meta = fin.metadata()
+        for c in cols:
+            if c not in meta.columns:
+                meta[c] = None
+        tables = cast(pd.DataFrame, meta[cols].copy())
+
+        derived = pd.DataFrame([
+            {"name": "breadth", "kind": "derived", "source": "derived",
+             "depends": "stock_daily,company", "freq": "D", "n_rows": None,
+             "start_date": None, "end_date": None,
+             "note": "市场宽度（fin/derive.py，现算）"},
+            {"name": "dividend_yield", "kind": "derived", "source": "derived",
+             "depends": "adj_factor,stock_daily,shares_history", "freq": "Y",
+             "n_rows": None, "start_date": None, "end_date": None,
+             "note": "年度股息率 %（fin/derive.py，现算）"},
+        ], columns=cols)
+
+        return cast(pd.DataFrame, pd.concat([tables, derived], ignore_index=True))
 
     # ---------------- 受控动作
     def run_update(self, start: str = "2000-01-01", end: str | None = None,

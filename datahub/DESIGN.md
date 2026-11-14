@@ -59,10 +59,15 @@ datahub/
 ├── fin/
 │   ├── __init__.py        对外：read / read_many / read_long / metadata / tables / run_check / missing
 │   ├── read.py            读接口 + **四种表结构**（single/multi/long/static）+ pivot
-│   ├── update.py          写库（四种 kind 各一个 writer）+ 按频率跳过 + 元数据
-│   ├── sources.py         取数函数 + SOURCES 注册表（含 ashareapi 客户端）
+│   ├── update.py          写库（四种 kind 各一个 writer）+ 按频率跳过 + 元数据 + `backfill`
+│   ├── sources/           取数（2026-11-14 从单文件拆成包，按来源分）
+│   │   ├── __init__.py    SOURCES 注册表（汇总各组）；只导出 SOURCES / Source
+│   │   ├── base.py        Source 契约 + 共享工具（_clip/_num/_with_prefix/_read_cached/_existing_keys）
+│   │   ├── ashare.py      ashareapi：HTTP 客户端 + 限速器 + 4 个取数函数
+│   │   ├── akshare.py     akshare：指数 / 期货 / 宏观 / ETF 份额 / 年度分红
+│   │   └── other.py       FRED / CFTC / 黄金与地缘 JSON / 手工 CSV
 │   ├── check.py           交易日历 + 完整性检查
-│   ├── derive.py          派生量（市场宽度），**不落表**、不注册成源
+│   ├── derive.py          派生量（市场宽度 / 年度股息率），**不落表**、不注册成源
 │   ├── write.py           单值 upsert（intake 用）
 │   └── intake/            raw / clean / parsers / registry / cli / stock_daily
 ├── ops/
@@ -74,14 +79,18 @@ datahub/
 
 | 文件 | 职责 | 谁调用 |
 |---|---|---|
-| `port.py` | 跨模块唯一面：读、装配、受控动作（update / intake）；`series_map` 跳过 static 表并告警 | service / 各模块 cli / web |
+| `port.py` | 跨模块唯一面：读、装配、受控动作（update / intake / backfill）、派生量（`breadth` / `dividend_yield`）、`catalog` | service / 各模块 cli / web |
 | `core/conn.py` | 连接超时、事务边界、DDL 执行 | fin / ops |
-| `core/schema.py` | 所有 DDL 的唯一出处 + 老库补列（`migrate_metadata`） | update / intake / ops |
+| `core/schema.py` | 所有 DDL 的唯一出处 + 老库补列（`migrate_metadata` / `migrate_data_tables`） | update / intake / ops |
 | `fin/read.py` | 只读 API + 表结构定义（列名与类型） | 服务层 / 脚本 / port |
-| `fin/sources.py` | "从哪拿"（含外部 API 客户端） | update |
-| `fin/update.py` | "怎么写"（四种 kind + 元数据 + 该不该跑） | 人 / 服务层 / port |
+| `fin/sources/base.py` | `Source` 契约 + 跨源共享的清洗工具 | 各取数模块 |
+| `fin/sources/ashare.py` | ashareapi 的 HTTP 客户端与 4 个取数函数（限速器必须同模块） | `sources/__init__` |
+| `fin/sources/akshare.py` | akshare 的全部取数（含 `INDEX_ETFS` / `ALL_ETFS`） | `sources/__init__` |
+| `fin/sources/other.py` | FRED / CFTC / 黄金与地缘 JSON / 手工 CSV | `sources/__init__` |
+| `fin/sources/__init__.py` | `SOURCES` 注册表（唯一事实来源） | update / port |
+| `fin/update.py` | "怎么写"（四种 kind + 元数据 + 该不该跑 + 逐批落库的 `backfill`） | 人 / 服务层 / port |
 | `fin/check.py` | 缺口判断（日历驱动；低频表按周期比，报「同月多行」） | 状态机 / 人 / port |
-| `fin/derive.py` | 派生量现算（市场宽度），不建表、不注册成源 | 消费方 / 脚本 |
+| `fin/derive.py` | 派生量现算（市场宽度 / 年度股息率），不建表、不注册成源 | port / 脚本 |
 | `fin/write.py` | 单值/整表写入（手工录入页用） | `web/routes.py` |
 | `fin/intake/` | 手工源解析 + 一次性建库脚本 | `web/routes.py` / 人 |
 | `ops/store.py` | 运维状态持久化 | Manager |
@@ -340,6 +349,17 @@ dividend_yield(2025)    # 单年（同样要全表扫一遍，3.7s；循环里�
 实测 `n_stocks / 当年有年末价的股票数` ≈ 67~80%（2025：3760 / 5444）。
 全历史一次 3.7 秒，其中 `stock_daily` 的"每年末收盘价"占 3.4 秒
 （`GROUP BY code, substr(date,1,4)` 沿 PK 流式分组；加 `date BETWEEN` 反而更慢）。
+
+**消费方怎么拿到派生量**（2026-11-14 起走 port，不许直接 import `fin.derive`）：
+
+| `DataPort` 方法 | 返回 | 备注 |
+|---|---|---|
+| `breadth(start=None, end=None)` | DataFrame | 市场宽度，现算 |
+| `dividend_yield(year=None)` | DataFrame | 年度股息率（%）；3.7s，**一次拿全表，别按年循环** |
+| `catalog()` | DataFrame | 所有表 + 这 2 个派生量的清单（48 行 = 46 表 + 2） |
+
+`catalog` 的**定位**：描述性、**不稳定**、仅供展示与调度决策，**不要当契约**——
+字段名和行数都可能变。要取数据请用 `read` / `read_many` / `series_map` 或上面两个派生方法。
 
 **为什么现算**：估值入库约 5000×2500×4 个浮点 ≈ 3 GB，且都是可推导量；
 一旦入库就要操心"股本变了要重算历史"。

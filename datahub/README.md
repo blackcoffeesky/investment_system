@@ -118,6 +118,14 @@ from datahub.fin.derive import dividend_yield
 dividend_yield()   # 年度股息率（%）：yield_mcap_weighted / yield_median / n_stocks
 ```
 
+**跨模块**不要直接 import `fin.derive`，走 `DataPort`：
+
+```python
+port.breadth(start, end)      # 市场宽度
+port.dividend_yield()         # 年度股息率（%，3.7s，别按年循环）
+port.catalog()                # 所有表 + 派生量清单（描述性、不稳定，别当契约）
+```
+
 **`series_map()` 会跳过 `static` 表并打一行警告**——static 没有日期轴，
 不是时间序列；调用方把整份表清单传进来也不会炸。
 
