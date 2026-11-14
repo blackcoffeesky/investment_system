@@ -258,7 +258,7 @@
   确认了断点的影响。
 - **状态**：**已解决**。
 
-## P34 `dividend_annual` 要被删表，causual 是唯一硬依赖【v5.40，待裁决】
+## P34 `dividend_annual` 要被删表，causual 是唯一硬依赖【v5.40 记录 / v5.42 已解决】
 
 - **现象**：数据层计划删 `dividend_annual`（改成派生「股息率」`fin.derive.dividend_yield()`）。
   causual 里这张表**只有一个用途**：
@@ -286,7 +286,19 @@
 - **倾向**：**B 先删、A 以后按需加**。股息率是有信息量的量，但它的正确位置是
   「价值」而不是「增长转化」，真要加应该连同 `yield_median`（中位数）一起
   做成新的一行，而不是把这行原地换口径。
-- **状态**：**等用户裁决**（未动手改依赖）。
+- **状态**：**已解决（v5.42，走 A）**。用户裁决走股息率，实现要点：
+
+  | 项 | 做法 |
+  |---|---|
+  | 数据来源 | `DataPort.dividend_yield()`（现算、不落表），装配点在 `cli._load_series` |
+  | 前视 | 年度值统一对齐到**次年 1 月 1 日**：年 Y 的除息日都在 Y 内，Y+1 才完整 |
+  | 维度 | **只有位置，没有边际**（`pair_view(mom_col=None)`）；11 个年度点算 yoy 是伪量化 |
+  | 分位窗口 | `freq="YE"` + `min_periods=8`，在**年度序列**上算（否则按月 resample 后窗口 60 期里只有 5 个不同值） |
+  | 分组 | 「股东回报 / 估值」独立小节（不是「增长转化」），名字「股息率（市值加权）」 |
+  | 依赖 | `dividend_annual` 已从 `REQUIRED_TABLES`（推导）与 `freshness.WATCH_MACRO` 移除 |
+
+  守卫：`tests/test_causual_panel_derived.py::test_dividend_annual_no_longer_required`
+  与 `::test_dividend_yield_reaches_panel`。
 
 ---
 

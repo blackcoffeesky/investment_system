@@ -197,8 +197,8 @@ python -m datahub.fin.check
 | `pipeline.prepare()` 既算特征又算供需层 | 职责混在一起 | 拆 `features.py` / `supply.py` |
 | 状态外推用"上次模型 + 新数据" | 模型老了会失真，卡片有"龄期"提示但不会自动重训 | 加龄期阈值告警 |
 | `CAUSUAL_DATA_SOURCE=csv` 已废弃但代码里还有残留判断 | 迷惑 | 清掉 |
-| `PAYOUT_RATIO` 只来自 `dividend_annual`（数据层计划删表） | 表一删，`series_map` 直接抛 `DatabaseError`，**整张面板连卡片一起挂**（不是降级成 NaN） | 改用派生股息率或删掉该行，见 PROBLEM.md |
 | `STUB_COLS` 里的 `EQUITY_SUPPLY` 恒 NaN → `EQUITY_SUPPLY` 边 `n=0` | 该边在卡片里永远"未估计"，但不会报错 | 接上真实月度净融资额，或把边标成「无数据」 |
+| `_month_of` 不分资产（宏观表取并集月） | 黄金的月频卡归档月被 A 股的表拖到 2026-10（其实只支撑到 09） | 要把 `CausalPort.macro_month(meta)` 加 `asset` 参数 **并同步 service 调用点**：只改一边会让 `exists(asset, month)` 与 `run()` 算出不同的月份 → 卡片被反复重生成 |
 
 ### 8.1 识别口径的坑（都是静默的）
 

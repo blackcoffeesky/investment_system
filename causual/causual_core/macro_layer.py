@@ -145,10 +145,11 @@ def autocorr(x: pd.Series, lag: int = 1, window: int = 60) -> float:
     return float(s.autocorr(lag))
 
 
-def _pct_rank_series(x: pd.Series, window: int) -> tuple[float, int]:
+def _pct_rank_series(x: pd.Series, window: int,
+                     min_periods: int = 13) -> tuple[float, int]:
     """当前值在最近 `window` 期中的分位，返回 (分位, 实际窗口)。"""
     x = x.dropna()
-    if len(x) < 13:
+    if len(x) < min_periods:
         return float("nan"), 0
     w = int(min(window, len(x) - 1))
     tail = x.tail(w + 1)
@@ -318,11 +319,12 @@ def pair_view(
     direction: str,
     pos_col: str,
     pos_basis: str,
-    mom_col: str,
-    mom_basis: str,
+    mom_col: str | None = None,
+    mom_basis: str = "yoy",
     freq: str = "ME",
     window: int = 60,
     roll_n: int = 3,
+    min_periods: int = 13,
     note: str = "",
     group: str = "",
 ) -> dict:
@@ -330,11 +332,19 @@ def pair_view(
 
     两者都只输出**分位**，不给原始值——原始值的绝对值在这里没有可比性。
     窗口统一，否则位置分位和边际分位不可比。
+
+    `mom_col=None` = **只给位置，不算边际**。年度数据（如股息率，只有 11 个点）
+    就该这么传：硬算 yoy 得到的是 4~5 个不同值的重复，分位数是假精确。
+    这种行的 `mom_name` 为 "—"、`combo` 为 "仅位置"，渲染层不会显示边际。
+
+    `min_periods` / `freq`：稀疏数据（年度）要配 `freq="YE"` + 更小的
+    `min_periods`，否则按月 resample 后窗口 60 期里其实只有 5 个不同的值。
     """
+    mom_off = mom_col is None
     out = {"label": label, "group": group, "direction": direction,
            "pos_name": BASIS_NAME.get(pos_basis, pos_basis),
-           "mom_name": BASIS_NAME.get(mom_basis, mom_basis),
-           "note": note, "missing": False}
+           "mom_name": "—" if mom_off else BASIS_NAME.get(mom_basis, mom_basis),
+           "note": note, "missing": False, "mom_off": mom_off}
 
     def _prep(col: str) -> pd.Series:
         if col not in df.columns:
@@ -343,21 +353,47 @@ def pair_view(
 
     pos_raw = _prep(pos_col)
     pos = _basis_series(pos_raw, pos_basis, roll_n).dropna()
-    mom_raw = _prep(mom_col) if mom_col in df.columns else pos_raw
-    mom = _basis_series(mom_raw, mom_basis, roll_n).dropna()
 
-    if len(pos) < 13:
+    if len(pos) < min_periods:
         out["missing"] = True
         return out
 
-    pos_pct, pos_win = _pct_rank_series(pos, window)
-    mom_pct, mom_win = _pct_rank_series(mom, window) if len(mom) >= 13 else (float("nan"), 0)
+    pos_pct, pos_win = _pct_rank_series(pos, window, min_periods)
+
+    if mom_off:
+        out.update({
+            "pos_pct": pos_pct, "pos_window": pos_win,
+            "pos_value": float(pos.iloc[-1]),
+            "mom_pct": float("nan"), "mom_window": 0, "mom_value": float("nan"),
+            # 期数与详情卡的「N 期」同一口径（窗口长度，不是观测数）
+            "combo": f"仅位置（{pos_win} 期窗口，无边际）",
+            "asof": _asof(pos, df),
+        })
+        return out
+
+    assert mom_col is not None           # 上面 mom_off 已经挡住了 None
+    mom_raw = _prep(mom_col) if mom_col in df.columns else pos_raw
+    mom = _basis_series(mom_raw, mom_basis, roll_n).dropna()
+    mom_pct, mom_win = (_pct_rank_series(mom, window, min_periods)
+                        if len(mom) >= min_periods else (float("nan"), 0))
 
     out.update({
         "pos_pct": pos_pct, "pos_window": pos_win, "pos_value": float(pos.iloc[-1]),
         "mom_pct": mom_pct, "mom_window": mom_win,
         "mom_value": float(mom.iloc[-1]) if len(mom) else float("nan"),
         "combo": combo_read(pos_pct, mom_pct, direction),
-        "asof": str(pos.index[-1].date()),
+        "asof": _asof(pos, df),
     })
     return out
+
+
+def _asof(pos: pd.Series, df: pd.DataFrame) -> str:
+    """期别 = 最后一期的标签，但**不许落在数据范围之外**。
+
+    年频（`freq="YE"`）会把当年标成 `2026-12-31`，而面板只到 2026-11-10——
+    卡片上出现一个未来日期，等于把"这期还没结束"伪装成"这期已结算"。
+    """
+    label = pos.index[-1]
+    if len(df.index) and label > df.index[-1]:
+        label = df.index[-1]
+    return str(label.date())

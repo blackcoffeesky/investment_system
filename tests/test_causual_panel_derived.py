@@ -120,10 +120,12 @@ def _bad_edge_cols(pkg, panel) -> dict[str, str]:
 def test_ashare_required_tables_have_data():
     """`REQUIRED_TABLES` 里每张表都要真的取到数据。
 
-    ⚠️ 这条是**故意 fail-closed** 的：数据层删表（例如计划中的
-    `dividend_annual` → 派生股息率）时，这里会立刻变红，逼着 causual
-    的依赖同步改掉——因为表没了不会安静降级，`series_map` 会直接抛
+    这条是**故意 fail-closed** 的：数据层删表 / 改表名时这里会立刻红，
+    因为表没了不会安静降级——`series_map` 会直接抛
     `DatabaseError: no such table`，整张面板连带卡片一起挂。
+
+    注意它是从 `panel.py` 的映射**推导**出来的（`_required_tables()`），
+    所以删掉映射里的表，`REQUIRED_TABLES` 会自动少一张，不用改第二处。
     """
     ctx = _context()
     if ctx["close"].empty:
@@ -131,6 +133,46 @@ def test_ashare_required_tables_have_data():
 
     bad = _missing_tables(ctx["series"], ctx["pkg"].REQUIRED_TABLES)
     assert not bad, f"ashare 有表没取到数据：{bad}"
+
+
+def test_dividend_annual_no_longer_required():
+    """迁移守卫：causual **已彻底不依赖 `dividend_annual`**。
+
+    v5.42 把「分红/净利润」换成现算的「股息率」后，这张表就不该再出现在
+    依赖清单里——否则数据层一删表，面板直接 `DatabaseError`。
+    这条红了说明有人把 PAYOUT 之类的映射加回来了。
+    """
+    ctx = _context()
+    tables = tuple(ctx["pkg"].REQUIRED_TABLES)
+    assert "dividend_annual" not in tables, (
+        "REQUIRED_TABLES 里还有 dividend_annual——数据层要删这张表了，"
+        "股息率请用 DataPort.dividend_yield() 现算")
+    keys = [k for k in ctx["series"] if k.startswith("dividend_annual")]
+    assert not keys, f"series 里还装配了 dividend_annual 的列：{keys}"
+
+
+def test_dividend_yield_reaches_panel():
+    """股息率必须真的进面板（否则供需层那一行会静默显示"无数据"）。
+
+    它是 datahub 现算的派生量，靠 CLI 装配点塞进 `series` —— 装配漏了不会报错，
+    只会让 `DIVIDEND_YIELD` 整列 NaN。所以这里同时盯「有值」和「值可信」。
+    """
+    ctx = _context()
+    if ctx["close"].empty:
+        return
+
+    panel = ctx["panel"]
+    assert "DIVIDEND_YIELD" in panel.columns, "面板里没有 DIVIDEND_YIELD"
+    v = panel["DIVIDEND_YIELD"].dropna()
+    assert not v.empty, ("DIVIDEND_YIELD 整列 NaN——"
+                         "`_load_series` 没把 DataPort.dividend_yield() 装配进 series？")
+
+    last = float(v.iloc[-1])
+    assert 0.0 < last < 15.0, f"股息率 {last} 不像百分数（应为 0~15）"
+
+    lag = int((ctx["close"].index > v.index[-1]).sum())
+    assert lag <= MAX_LAG_TRADING_DAYS, (
+        f"DIVIDEND_YIELD 最后有效日 {v.index[-1].date()}，落后 {lag} 个交易日")
 
 
 def test_ashare_derived_columns_present_and_fresh():

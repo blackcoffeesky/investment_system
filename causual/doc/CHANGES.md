@@ -2,6 +2,58 @@
 
 ---
 
+# v5.42（2026-11-14）：分红率 → 股息率，`dividend_annual` 彻底摘掉
+
+## 一、为什么要换
+
+`dividend_annual`（全市场「分红总额 / 归母净利润」）是 causual 里**唯一**硬依赖
+这张表的地方：`PAYOUT → PAYOUT_RATIO → 供需层「增长转化 · 分红/净利润」一行`。
+数据层要删这张表（库里没有逐股财务，留着也拼不出新值），一删
+`series_map` 直接抛 `DatabaseError: no such table`，**整张面板连卡片一起挂**。
+
+而且那行本来就是**伪量化**：库里只有 5 个年度点（4 个不同值），进 `pair_view`
+按月 resample 后却给出「位置 23 分位 / 边际 31 分位」这种看起来很精确的读数。
+
+## 二、换了什么
+
+| 项 | 旧 | 新 |
+|---|---|---|
+| 数据 | `dividend_annual.payout_ratio`（落表） | `DataPort.dividend_yield()`（现算，不落表） |
+| 指标 | 分红/净利润（分配率） | 股息率（市值加权，%） |
+| 分组 | 增长转化 | **股东回报 / 估值**（独立小节） |
+| 边际 | yoy 分位 | **去掉**（11 个年度点算不出可信边际） |
+| 位置分位 | 60 期月频窗口 | `freq="YE"` + `min_periods=8`，在**年度序列**上算 |
+
+## 三、实现细节（都是踩过的地方）
+
+1. **前视**：`dividend_yield(Y)` 用的是年 Y 内的除息日 + 年末收盘价，所以 Y 年
+   的数据要到 Y+1 才完整。装配点把每个年度值对齐到 **Y+1-01-01**，面板只 ffill
+   → **Y 年看到的是 Y-1 的值**。
+2. **一次拿全表**：`dividend_yield()` 要扫 `stock_daily`，约 3.7 秒。
+   装配点只调一次，不按年循环。
+3. **期别不许落在未来**：年频 resample 会把当年标成 `2026-12-31`，而面板只到
+   11-10。`pair_view` 的 `asof` 现在**钳到数据最后一天**——顺手也修掉了月频行
+   显示 `2026-11-30`（未来月末）的老问题。
+4. **卡片不显示边际**：`pair_view(mom_col=None)` → `mom_off=True`；整组都没有边际
+   时，渲染层**不出边际两列**，而不是摆一列「—」让人以为数据缺了。
+5. **依赖自动收缩**：`REQUIRED_TABLES` 是从 `panel.ASHARE` 推导的，删掉 `PAYOUT`
+   映射后 `dividend_annual` 自动消失（28 → 27 张表）；`freshness.WATCH_MACRO`
+   里也一并删掉。
+
+## 四、测试
+
+- `test_dividend_annual_no_longer_required`：守卫「已彻底不依赖」（映射被加回来就红）
+- `test_dividend_yield_reaches_panel`：派生量真的进了面板、是百分数、且新鲜
+- `test_ashare_required_tables_have_data` 的注释同步（不再拿 `dividend_annual` 举例）
+
+## 五、遗留（不在本模块）
+
+`service/ops/states/causal.py::_load_series` 是**另一个装配点**，它只调
+`data.series_map()`，不装派生量 → **web/ops 生成的卡片上股息率那行会显示「无数据」**。
+已报 orchestrator（跨目录，未改）。
+
+---
+
 # v5.41（2026-11-14）：新鲜度监控复活 + 派生列去 inf
 
 ## 一、`WATCH_MACRO` 的表名全过期 → 宏观层过期永远不会被报出来

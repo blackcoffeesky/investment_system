@@ -77,10 +77,6 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
     df["VOLUME_Z"] = (vol - vmu) / vsd.replace(0, np.nan)
     df["AMOUNT_SHOCK"] = df["VOLUME_Z"]
 
-    # 股东回报：全市场分红 / 归母净利润（年度）。年报次年才影响市场，
-    # 所以用 (年份 - 1) 的值，避免把当年年报提前到年内使用。
-    df["PAYOUT_RATIO"] = _payout_series(df)
-
     # 供需派生：**先在月频上算，再 ffill 回日频**。
     # 直接在日频上 diff 会得到 0（日频是 ffill 的），ΔM1 会恒等于 0。
     m1 = df["M1_LEVEL"].resample("ME").last()
@@ -105,20 +101,6 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
     # 资金活化：M1 同比 − M2 同比（正值 = 活期化改善）
     df["M1M2_GAP"] = df["M1_YOY"] - df["M2_YOY"]
     return df
-
-
-def _payout_series(df: pd.DataFrame) -> pd.Series:
-    """年度分红率：直接取面板里的 `PAYOUT` 列。
-
-    用上一年度的值（今年年报还没出），避免前视。数据由面板负责取，
-    资产管线不自己去读库。
-    """
-    if "PAYOUT" not in df.columns:
-        return pd.Series(np.nan, index=df.index)
-    base = df["PAYOUT"].resample("YE").last().dropna()
-    m = {int(y.year): float(v) for y, v in base.items()}
-    return pd.Series([m.get(int(y) - 1, np.nan) for y in df.index.year],
-                     index=df.index)
 
 
 def load_raw(series, meta=None) -> pd.DataFrame:
@@ -339,13 +321,17 @@ def supply_items(df: pd.DataFrame) -> list[dict]:
                   mom_col="EXPORTS_YOY", mom_basis="dma3",
                   note="数据停在 2025-08"),
         # ---- 3.4 增长转化
-        pair_view(df, group="增长转化", label="分红 / 净利润", direction="+",
-                  pos_col="PAYOUT_RATIO", pos_basis="level",
-                  mom_col="PAYOUT_RATIO", mom_basis="yoy",
-                  note="年度，滞后 90 天"),
         pair_view(df, group="增长转化", label="大股东净增持", direction="+",
                   pos_col="INSIDER_NET", pos_basis="roll3",
                   mom_col="INSIDER_NET", mom_basis="level"),
+        # ---- 3.5 股东回报 / 估值
+        # 年度口径，只有 11 个点：**只给位置，不判边际**（11 个年度点算不出可信 yoy，
+        # 硬算出来的"同比分位"是伪量化）。freq="YE" 让分位在**年度序列**上算，
+        # 否则按月 resample 后窗口 60 期里其实只有 5 个不同的值。
+        pair_view(df, group="股东回报 / 估值", label="股息率（市值加权）", direction="+",
+                  pos_col="DIVIDEND_YIELD", pos_basis="level",
+                  freq="YE", min_periods=8,
+                  note="年度，市值加权；只有位置维度"),
     ]
 
 

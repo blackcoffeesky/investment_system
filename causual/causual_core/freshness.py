@@ -57,8 +57,11 @@ MONTH_TABLES = (
     "cb_holdings", "gold_etf_holdings", "gold_cpi_surprise",
 )
 
-# 年频另放：`_period_end("Y")` 判得了过期，但归档月不能用它
-WATCH_MACRO = MONTH_TABLES + ("dividend_annual",)
+# 年频另放：`_period_end("Y")` 判得了过期，但归档月不能用它。
+#
+# `dividend_annual` 已从这里删除（v5.42）：causual 不再读那张表，
+# 股息率改由 `DataPort.dividend_yield()` 现算。数据层把它删了也不会有人疼。
+WATCH_MACRO = MONTH_TABLES
 
 
 @dataclass
@@ -92,7 +95,7 @@ def _period_end(freq: str, today: pd.Timestamp) -> pd.Timestamp | None:
         q_end = today.to_period("Q").start_time - pd.Timedelta(days=1)
         return pd.Timestamp(q_end).normalize()
     if freq == "Y":
-        # 年频（如 dividend_annual）：上年末才算"已结束的年度"。
+        # 年频：上年末才算"已结束的年度"。
         # 早前这里没这一支 → 返回 None → 年频表永远被跳过，等于没监控。
         return pd.Timestamp(year=today.year - 1, month=12, day=31)
     # 其余（W 周频、SPARSE 不定期）有意不判：见模块 docstring

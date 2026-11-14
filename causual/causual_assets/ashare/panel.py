@@ -48,12 +48,15 @@ ASHARE = {
     "TOTAL_SHARES": "total_shares",
     "TOTAL_MKTCAP": "total_mktcap",
     "EQUITY_FIN_MONTHLY": "equity_fin_monthly",
-    # 年度分红率：payout_ratio 只存在于 dividend_annual 的 payout_ratio 列
-    "PAYOUT": ("dividend_annual", "payout_ratio"),
 }
 
 # 旧面板有、数据层没有的列：补空列，避免下游 KeyError
 STUB_COLS = ["SOCIAL_FINANCING", "EQUITY_SUPPLY", "AFRE_STOCK", "EQUITY_FIN_STOCK"]
+
+# 股息率（年度，百分数）：datahub **现算的派生量**，不落表。
+# 由装配点（`causual_core.cli._load_series`）按 "表名:列名" 塞进 series，
+# 和 `etf_shares` 那几列同一个套路——面板只负责对齐，不负责取数。
+DIVIDEND_YIELD_KEY = "dividend_yield:yield_mcap_weighted"
 
 # 分组用于派生：按宽基规模排序（裸 6 位码；比对时两侧都归一化）
 GROUPS = {
@@ -157,11 +160,30 @@ def _derived(idx: pd.DatetimeIndex, series) -> dict[str, pd.Series]:
     return out
 
 
+def _dividend_yield(idx: pd.DatetimeIndex, series) -> pd.Series:
+    """年度股息率（全市场，市值加权，%）→ 日频。
+
+    装配点已经把它对齐到**次年 1 月 1 日**（年 Y 的除息日都落在 Y 内，数据到
+    Y+1 才完整），所以这里只做 ffill：**Y 年看到的是 Y-1 的值，无前视**。
+
+    缺数据时给整列 NaN 并告警——它是供需层的展示项，不该拖垮整张面板；
+    但要出声，否则又变成"列悄悄没了"（`tests/test_causual_panel_derived.py`
+    盯着它有没有值）。
+    """
+    s = series.get(DIVIDEND_YIELD_KEY)
+    if s is None or len(s) == 0:
+        _warn(f"series 里没有 {DIVIDEND_YIELD_KEY!r}（datahub 的派生量没装配上？）"
+              "，DIVIDEND_YIELD 置 NaN")
+        return pd.Series(index=idx, dtype=float)
+    return common.to_daily(s, idx, 0)
+
+
 def panel(series, meta=None) -> pd.DataFrame:
     df = common.build({**SHARED, **ASHARE}, index_table="csi_all",
                   series=series, meta=meta)
     for col, s in _derived(df.index, series).items():
         df[col] = s
+    df["DIVIDEND_YIELD"] = _dividend_yield(df.index, series)
     for col in STUB_COLS:
         if col not in df.columns:
             df[col] = float("nan")

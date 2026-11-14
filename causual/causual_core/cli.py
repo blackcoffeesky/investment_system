@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 
 import pandas as pd
 
@@ -56,10 +57,57 @@ def cmd_audit(args) -> int:
     return 0
 
 
+def _derived_series(asset: str, port) -> dict[str, pd.Series]:
+    """数据层**现算的派生量** → 按 `"表名:列名"` 塞进 series。
+
+    目前只有 A 股的股息率（`DataPort.dividend_yield()`，年度，百分数）。
+
+    ⚠️ 两件事必须记住：
+    1. **一次拿全表**：这个调用要扫一遍 `stock_daily`，约 3.7 秒——**不要按年循环**。
+    2. **年度值对齐到"次年 1 月 1 日"**：年 Y 的除息日全落在 Y 内，数据到 Y+1 才完整，
+       所以 Y 年只能看到 Y-1 的值（防前视）。面板那边只做 ffill。
+
+    取不到就返回空 dict 并**打印原因**——面板会把该列置 NaN，卡片上那一行显示
+    「无数据」，不会静默变成"这一行不存在"。
+    """
+    if asset != "ashare":
+        return {}
+    try:
+        dy = port.dividend_yield()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[causual] 股息率派生量取不到（{type(exc).__name__}: {exc}）；"
+              "DIVIDEND_YIELD 会是整列 NaN", file=sys.stderr)
+        return {}
+    if dy is None or len(dy) == 0:
+        print("[causual] 股息率派生量是空的；DIVIDEND_YIELD 会是整列 NaN",
+              file=sys.stderr)
+        return {}
+
+    # 只装用到的那一列。将来要 `yield_median`（股息率中位数）就在这里多塞一行——
+    # 同一次调用已经把三列都拿回来了，不额外花钱。
+    col = "yield_mcap_weighted"
+    if col not in dy.columns:
+        print(f"[causual] 股息率派生量里没有 {col}（有 {list(dy.columns)}）；"
+              "DIVIDEND_YIELD 会是整列 NaN", file=sys.stderr)
+        return {}
+
+    s = pd.to_numeric(dy[col], errors="coerce").dropna()
+    if s.empty:
+        print(f"[causual] 股息率 {col} 全为空；DIVIDEND_YIELD 会是整列 NaN",
+              file=sys.stderr)
+        return {}
+    s.index = pd.DatetimeIndex([
+        pd.Timestamp(year=int(y) + 1, month=1, day=1) for y in s.index])
+    return {f"dividend_yield:{col}": s.astype(float)}
+
+
 def _load_series(asset: str, state=None):
     """命令行入口负责装配数据：causual 库代码不碰数据层，入口文件可以。
 
     传了 `state` 端口就把状态层要的表一起读了（两边共用一份快照）。
+    派生量（不落表的那种）也在这里装进 series——**service 侧的装配点
+    （`service/ops/states/causal.py::_load_series`）要装同样的东西**，
+    否则 web 生成的卡片上股息率那行会显示「无数据」。
     """
     from datahub.port import get_port
 
@@ -68,7 +116,9 @@ def _load_series(asset: str, state=None):
     tables = list(pkg.REQUIRED_TABLES)
     if state is not None:
         tables += [t for t in state.required_tables(asset) if t not in tables]
-    return port.series_map(tables), port.metadata()
+    series = port.series_map(tables)
+    series.update(_derived_series(asset, port))
+    return series, port.metadata()
 
 
 def cmd_daily(args) -> int:

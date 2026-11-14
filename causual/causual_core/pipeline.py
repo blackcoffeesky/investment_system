@@ -162,6 +162,14 @@ def _month_of(meta: pd.DataFrame | None) -> str:
     `cn_cpi / cn_ppi / cn_m2 / cn_exports` —— 那些名字数据层早就不用了，
     实际只靠 `cb_holdings` / `gold_etf_holdings` 命中，于是 **A 股的归档月
     是由黄金的表决定的**（凑巧都是 09-30 才没露出来）。
+
+    ⚠️ **仍然不分资产**：`CausalPort.macro_month(meta)` 没有 `asset` 参数，
+    而 service 的幂等链是「`macro_month(meta)` 给月份 → `exists(asset, month)`
+    判断要不要生成 → 生成」。如果这里按资产收窄，gold 会算出 09 而
+    `exists` 还在问 10，**那张卡会被反复重生成**。
+    所以把两边一起改（port 加 `asset` 参数 + service 调用点）才能收窄；
+    在那之前，这里返回**两个资产宏观表的并集月**（当前 = 2026-10，
+    对黄金偏乐观一个月）。
     """
     from causual.causual_core import freshness
 

@@ -181,9 +181,9 @@ regime（状态） / signal（边） / narrative（卡片）
 | 列 | 来源 |
 |---|---|
 | `SIZE_FLOW` / `ETF_DISPERSION` / `NATIONAL_ETF` / `NATIONAL_ETF_EVENT` | 由 `etf_shares` 现算 |
+| `DIVIDEND_YIELD` | `DataPort.dividend_yield()`（现算，不落表）；年度值对齐到**次年 1 月 1 日**，防前视 |
 | `CB_GOLD_BUY` | `cb_holdings.diff()` |
 | `ETF_FLOW` | `gold_etf_holdings.diff()` |
-| `PAYOUT_RATIO` | 读 `dividend_annual`，取**上一年度**值（避免前视） |
 
 判定标准：**去掉它之后能不能用库里其他数据算出来**。算得出来的就不入库。
 
@@ -387,7 +387,8 @@ causual/
 | 3.1 供需总量 | M1 / 总市值 |
 | 3.2 供需增量 | ΔM1、净供给（融资−增持） |
 | 3.3 宏观环境 | 社零、工业增加值、PMI、M1−M2、CPI、PPI、出口 |
-| 3.4 增长转化 | 分红/净利润、大股东净增持 |
+| 3.4 增长转化 | 大股东净增持 |
+| 3.5 股东回报 / 估值 | 股息率（市值加权）——**只有位置维度**，年度 11 个点算不出可信边际 |
 
 ### 6.3 为什么不再给"传导结构"
 
@@ -435,8 +436,8 @@ python -m causual.causual_core.cli regime --asset ashare   # 重拟状态模型
 python -m causual.causual_core.cli edges  --asset ashare   # 重估边 → 快照
 python -m causual.causual_core.cli audit  --asset ashare   # 方向一致性审计
 
-# 年度分红率（缓存，最多重跑一次/年）
-python -m causual.causual_assets.ashare.dividend
+# 股息率：datahub 现算（DataPort.dividend_yield()，约 3.7 秒/次），
+# 出卡时自动装配，没有单独的缓存命令了
 ```
 
 **手工维护的数据**（全部在 `datahub/intake/`）：
@@ -532,4 +533,4 @@ python -m causual.causual_assets.ashare.dividend
 
 ## 12. 版本
 
-当前 v5.41（2026-11-14）。逐版变更见 [`CHANGES.md`](CHANGES.md)。
+当前 v5.42（2026-11-14）。逐版变更见 [`CHANGES.md`](CHANGES.md)。

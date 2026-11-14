@@ -281,15 +281,29 @@ def build_card(
             groups.setdefault(r.get("group") or "其他", []).append(r)
 
         for gi, (gname, items) in enumerate(groups.items(), start=1):
+            # 整组都没有边际口径（如年度股息率：11 个点算不出可信 yoy）时，
+            # 索性不出边际两列——摆一列全是「—」，读者会以为数据缺了。
+            any_mom = any(not r.get("mom_off") for r in items)
             a(f"**3.{gi} {gname}**")
             a("")
-            a("| 指标 | 位置口径 | 位置分位 | 边际口径 | 边际分位 | 组合读法 | 备注 |")
-            a("|---|---|---|---|---|---|---|")
+            if any_mom:
+                a("| 指标 | 位置口径 | 位置分位 | 边际口径 | 边际分位 | 组合读法 | 备注 |")
+                a("|---|---|---|---|---|---|---|")
+            else:
+                a("| 指标 | 口径 | 位置分位 | 读法 | 备注 |")
+                a("|---|---|---|---|---|")
             for r in items:
                 if r.get("missing"):
-                    a(f"| {r['label']} | — | — | — | — | 无数据 | — |")
+                    if any_mom:
+                        a(f"| {r['label']} | — | — | — | — | 无数据 | — |")
+                    else:
+                        a(f"| {r['label']} | — | — | 无数据 | — |")
                     continue
                 pp = f"{r['pos_pct']:.0f}%" if np.isfinite(r.get("pos_pct", np.nan)) else "—"
+                if not any_mom:
+                    a(f"| {r['label']} | {r['pos_name']} | {pp} | "
+                      f"{r.get('combo', '—')} | {r.get('note', '') or '—'} |")
+                    continue
                 mp = f"{r['mom_pct']:.0f}%" if np.isfinite(r.get("mom_pct", np.nan)) else "—"
                 a(f"| {r['label']} | {r['pos_name']} | {pp} | {r['mom_name']} | {mp} | "
                   f"{r.get('combo', '—')} | {r.get('note', '') or '—'} |")

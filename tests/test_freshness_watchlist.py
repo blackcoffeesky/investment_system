@@ -38,8 +38,9 @@ def _meta(rows: list[tuple[str, str, int, str]]) -> pd.DataFrame:
 def test_watchlist_names_exist_in_datahub():
     """`WATCH` / `MONTH_TABLES` / `WATCH_MACRO` 里每个名字都得是真表。
 
-    ⚠️ 这条在数据层删表时会红（例如计划中的 `dividend_annual`）——
-    **这是有意的**：删表就得把清单一起改，不能让它退化成静默跳过。
+    ⚠️ 这条在数据层删表时会红——**这是有意的**：删表就得把清单一起改，
+    不能让它退化成静默跳过。（`dividend_annual` 已于 v5.42 从清单移除：
+    causual 不再读那张表，股息率改由 `DataPort.dividend_yield()` 现算。）
     """
     from causual.causual_core import freshness
     from datahub.port import get_port
