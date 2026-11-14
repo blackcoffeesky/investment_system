@@ -245,21 +245,35 @@ d = read("csi_all")           # DataFrame
 
 key 只在 `.env` / 环境变量 `ASHARE_API_KEY`，代码不存。
 
-| 端点 | 用途 | 频率 |
-|---|---|---|
-| `/v1/stocks` | 全市场清单 → `company` | 每月 |
-| `/v1/finance` | 三大报表 → `financials` | 每季 |
-| `/v1/dividend` | 分红送转 → `dividend`（**接口是每 10 股，入库除以 10**） | 事件，7 天节流 |
-| `/v1/snapshot` | 当日股本 → `shares_history`（`kind=base`） | 季度 |
+| 端点 | 用途 | 频率 | 单次上限 / 独立日额度 |
+|---|---|---|---|
+| `/v1/stocks` | 全市场清单 → `company` | 每月 | 1 次拿全 5578 只 |
+| `/v1/snapshot-batch` | 当日股本 → `shares_history`（`kind=base`） | 季度 | 200 只/次 · 200 次/日 |
+| `/v1/finance-batch` | 三大报表 → `financials` | 每季 | **10 只/次**（且 `只数×periods≤40` → 最多 4 期）· **100 次/日** |
+| `/v1/dividend` | 分红送转 → `dividend`（**接口是每 10 股，入库除以 10**） | 事件，7 天节流 | **无批量端点**，只能逐只 |
 
-**没有接的两个**：`/v1/changedist`（涨跌家数）与 `/v1/market-kline`（全市场单日 K 线，专业版）。
-涨跌家数不要单独采：它是 `stock_daily` 的按日聚合，属于派生（见 §11）。
+**2026-11-14 额度实测**（专业版）：`total_quota=500000`、`per_min=300`、
+**每个批量端点有独立日额度**（`heavy_quotas`），**没有全局日额度**（`daily_quota=null`）。
+计费：批量 **1 次/只**（与单只同价）、`market-kline` **500 次/次**、被 422 拒 **0 扣费**、
+非交易日打 `market-kline` 也是 **0 扣费**（返回 200 + `ok:false` + 空）。
 
-**额度**：标准版买断 10 万次。`finance`/`dividend`/`snapshot` 都是**单只一次调用**，
-所以《每天全量 5000 只》是不可行的（10 天烧完）。按上表的频率，一年约 5 万次。
+**⚠️ 上游会降级（2026-11-14 踩到）**：持续调用同一个数据源，会返回
+`reason=temporarily_unavailable` + `retry_after_s=60`。两种表现都要防：
+- `ok:false`——看起来像"这只没数据"，实际是被限流；
+- `ok:true` 但**少表**（实测某只只回 `balance`）——这是静默缺数据。
 
-**专业版（¥99，50 万次）解锁的是批量端点**：`market-kline` 一次拿全市场单日 K 线、
-`finance-batch` 一次 10 只——这才是日更的正确姿势。
+所以取数函数**逐只校验 `income`+`balance` 都在**，缺的记失败、不写半条。
+实测单只 `/v1/finance` 约 1.8s/次且速率一高就降级（全市场要 1~3 小时），
+**batch 才是可行路径**（1 请求 10 只）。
+
+**续跑**：`shares`/`financials` 都只抓"库里还没有的 code"，`financials` 的
+`max_calls` 默认等于日额度（100 次 = 1000 只）→ 全市场 5578 只需 6 天，
+每天跑一次 `update` 自动接着补，不需要跨天游标。
+`shares_history` 一次 28 次调用覆盖全市场（实测 37 秒）。
+
+**另外两个可用但没接的端点**：`/v1/market-kline`（全市场单日 K 线，5571 行含北交所，
+1 次=500 额度，200 次/日）与 `/v1/changedist`（当期涨跌家数，**只能对账不能回补历史**，
+用来校验 `derive.breadth()` 的口径漂移）。
 
 ---
 

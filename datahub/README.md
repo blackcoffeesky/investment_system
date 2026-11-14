@@ -220,6 +220,7 @@ python -m datahub.fin.check --ack vix:2026-10-20 --reason "美股休市数据源
 | `geopolitic_risk` | FRED 无此序列，旧数据冻结；新数据改用 `world_tension`（2026-03 起） |
 | `etf_shares` | 各只起始日跨度大（2016-01 ~ 2025-04），部分标的有采集空洞 |
 | `cb_holdings` | 2026Q2 有 23/87 国 `AWAITED`，按 Q1 补齐 → 低估 |
+| `financials` | 走 `finance-batch` 回填的 code 只有**最近 4 期**（`只数×periods≤40` 的硬限制）；早期 5 只是 8 期。全市场 5578 只需 **6 天**（100 次/日 × 10 只），靠"只抓缺的 code"续跑 |
 
 ## 11. long 表的读法
 
