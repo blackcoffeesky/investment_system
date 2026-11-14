@@ -112,12 +112,45 @@ def profile(res: dict, regular: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------- 画图
-def plot_segments(res: dict, feats: pd.DataFrame, close: pd.Series,
-                  path: Path, title: str) -> Path:
-    """价格曲线 + 按状态分段上色——看"市场是怎么被切开的"。"""
+def segment_figure(res: dict, close: pd.Series, title: str):
+    """价格曲线 + 按状态分段上色。返回 Figure，notebook 里直接 display。"""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+
+    st = res["states"]
+    colors = plt.get_cmap("tab10")
+    fig, ax = plt.subplots(figsize=(13, 4.2), dpi=120)
+    ax.plot(close.index, close.values, color="black", lw=0.9, zorder=3)
+
+    run_id = (st != st.shift()).cumsum()
+    for _, block in st.groupby(run_id):
+        if block.empty:
+            continue
+        sid = int(block.iloc[0])
+        ax.axvspan(block.index[0], block.index[-1],
+                   color=colors(sid % 10), alpha=0.22, lw=0)
+
+    from matplotlib.patches import Patch
+
+    ax.legend(handles=[Patch(facecolor=colors(i % 10), alpha=0.45, label=f"s{i}")
+                       for i in range(res["k"])],
+              loc="upper left", fontsize=8, ncol=res["k"])
+    ax.set_title(title, fontsize=11)
+    ax.grid(alpha=0.25)
+    fig.tight_layout()
+    return fig
+
+
+def plot_segments(res: dict, feats: pd.DataFrame, close: pd.Series,
+                  path: Path, title: str) -> Path:
+    """存一张分割图到文件（命令行用）。"""
+    import matplotlib.pyplot as plt
+
+    fig = segment_figure(res, close, title)
+    fig.savefig(path, dpi=130)
+    plt.close(fig)
+    return path
 
     st = res["states"]
     colors = plt.get_cmap("tab10")

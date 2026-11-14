@@ -8,8 +8,8 @@
 ```
 experiment/
 ├── k_study.py        K 值研究：不同状态数下的画像 / 分离度 / BIC / 分割图
-├── k_study.ipynb     同一套逻辑的 notebook 版（方便边看边改）
-└── out/              产物：profile_*.csv、segments_*.png、summary_*.csv
+├── k_study.ipynb     同一套逻辑的 notebook 版（图**直接出在单元下面**，不落盘）
+└── out/              仅命令行跑时的落盘产物（profile_*.csv、segments_*.png）
 ```
 
 ## 跑法
@@ -30,7 +30,8 @@ python -m experiment.k_study --asset ashare --k 2,3,4,5,6
 | `avg_duration` | 平均持续天数 | 太短（<3 天）说明状态在抖动 |
 | `stay_prob` | 留在本状态的概率 | 接近 0 说明这个状态是个"过渡态"，没有实际含义 |
 
-分割图（`segments_*.png`）：价格曲线 + 按状态上色的背景，直接看市场被切成什么样。
+分割图：价格曲线 + 按状态上色的背景。notebook 里用 `segment_figure()` 直接 display；
+命令行跑才写 `out/segments_*.png`。
 
 > 注意：这里的拟合是**全样本**的（研究用，快），不做 walk-forward。
 > 所以图中的状态划分带未来信息，**不能**拿来当实盘标签。
