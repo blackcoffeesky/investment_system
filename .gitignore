@@ -29,6 +29,8 @@ data/
 # ---- 归档与大件 ----
 trash/
 backup_*/
+datahub/*backup*.sqlite*
+datahub/*.sqlite.*.bak
 multi-factors/
 saved_models/
 

@@ -58,7 +58,7 @@ saved_models/<asset>/     current.json / labels.csv / chain.pkl / hmm_last.pkl
 | `align.py` | 状态命名（按均值排序映射成 trend_up/range/…） | 模型 |
 | `fit.py` | `fit_pipeline`：按链跑模型 + 组 spec | cli |
 | `store.py` | 产物读写（spec / labels / chain） | fit / port |
-| `analysis/observations.py` | 观测矩阵（收益/波动/成交/换手/宽度/大小盘） | web |
+| `analysis/observations.py` | 观测矩阵（收益/波动/成交/换手/大小盘） | web |
 | `analysis/stats.py` | 状态画像（各状态的收益、波动、持续） | web |
 | `port.py` | 对外能力 | 其他模块 |
 | `cli.py` | `python -m state_layer.cli regime` | 人 |
@@ -169,6 +169,9 @@ saved_models/<asset>/
 
 ## 8. 已知限制
 
+- **市场宽度不在状态层**：`breadth_adv / breadth_dec / breadth_limitup` 三张表已从数据层
+  删除，宽度改由 `datahub.fin.derive.breadth()` 现算；`/state` 的时间轴暂不展示宽度。
+  `config.FEATURES` 里从来没有宽度类特征，所以这次摘除**不影响模型、不需要重拟合**
 - **K 不是瓶颈，特征才是**：`experiment/k_study.py` 实测 K=3 会切出一个 2.7%、
   `stay_prob≈0` 的退化状态；K=2 更干净但切的是波动率不是趋势
 - **退市股缺失**：`stock_daily` 只有当前在市股票，历史回测有幸存者偏差

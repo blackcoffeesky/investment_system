@@ -37,7 +37,7 @@
 
 <h2>时间轴（近 {{ days }} 个交易日）</h2>
 <div class="card-body">{{ svg | safe }}</div>
-<p class="muted">上：收盘价 + 状态色带；中：成交额；下：涨跌家数比（绿线）。悬停可看当天数值。</p>
+<p class="muted">上：收盘价 + 状态色带；下：成交额。悬停可看当天数值。</p>
 
 <h2>各状态画像</h2>
 {% if profile is not none and profile | length %}
@@ -46,7 +46,7 @@
     <th align="left">状态</th><th align="right">天数</th><th align="right">占比</th>
     <th align="right">均持续</th><th align="right">日均收益</th><th align="right">日波动</th>
     <th align="right">成交额(亿)</th><th align="right">换手%</th>
-    <th align="right">涨跌比</th><th align="right">涨停</th><th align="right">大小盘差</th>
+    <th align="right">大小盘差</th>
   </tr>
   {% for _, r in profile.iterrows() %}
   <tr>
@@ -58,13 +58,11 @@
     <td align="right">{{ '%.3f' | format(r['vol']) }}</td>
     <td align="right">{{ '%.0f' | format(r['amount']) if r['amount'] == r['amount'] else '—' }}</td>
     <td align="right">{{ '%.2f' | format(r['turnover']) if r['turnover'] == r['turnover'] else '—' }}</td>
-    <td align="right">{{ '%.2f' | format(r['advance_ratio']) if r['advance_ratio'] == r['advance_ratio'] else '—' }}</td>
-    <td align="right">{{ '%.0f' | format(r['limit_up']) if r['limit_up'] == r['limit_up'] else '—' }}</td>
     <td align="right">{{ '%+.2f' | format(r['small_large']) if r['small_large'] == r['small_large'] else '—' }}</td>
   </tr>
   {% endfor %}
 </table>
-<p class="muted">「—」= 该指标没有覆盖到这段历史（多为宽度数据只有近期快照）。</p>
+<p class="muted">「—」= 该指标没有覆盖到这段历史。</p>
 {% else %}
 <p class="muted">还没有状态标签，先跑一次 <code>cli regime</code>。</p>
 {% endif %}

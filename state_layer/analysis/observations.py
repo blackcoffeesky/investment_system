@@ -3,11 +3,16 @@
 三组划分
 --------
 1. **市场结果**（组 1）：收益、波动、成交额、换手率 —— 市场的"体温"
-2. **资金活动代理**（组 2）：涨跌家数比、涨停数、大小盘分化 —— 钱的"痕迹"
+2. **资金活动代理**（组 2）：大小盘分化 —— 钱的"痕迹"
 3. **近主体观测**（组 3）：两融、ETF 份额、大股东增持 —— **归 causual，本层不读**
 
 第三组被 `EXCLUDED_TABLES` 显式挡住。不是注释提醒，是运行时会跳过的硬约束：
 想拿它做诊断，必须先删掉常量，这就逼着人停下来想一次"为什么要共用输入"。
+
+**市场宽度已摘除**（2026-11）：数据层的 `breadth_adv` / `breadth_dec` /
+`breadth_limitup` 三张表被删，宽度改由 `datahub.fin.derive.breadth()` 现算。
+状态页的时间轴暂不展示宽度。要恢复的话在这里加回观测列即可，
+**不需要重拟合**——`config.FEATURES` 里从来没有宽度类特征。
 """
 
 from __future__ import annotations
@@ -41,10 +46,6 @@ OBSERVATIONS: tuple[Obs, ...] = (
     Obs("amount", 1, "成交额", ("csi_all", "amount"), "亿元"),
     Obs("turnover", 1, "换手率", ("csi_all", "turnover"), "%"),
     # ---- 组 2：资金活动代理
-    Obs("advance_ratio", 2, "涨跌家数比", ("breadth_adv", "breadth_dec"), "",
-         note="上涨/(上涨+下跌)；只有从建表起的快照，历史不可回溯"),
-    Obs("limit_up", 2, "涨停数", ("breadth_limitup",), "只",
-         note="涨幅 > 9.8% 的家数，同样是快照"),
     Obs("small_large", 2, "大小盘分化", ("csi1000", "csi300"), "%",
          note="中证1000 收益 − 沪深300 收益；正值说明钱往小票走"),
 )
@@ -63,11 +64,6 @@ def panel(series: dict) -> pd.DataFrame:
     # 成交额/换手率现在和 OHLCV 同一张表（csi_all），列名 amount / turnover
     out["amount"] = _align(_pick_opt(series, "csi_all", "amount"), out.index)
     out["turnover"] = _align(_pick_opt(series, "csi_all", "turnover"), out.index)
-
-    adv = _align(_pick_opt(series, "breadth_adv"), out.index)
-    dec = _align(_pick_opt(series, "breadth_dec"), out.index)
-    out["advance_ratio"] = adv / (adv + dec).replace(0, pd.NA)
-    out["limit_up"] = _align(_pick_opt(series, "breadth_limitup"), out.index)
 
     small = _align(_pick_opt(series, "csi1000"), out.index).pct_change() * 100
     large = _align(_pick_opt(series, "csi300"), out.index).pct_change() * 100

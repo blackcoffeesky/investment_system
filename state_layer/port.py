@@ -20,9 +20,10 @@ from state_layer import store
 from state_layer.analysis import observations, stats
 from state_layer.model import MODELS, run_infer
 
+# 页面观测用到的表。市场宽度（breadth_*）已从数据层移除、改由
+# `datahub.fin.derive.breadth()` 现算，状态层不再依赖它们。
 REQUIRED_TABLES = (
     "csi_all",
-    "breadth_adv", "breadth_dec", "breadth_limitup",
     "csi1000", "csi300",
 )
 

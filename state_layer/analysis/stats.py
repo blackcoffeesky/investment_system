@@ -4,7 +4,7 @@
 
     现有状态在资金维度上到底有没有区分度？
 
-如果「趋势上行」和「趋势下行」在换手率、涨跌家数上几乎一样，
+如果「趋势上行」和「趋势下行」在换手率、大小盘差上几乎一样，
 说明这套状态对资金诊断没用——那要换的是输入，不是模型。
 """
 
@@ -46,7 +46,7 @@ def current(asset: str) -> dict:
 
 
 def profile(asset: str, obs: pd.DataFrame) -> pd.DataFrame:
-    """各状态的天数、持续、收益、波动、成交、换手、宽度、两融变化。"""
+    """各状态的天数、持续、收益、波动、成交、换手、大小盘差。"""
     labels = load_labels(asset)
     if labels.empty or obs.empty:
         return pd.DataFrame()
@@ -70,8 +70,6 @@ def profile(asset: str, obs: pd.DataFrame) -> pd.DataFrame:
         "vol": g["ret"].std(),
         "amount": g["amount"].mean() if "amount" in df else float("nan"),
         "turnover": g["turnover"].mean() if "turnover" in df else float("nan"),
-        "advance_ratio": g["advance_ratio"].mean() if "advance_ratio" in df else float("nan"),
-        "limit_up": g["limit_up"].mean() if "limit_up" in df else float("nan"),
         "small_large": g["small_large"].mean() if "small_large" in df else float("nan"),
     }).sort_values("n", ascending=False)
 
@@ -80,7 +78,10 @@ def profile(asset: str, obs: pd.DataFrame) -> pd.DataFrame:
 
 
 def timeline(asset: str, obs: pd.DataFrame, days: int = 250) -> list[dict]:
-    """时间轴用的数据：日期、收盘、成交额、宽度、状态。"""
+    """时间轴用的数据：日期、收盘、成交额、状态。
+
+    市场宽度（涨跌家数比）已从数据层移除，时间轴暂不画宽度。
+    """
     labels = load_labels(asset)
     if obs.empty:
         return []
@@ -92,12 +93,10 @@ def timeline(asset: str, obs: pd.DataFrame, days: int = 250) -> list[dict]:
         ts = pd.Timestamp(str(d))
         c = close.get(d) if close is not None else None
         a = r.get("amount")
-        ar = r.get("advance_ratio")
         rows.append({
             "date": str(ts.date()),
             "close": None if c is None or pd.isna(c) else float(c),
             "amount": None if a is None or pd.isna(a) else float(a),
-            "advance_ratio": None if ar is None or pd.isna(ar) else float(ar),
             "label": str(r.get("label") or ""),
         })
     return rows

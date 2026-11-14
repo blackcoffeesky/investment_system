@@ -42,8 +42,12 @@ def _series_for(request: Request) -> dict:
     return data.series_map(list(port.required_tables("ashare")))
 
 
-def _svg(rows: list[dict], width: int = 900, height: int = 260) -> str:
-    """三段式时间轴：上=收盘+状态色带，中=成交额柱，下=涨跌家数比。"""
+def _svg(rows: list[dict], width: int = 900, height: int = 218) -> str:
+    """两段式时间轴：上=收盘+状态色带，中=成交额柱。
+
+    市场宽度（涨跌家数比）已从数据层移除，第三段不画了；
+    要恢复就在这里再加一段，数据由 `datahub.fin.derive.breadth()` 现算。
+    """
     if not rows:
         return "<p class='muted'>没有可画的数据</p>"
 
@@ -54,7 +58,7 @@ def _svg(rows: list[dict], width: int = 900, height: int = 260) -> str:
         return "<p class='muted'>缺少收盘价</p>"
 
     pad_l, pad_r, pad_t = 44, 8, 10
-    h1, h2, h3 = 130, 50, 46
+    h1, h2 = 130, 50
     gap = 14
     plot_w = width - pad_l - pad_r
     x_at = lambda i: pad_l + (plot_w * i / max(1, len(xs) - 1))  # noqa: E731
@@ -97,28 +101,13 @@ def _svg(rows: list[dict], width: int = 900, height: int = 260) -> str:
             f'height="{h:.1f}" fill="#3d6b9e" opacity="0.7">'
             f'<title>{rows[i]["date"]} 成交额 {a:.0f} 亿</title></rect>')
 
-    # ④ 涨跌家数比
-    ratios = [r["advance_ratio"] for r in rows]
-    base3 = height - 6
-    parts.append(f'<line x1="{pad_l}" y1="{base3 - h3 / 2:.1f}" '
-                 f'x2="{width - pad_r}" y2="{base3 - h3 / 2:.1f}" '
-                 f'stroke="#2a2e37" stroke-dasharray="3 3"/>')
-    rpts = " ".join(
-        f"{x_at(i):.1f},{base3 - (r or 0) * h3:.1f}"
-        for i, r in enumerate(ratios) if r is not None)
-    if rpts:
-        parts.append(f'<polyline points="{rpts}" fill="none" stroke="#3fb950" '
-                     f'stroke-width="1.2"/>')
-
-    # ⑤ 轴的文字标注
+    # ④ 轴的文字标注
     parts.append(f'<text x="6" y="{pad_t + 10}" fill="#9aa0a6" font-size="10">'
                  f'{cmax:.0f}</text>')
     parts.append(f'<text x="6" y="{pad_t + h1}" fill="#9aa0a6" font-size="10">'
                  f'{cmin:.0f}</text>')
     parts.append(f'<text x="6" y="{pad_t + h1 + gap + 10}" fill="#9aa0a6" '
                  f'font-size="10">成交额</text>')
-    parts.append(f'<text x="6" y="{base3 - h3 / 2 - 4}" fill="#9aa0a6" '
-                 f'font-size="10">宽度</text>')
     parts.append(f'<text x="{pad_l}" y="{height - 4}" fill="#9aa0a6" font-size="10">'
                  f'{rows[0]["date"]}</text>')
     parts.append(f'<text x="{width - pad_r - 60}" y="{height - 4}" fill="#9aa0a6" '
