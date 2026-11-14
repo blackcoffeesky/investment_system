@@ -1,6 +1,6 @@
 # causual 设计文档
 
-> **更新日期：2026-11-07**　｜　使用说明见 [`readme.md`](readme.md)　｜　变更台账见 [`CHANGES.md`](CHANGES.md)
+> **更新日期：2026-11-14**　｜　使用说明见 [`readme.md`](readme.md)　｜　变更台账见 [`CHANGES.md`](CHANGES.md)
 > 项目整体架构（模块地图、依赖方向、数据流全景）见 [`../../README.md`](../../README.md)。
 
 ---
@@ -15,15 +15,25 @@
 ## 2. causual 在整体中的位置
 
 ```
-regime_engine/     状态模型（HMM）：市场现在处于什么状态
-causual/           因果层：机制 → 方向 → 强度 → 卡片     ← 本模块
-datahub/           数据层：SQLite，一表一序列
-service/           服务层：统一入口 + 运维 + Web
+datahub/        数据层：SQLite，一表一序列
+state_layer/    状态层：市场观测 → 状态标签（**本模块的上游**）
+causual/        因果层：机制 → 方向 → 强度 → 卡片        ← 本模块
+service/        服务层：统一入口 + 运维 + Web
 ```
 
-`causual` 只依赖 `datahub`（经 `DataService` 注入）和 `regime_engine`。
-**`datahub` 不依赖任何上层**，`causual_core` 不含任何取数代码。
-causual 对外的三个出口见 §7。
+**依赖方向**：causual 只依赖 `datahub` 与 `state_layer` 的 **port**，
+而且**只在 CLI 里直连**；service 内一律 `ctx.services[...]`。
+
+因果层**不 import 状态层内部**：状态以参数形式传入
+
+```python
+state = {"labels", "label_name", "labels_order", "version", "spec", "line"}
+pipeline.run(asset, series, meta, state=state)
+```
+
+`series` 与 `meta` 也全部由调用方装好——`causual_core` 里没有取数代码。
+
+卡片里的**市场状态只留一行**，画像与黏性在 `/state` 页（归状态层）。
 
 ---
 

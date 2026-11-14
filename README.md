@@ -1,11 +1,14 @@
 # quant —— 量化研究工作空间
 
-> **更新日期：2026-11-04**
+> **更新日期：2026-11-14**
 
-一个**分层**的量化研究环境：数据、因果归因、状态识别、运维展示各自独立，
-层与层之间只通过显式接口通信。
+一个**分层**的量化研究环境：数据、状态识别、因果归因、运维展示各自独立，
+层与层之间只通过显式端口通信。
 
-**不是**一个回测框架，也**不是**收益预测系统。它的产出是**辅助主观判断的卡片**。
+**不是**回测框架，也**不是**收益预测系统。它的产出是**辅助主观判断的卡片**。
+
+> **多代理协作**：每个模块由独立代理负责，工作约束见 [`AGENTS.md`](AGENTS.md)。
+> 四个模块代理 + 一个 orchestrator；代理只能看见别人的 `port.py`。
 
 ---
 
@@ -13,32 +16,26 @@
 
 ```
 quant/
+├── AGENTS.md        多代理协作的硬约束（先读这个）
 ├── shared/          跨模块纯工具（面板对齐 / 标准化 / 滚动 z）
-├── datahub/         数据层：SQLite + 手工入库 + /data 页面
-├── state_layer/     状态层：市场观测 → 市场状态 + /state 页面（因果层的上游）
+├── datahub/         数据层：SQLite + 抓取入库 + /data 页面
+├── state_layer/     状态层：市场观测 → 状态标签 + /state 页面（因果层的上游）
 ├── causual/         因果层：机制 → 方向 → 强度 → 卡片 + /cards /fit 页面
-├── regime_engine/   状态引擎：HMM 状态识别（不含任何资产知识）
 ├── service/         框架层：注册表 + 共享模板 + 运维状态机
+├── experiment/      试验场：K 值研究、API 探测（生产代码不依赖它）
 ├── tests/           跨模块测试
 └── trash/           归档（不再使用的旧代码，留档备查）
-
-**state_layer 是 causual 的上游**：状态层回答"现在像什么"，因果层回答"为什么"。
-因果层把状态当数据用（就像用 `csi_all` 一样），不 import 状态层内部。
-
-状态层输出契约见 `state_layer/inference.py` 顶部：下游**只用 `label`**，
-不要用 `state_id`——HMM 的状态编号是任意排列的，重训一次可能整体换位。
-
-**每个模块自带 `web/`**（路由 + 模板 + 导航）和 `port.py`（对外能力）。
-service 只做装配、鉴权、错误处理和运维状态机；它对外只暴露 `service.registry`。
 ```
 
 | 模块 | 一句话 | 文档 |
 |---|---|---|
 | `datahub` | 把外部数据变成干净的表 | [README](datahub/README.md) · [DESIGN](datahub/DESIGN.md) |
-| `state_layer` | 从市场观测识别"现在是什么状态" | 见 `state_layer/__init__.py` 顶部说明 |
+| `state_layer` | 从市场观测识别"现在是什么状态" | [README](state_layer/README.md) · [DESIGN](state_layer/DESIGN.md) |
 | `causual` | 每张卡说清"哪些机制在推、推多少" | [README](causual/doc/readme.md) · [DESIGN](causual/doc/DESIGN.md) |
-| `regime_engine` | 市场现在处于什么状态 | 见 `regime_engine/` 源码注释 |
-| `service` | 一个入口访问全部能力，另有运维状态机 | [README](service/README.md) · [DESIGN](service/DESIGN.md) |
+| `service` | 一个入口访问全部能力 + 运维状态机 | [README](service/README.md) · [DESIGN](service/DESIGN.md) |
+
+**`state_layer` 是 `causual` 的上游**：状态层回答"现在像什么"，因果层回答"为什么"。
+因果层把状态当数据用，**不 import 状态层内部**——状态以 `state` 字典传入。
 
 ---
 
@@ -47,51 +44,52 @@ service 只做装配、鉴权、错误处理和运维状态机；它对外只暴
 每个模块 = **核心代码 + `web/` + `port.py`**：
 
 ```
-datahub/  web/(路由·模板)  port.py(DataPort)  fin/ ops/(实现)
-causual/  web/(卡片·拟合)  port.py(CausalPort) causual_core/ causual_assets/
-regime_engine/(无 web、无 port)
-service/  app.py registry.py ops/(状态机) templates/(共享骨架)
+datahub/      web/   port.py(DataPort)    fin/ ops/
+state_layer/  web/   port.py(StatePort)   model/ state_assets/ analysis/
+causual/      web/   port.py(CausalPort)  causual_core/ causual_assets/
+service/      app.py registry.py ops/(状态机) templates/(共享骨架)
 ```
 
 模块注册时声明 `service_port_factory`，service 把它收进 `ServiceBag` —— **注册即共享**。
 
 | 场景 | 允许 |
 |---|---|
-| service 内部（状态机、app、路由） | 必须走端口：`ctx.services["datahub"]`、`request.app.state.services["causual"]` |
-| 模块内部互用 | 可以直接 `from datahub.port import get_port` |
-| 任何地方 | ❌ 不许 import 别的模块的内部实现 |
-| 命令行入口 | 可以直接用 `datahub.port`（不在 service 里跑，没有 Context） |
-
-其它硬约束：
-
-- **数据层不依赖任何上层**
-- **因果层不取数**：`causual_core` 里没有任何 `requests` / `akshare` / `db.read`；
-  面板与出卡都只吃调用方传进来的 `series + meta`
-- **只有 `signal` 层进 α**：结构层与供需层是背景，不是当日归因
-
-违反这些约束的改动，就算能跑通也算 bug。
+| service 内部（状态机、app、路由） | 必须走端口：`ctx.services["datahub"]` |
+| 模块 web（自己的页面） | 只能调**自己**的 port，跨模块走 `request.app.state.services` |
+| 模块内部 | 只能调自己的实现 |
+| `*/cli.py` | 允许直接 import 别的模块的 **port**（命令行是装配点） |
+| 任何模块 `import` 别人的内部实现 | **禁止**（`tests/test_decoupling.py` 会拦） |
 
 ---
 
-## 3. 数据流
+## 3. 跑起来
 
+```bash
+# 数据
+python -m datahub.fin.update                  # 抓数（低频表自动跳过）
+python -m datahub.fin.check                   # 完整性检查
+
+# 状态模型（改特征/K 之后）
+python -m state_layer.cli regime --asset ashare
+
+# 之后必须重估边，否则卡片会被拒
+python -m causual.causual_core.cli edges --asset ashare
+
+# 出卡
+python -m causual.causual_core.cli daily --asset ashare
+
+# 服务
+python -m service.app
 ```
-外部源（FRED / akshare / CFTC / WGC 文件 / XAUS / WTM）
-        │  datahub.update / datahub.intake
-        ▼
-datahub.sqlite   （一表一序列 + metadata + missing + ops_*）
-        │  datahub.fin.read  ←  service.DataService
-        ▼
-causual_assets/{ashare,gold}/panel.py     列名映射 + 公布滞后
-        ▼
-causual_assets/{ashare,gold}/pipeline.py  特征 + 供需层
-        ▼
-causual_core: signal（α）/ top_layer（位置×边际）/ narrative（卡片）
-        ▼
-causual/output/{asset}/cards/YYYY/MM/card_YYYY-MM-DD.md
-        ▼
-service.app（FastAPI）→ 手机/浏览器
+
+### 合并前必跑
+
+```bash
+python tests/run_tests.py
+pyright --project pyrightconfig_off.json
 ```
+
+`pyrightconfig_off.json` 平时关掉（否则顶掉 Pylance 的提示），检查时用 `--project` 指定。
 
 ---
 
@@ -105,15 +103,15 @@ python -m datahub.fin.update
 python -m datahub.fin.check
 
 # 3) 出卡
-python -m causual.causual_core.daily --asset ashare
-python -m causual.causual_core.daily --asset gold
+python -m causual.causual_core.cli daily --asset ashare
+python -m causual.causual_core.cli daily --asset gold
 
 # 4) 起服务（浏览器看卡片与运维）
 uvicorn service.app:app --host 127.0.0.1 --port 8000
 ```
 
 或者干脆只起服务，在 `/ops` 页面点「运行一次 / 重跑」——那会按状态机
-依次执行 fetch → manual_check → validate → generate_cards。
+依次执行 fetch → validate → generate_cards → generate_macro。
 
 手工数据（WGC 季报、ETF 月报）走 `datahub.intake`：
 
@@ -155,21 +153,24 @@ python -m datahub.fin.intake wgc_etf <xlsx> --load
 |---|---|
 | `datahub/datahub.sqlite` | 全部数据 + 运维状态 |
 | `datahub/intake/{raw,clean,parsers}` | 手工数据的暂存/解析 |
-| `causual/data/{regime,snapshots}` | 模型产物（标签、边快照） |
-| `causual/output/{asset}/cards/YYYY/MM/` | 卡片（按年月归档） |
+| `state_layer/saved_models/<asset>/` | 状态模型产物（spec / labels / chain）**不进 git** |
+| `causual/data/snapshots/` | 边模型快照 |
+| `causual/data/output/{asset}/cards/YYYY/MM/` | 卡片（按年月归档） |
+| `.env` | API key 等（**已在 gitignore**） |
 | `tests/run_tests.py` | 不依赖 pytest 的测试入口 |
 
 ---
 
-## 8. 当前状态（2026-11-04 阶段性封顶）
+## 8. 当前状态（2026-11-14）
 
-- 数据层：36 张表，自动源 29 个、手工源 2 个
-- 因果层：A 股 10 条边、黄金 9 条边；供需层按「位置 × 边际」呈现
+- 数据层：45+ 张表；四种表结构（single/multi/long/static）；接入 ashareapi
+- 状态层：模型链 `extreme → hmm`；K=3；`/state` 页
+- 因果层：A 股 10 条边、黄金 9 条边；卡片只留信号层 + 一行状态
 - 服务层：卡片浏览、运维状态机、消息确认、静音、看门狗
-- 测试：35 个，全部通过
+- 测试：64 个，全部通过；pyright 0 error
 
-**已知短板**（详见各模块文档）：`industrial_yoy`/`exports_yoy` 停在 2025-08、
-`geopolitic_risk` 源已停更、央行季报有 23/87 国未更新。
+**已知短板**：`industrial_yoy`/`exports_yoy` 停在 2025-08；`geopolitic_risk` 源停更；
+退市股缺失（幸存者偏差）；K=3 有退化状态（见 `experiment/`）。
 
 ---
 

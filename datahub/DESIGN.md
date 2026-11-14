@@ -88,7 +88,7 @@ datahub/
 - 每列的频率不同（日/周/月/季），宽表必然要 ffill，**ffill 出来的假行会污染分位与差分**
 - 加一列要改表结构，SQLite 的 `ALTER TABLE` 又笨
 
-代价是表多（当前 36 张），但每张表的语义单一，`SELECT * FROM vix` 就是全部。
+代价是表多（当前 45+ 张），但每张表的语义单一，`SELECT * FROM vix` 就是全部。
 
 **例外**：同源、同频、同生命周期的多列才合并（OHLCV、ETF 份额）。
 
@@ -176,7 +176,8 @@ d = db.read("csi_all")        # DataFrame
 
 | 想加什么 | 改哪里 |
 |---|---|
-| 新自动源 | `sources.py` 加一个 `def xxx(start, end, table="", **_)`，然后在 `SOURCES` 加一行 |
+| 新自动源 | `sources.py` 加一个 `def xxx(start, end, table="", **_)`，然后在 `SOURCES` 加一行（`shape=` 声明 long/static） |
+| 新的 long/static 表 | `read.py` 的 `LONG_SCHEMAS` / `STATIC_SCHEMAS` 登记列与类型 |
 | 新手工源 | `intake/parsers/` 加解析函数 → `registry.py` 注册一行 |
 | 新元信息字段 | `schema.py` 的 `METADATA_DDL` + `update._ensure_meta` + `_apply_note` |
 | 新市场日历 | `check._MARKET_ALIAS` |
@@ -195,7 +196,7 @@ d = db.read("csi_all")        # DataFrame
 
 ---
 
-## 4. 四种表结构
+## 8. 四种表结构
 
 | kind | 形状 | 主键 | 例 |
 |---|---|---|---|
@@ -209,7 +210,7 @@ d = db.read("csi_all")        # DataFrame
 - **写库**在 `update.py`：`write_long` / `write_static`，按 `Source.shape` 分派
 - `multi` 用于"列是写死的"场景；`long` 用于"标的是数据"（五千只股票没法一列一只）
 
-## 5. 什么时候跑（低频跳过）
+## 9. 什么时候跑（低频跳过）
 
 | freq | 规则 |
 |---|---|
@@ -218,3 +219,40 @@ d = db.read("csi_all")        # DataFrame
 | `SPARSE` | 事件表，按 `sync_log.last_at` + 各自间隔（分红 7 天、股本 90 天） |
 
 `--force` 可跳过判断强制更新。
+
+---
+
+## 10. 外部数据源（ashareapi）
+
+key 只在 `.env` / 环境变量 `ASHARE_API_KEY`，代码不存。
+
+| 端点 | 用途 | 频率 |
+|---|---|---|
+| `/v1/stocks` | 全市场清单 → `company` | 每月 |
+| `/v1/finance` | 三大报表 → `financials` | 每季 |
+| `/v1/dividend` | 分红送转 → `dividend`（**接口是每 10 股，入库除以 10**） | 事件，7 天节流 |
+| `/v1/snapshot` | 当日股本 → `shares_history`（`kind=base`） | 季度 |
+| `/v1/changedist` | 当日涨跌家数（免费） | 可选 |
+
+**额度**：标准版买断 10 万次。`finance`/`dividend`/`snapshot` 都是**单只一次调用**，
+所以《每天全量 5000 只》是不可行的（10 天烧完）。按上表的频率，一年约 5 万次。
+
+**专业版（¥99，50 万次）解锁的是批量端点**：`market-kline` 一次拿全市场单日 K 线、
+`finance-batch` 一次 10 只——这才是日更的正确姿势。
+
+---
+
+## 11. 派生数据（待实现）
+
+这些**不建表**，由 `read` 现算（将来可能缓存）：
+
+| 派生量 | 公式 | 依赖 |
+|---|---|---|
+| 总市值 | `close × total_shares`（股本按日期 ffill） | `stock_daily` + `shares_history` |
+| PE_ttm | `总市值 / 净利润TTM` | + `financials` |
+| PB | `总市值 / 净资产` | + `financials` |
+| 市场宽度 | 按日聚合 `stock_daily`：涨跌家数、涨跌停家数 | `stock_daily` |
+| ETF 资金流 | `etf_shares` 差分 | `etf_shares` |
+
+**为什么现算**：估值入库约 5000×2500×4 个浮点 ≈ 3 GB，且都是可推导量；
+一旦入库就要操心"股本变了要重算历史"。

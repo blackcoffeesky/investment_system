@@ -28,6 +28,8 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
+from datahub.fin.read import read
+
 ROOT = Path(__file__).resolve().parents[1]
 CLEAN_DIR = Path(__file__).resolve().parent / "intake" / "clean"
 

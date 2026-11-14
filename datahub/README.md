@@ -1,8 +1,8 @@
 # datahub —— 数据层
 
-> **更新日期：2026-11-04**　｜　配套设计文档：[`DESIGN.md`](DESIGN.md)
+> **更新日期：2026-11-14**　｜　配套设计文档：[`DESIGN.md`](DESIGN.md)　｜　代理约束：[`../AGENTS.md`](../AGENTS.md)
 
-与 `regime_engine`、`causual` 同级别的独立包。SQLite 存储，**按数据本身命名**。
+与 `state_layer`、`causual`、`service` 同级别的独立包。SQLite 存储，**按数据本身命名**。
 唯一职责：把外部数据变成一张张干净的表，供任何上层消费。
 
 ---
@@ -28,7 +28,9 @@ datahub/
 
 日常唯一入口是 `update.py`；手工数据走 `intake`。
 
-**新增（2026-11-10）**：`csi_all_amount` / `csi_all_turnover`（中证全指成交额与换手率，akshare 有全历史）、`breadth_adv` / `breadth_dec` / `breadth_limitup`（全市场涨跌家数与涨停数，**只有当天快照，历史不可回溯**）。
+**2026-11-13 起**：`csi_all` 合并了成交额/换手率（三表合一）；`etf_shares` 从 multi 改成 long。
+**2026-11-14 起**：新增公司四表 `company` / `shares_history` / `dividend` / `financials`，
+接入 ashareapi；`breadth_*` 计划删除（改由 `stock_daily` 派生）。
 
 ---
 

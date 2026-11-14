@@ -1,6 +1,6 @@
 # service 设计文档
 
-> **更新日期：2026-11-07**　｜　使用说明见 [`README.md`](README.md)　｜　项目总览见 [`../README.md`](../README.md)
+> **更新日期：2026-11-14**　｜　使用说明见 [`README.md`](README.md)　｜　项目总览见 [`../README.md`](../README.md)
 
 ---
 
@@ -20,19 +20,14 @@
 一个模块 = **核心代码 + `web/` + `port.py`**：
 
 ```
-datahub/
-├── web/            与 service 相关的一切：路由、模板、导航
-│   ├── __init__.py
-│   ├── routes.py
-│   └── templates/
-├── port.py         对外能力（别的模块只能用这里的东西）
-└── fin/ ops/ ...   核心实现
-
-causual/
-├── web/            同上（卡片页 + 拟合页）
-├── port.py         CausalPort
-└── causual_core/ causual_assets/ ...
+datahub/        web/(数据页)   port.py(DataPort)      fin/ ops/
+state_layer/    web/(/state)   port.py(StatePort)     model/ state_assets/ analysis/
+causual/        web/(卡片·拟合) port.py(CausalPort)    causual_core/ causual_assets/
+service/        app.py registry.py ops/(状态机) templates/(共享骨架)
 ```
+
+四个模块都遵循同一个模型：**核心代码 + `web/` + `port.py`**。
+`shared/` 是跨模块纯工具，不算模块。
 
 **注册即共享**：模块在 `register()` 时声明 `service_port_factory`，service 启动时会把它
 收进 `ServiceBag`。此后任何模块都能通过框架拿到它——不需要互相 import。
