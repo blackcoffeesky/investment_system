@@ -6,7 +6,7 @@
 - `a_share_daily_k_*.parquet`      原始价日 K（adjusted=none）
 - `a_share_adjustment_factors_*.parquet`  除权除息事件
 
-写入 `stock_daily` / `adj_factor` 两张 long 表（见 `datahub/fin/long.py`）。
+写入 `stock_daily` / `adj_factor` 两张 long 表（schema 见 `datahub/fin/read.py`）。
 日期用 **Asia/Shanghai** 解毫秒时间戳——UTC 解会整体偏一天。
 """
 
@@ -21,7 +21,10 @@ import pandas as pd
 
 from datahub import DB_PATH
 from datahub.core.schema import DATA_DDL
-from datahub.fin import read as L
+# 注意：`from datahub.fin import read` 拿到的是**函数**不是模块（包属性被同名函数占了），
+# 所以这里按函数名 import，不能写成 `import ... as L` 再用 L.long_stats。
+from datahub.fin.read import _long_columns, long_stats
+from datahub.fin.update import write_long
 
 ROOT = Path(__file__).resolve().parents[3]
 DATA = ROOT / "data"
@@ -81,15 +84,15 @@ def ingest_adj(con: sqlite3.Connection, path: Path = ADJ_FILE) -> int:
 
 def register(con: sqlite3.Connection, table: str, freq: str = "D",
              market: str = "CN", note: str = "") -> None:
-    st = L.long_stats(table)
+    st = long_stats(table)
     con.execute("DELETE FROM metadata WHERE name=?", (table,))
     con.execute(
         "INSERT INTO metadata(name, display, freq, unit, start_date, end_date,"
-        " n_rows, note, kind, columns, market, lag_days)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        " n_rows, note, kind, columns, market, lag_days, source)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (table, table, freq, "", st["start_date"], st["end_date"], st["n_rows"],
          note or f"long 表，{st['codes']} 个标的", "long",
-         ",".join(L._long_columns(table)), market, 0))
+         ",".join(_long_columns(table)), market, 0, "raw"))
     con.commit()
     print(f"metadata: {table} n_rows={st['n_rows']} codes={st['codes']}")
 

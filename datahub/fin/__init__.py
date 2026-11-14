@@ -19,4 +19,4 @@ from datahub.fin.read import long_stats, read_long, read_static, static_stats
 from datahub.fin.check import run as run_check
 
 __all__ = ["read", "read_many", "metadata", "tables", "run_check",
-           "missing", "read_long", "long_stats"]
+           "missing", "read_long", "read_static", "long_stats", "static_stats"]

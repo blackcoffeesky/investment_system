@@ -1,9 +1,9 @@
 """按 `SOURCES` 注册表更新各表。
 
-    python -m datahub.update                    # 全部启用项，更新到今天
-    python -m datahub.update --start 2024-01-01 --end 2026-10-01
-    python -m datahub.update --only vix,csi_all
-    python -m datahub.update --dry-run          # 只抓不写
+    python -m datahub.fin.update                    # 全部启用项，更新到今天
+    python -m datahub.fin.update --start 2024-01-01 --end 2026-10-01
+    python -m datahub.fin.update --only vix,csi_all
+    python -m datahub.fin.update --dry-run          # 只抓不写
 
 流程
 ----
@@ -23,12 +23,16 @@ from pathlib import Path
 import pandas as pd
 
 from datahub import DB_PATH, ROOT
-from datahub.core.schema import DATA_DDL
+from datahub.core.schema import DATA_DDL, migrate_metadata
 from datahub.fin.read import (LONG_SCHEMAS, STATIC_SCHEMAS,
                               _long_columns, _static_columns)
 from datahub.fin.sources import SOURCES, Source
 
 MISSING_DIR = ROOT / "data" / "missing"
+
+# 基础设施表：不是数据表，永远不该进 metadata。
+# 漏掉一个，`fin.tables()` 就会多出一张假表（sync_log 就是这么混进来的）。
+INFRA_TABLES = ("metadata", "missing", "sync_log", "sqlite_sequence")
 
 # 自动建表时的元信息提示（不写的话会按日频猜测，过期判断会误报）
 FREQ_HINT = {
@@ -88,12 +92,21 @@ def _write(con: sqlite3.Connection, table: str, obj, end: str) -> int:
 
 
 def _ensure_meta(con: sqlite3.Connection) -> int:
-    """给"有表但没有 metadata 行"的表补一条最小元数据。"""
+    """给"有表但没有 metadata 行"的表补一条最小元数据。
+
+    顺手两件事：老库补列（`migrate_metadata`）、把误登进 metadata 的基础设施表清掉。
+    后者是自愈：上一次的 bug 把 `sync_log` 登记成了一张数据表，光改排除名单不够，
+    已经落库的那一行得删掉，否则 `fin.tables()` / `check` 会一直带着它。
+    """
+    migrate_metadata(con)
+    ph = ",".join("?" * len(INFRA_TABLES))
+    con.execute(f"DELETE FROM metadata WHERE name IN ({ph})", INFRA_TABLES)
+
     have = {r[0] for r in con.execute("SELECT name FROM metadata")}
     names = [r[0] for r in con.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' "
-        "AND name NOT IN ('metadata','missing','sqlite_sequence')"
-        " AND name NOT LIKE 'ops_%' AND name NOT LIKE 'sqlite_%'")]
+        f"SELECT name FROM sqlite_master WHERE type='table'"
+        f" AND name NOT IN ({ph})"
+        f" AND name NOT LIKE 'ops_%' AND name NOT LIKE 'sqlite_%'", INFRA_TABLES)]
     # 先纠正**已有表**的 market / lag：发布滞后和市场归属会变，
     # 但这段逻辑以前只在新表分支里跑，老表永远修不到（周末被当缺口的根因）。
     for name, (freq, market, lag) in FREQ_HINT.items():
@@ -106,9 +119,6 @@ def _ensure_meta(con: sqlite3.Connection) -> int:
         if name in have:
             continue
         cols = [r[1] for r in con.execute(f'PRAGMA table_info("{name}")')]
-        from datahub.fin.read import LONG_SCHEMAS
-        from datahub.fin.read import STATIC_SCHEMAS
-
         if name in LONG_SCHEMAS:
             kind = "long"
         elif name in STATIC_SCHEMAS:
@@ -120,10 +130,10 @@ def _ensure_meta(con: sqlite3.Connection) -> int:
         freq, market, lag = FREQ_HINT.get(name, ("D", "NONE", 0))
         con.execute(
             "INSERT OR IGNORE INTO metadata(name, display, freq, unit, start_date,"
-            " end_date, n_rows, note, kind, columns, market, lag_days)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            " end_date, n_rows, note, kind, columns, market, lag_days, source)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (name, name, freq, "", "", "", 0, "自动创建", kind,
-             ",".join(c for c in cols if c != "date"), market, lag))
+             ",".join(c for c in cols if c != "date"), market, lag, "raw"))
         n += 1
     con.commit()
     return n
@@ -209,17 +219,34 @@ def _apply_note(con: sqlite3.Connection, s: Source, tables: list[str]) -> None:
 
 
 def refresh_metadata(con: sqlite3.Connection) -> int:
-    """按实际表内容重写 metadata 的起止日期与行数。"""
+    """按实际表内容重写 metadata 的起止日期与行数。
+
+    `static` 表（如 `company`）没有日期轴：只统计行数，起止日期留空。
+    以前统一跑 `MIN(date)`，static 表会抛 OperationalError 被静默跳过，
+    于是 `company` 的 `n_rows` 永远停在 0。
+    """
     n = 0
     for name, _kind in con.execute("SELECT name, kind FROM metadata").fetchall():
+        cols = [r[1] for r in con.execute(f'PRAGMA table_info("{name}")')]
+        if not cols:
+            continue
         try:
-            cur = con.execute(f'SELECT MIN(date), MAX(date), COUNT(*) FROM "{name}"').fetchone()
+            if "date" in cols:
+                cur = con.execute(
+                    f'SELECT MIN(date), MAX(date), COUNT(*) FROM "{name}"').fetchone()
+                if not cur or cur[2] == 0:
+                    continue
+                con.execute(
+                    "UPDATE metadata SET start_date=?, end_date=?, n_rows=? WHERE name=?",
+                    (cur[0], cur[1], int(cur[2]), name))
+            else:
+                cur = con.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()
+                if not cur or cur[0] == 0:
+                    continue
+                con.execute("UPDATE metadata SET n_rows=? WHERE name=?",
+                            (int(cur[0]), name))
         except sqlite3.OperationalError:
             continue
-        if not cur or cur[2] == 0:
-            continue
-        con.execute("UPDATE metadata SET start_date=?, end_date=?, n_rows=? WHERE name=?",
-                    (cur[0], cur[1], int(cur[2]), name))
         n += 1
     con.commit()
     return n

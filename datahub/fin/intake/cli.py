@@ -1,7 +1,7 @@
 """手工数据接入 CLI。
 
-    python -m datahub.intake wgc D:\\cache\\EdgeDownload\\1793522742.xlsx
-    python -m datahub.intake wgc <file> --load      # 解析后写入数据库
+    python -m datahub.fin.intake wgc D:\\cache\\EdgeDownload\\1793522742.xlsx
+    python -m datahub.fin.intake wgc <file> --load      # 解析后写入数据库
 
 流程
 ----
@@ -34,10 +34,10 @@ CLEAN_DIR = Path(__file__).resolve().parent / "clean"
 
 def _existing(table: str) -> pd.Series:
     try:
-        import datahub.fin as db
-        if table not in db.tables():
+        import datahub.fin as fin
+        if table not in fin.tables():
             return pd.Series(dtype=float)
-        return db.read(table)
+        return fin.read(table)
     except Exception:  # noqa: BLE001
         return pd.Series(dtype=float)
 
@@ -122,7 +122,7 @@ def run(key: str, raw: str, load: bool = False, dry_run: bool = False) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="python -m datahub.intake")
+    ap = argparse.ArgumentParser(prog="python -m datahub.fin.intake")
     ap.add_argument("source", help="数据源标识，如 wgc")
     ap.add_argument("raw", help="原始文件路径")
     ap.add_argument("--load", action="store_true", help="解析后写入数据库")

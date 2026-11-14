@@ -3,12 +3,13 @@
 目录约定
 --------
 ```
-datahub/intake/
+datahub/fin/intake/
 ├── raw/        # 原始文件（用户丢进来的 xls/csv/pdf 导出），不做任何修改
 ├── clean/      # 解析后的标准 CSV（列契约与库表一致），只有待写入/覆盖的行
 ├── parsers/    # 一源一个解析函数
 ├── registry.py # 源标识 → (parser, 目标表, 频率)
-└── cli.py      # python -m datahub.intake <source> <raw 文件>
+├── cli.py      # python -m datahub.fin.intake <source> <raw 文件>
+└── stock_daily.py  # 一次性：同花顺 parquet → stock_daily / adj_factor
 ```
 
 `clean/` 替代了旧的 `datahub/manual/`：它只承载**要写进库的数据**——

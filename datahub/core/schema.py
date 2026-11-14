@@ -2,12 +2,15 @@
 
 - `DATA_DDL`：金融数据（metadata / missing / 各序列表）
 - `OPS_DDL` ：运维状态（ops_state / ops_messages）
+- `METADATA_MIGRATIONS` / `migrate_metadata`：老库补列（改表也只能有这一处）
 
 它们共用一个 sqlite 文件（为了"状态 + 消息"的单事务原子写），但**语义隔离**：
 `fin.tables()` 只认 metadata 里登记过的表，ops_* 永不进 metadata。
 """
 
 from __future__ import annotations
+
+import sqlite3
 
 # ---------------------------------------------------------------- 金融数据
 DATA_DDL = """
@@ -23,7 +26,9 @@ CREATE TABLE IF NOT EXISTS metadata (
     kind        TEXT DEFAULT 'single',
     columns     TEXT,
     market      TEXT DEFAULT 'CN',    -- CN / US / NONE：判断"哪些日子本该有数据"
-    lag_days    INTEGER DEFAULT 0     -- 公布滞后天数：数据期结束后多少天才可见
+    lag_days    INTEGER DEFAULT 0,    -- 公布滞后天数：数据期结束后多少天才可见
+    source      TEXT DEFAULT 'raw',   -- raw / derived：原始数据，还是由别的表算出来的
+    depends     TEXT                  -- 派生表的依赖（原生表名，逗号分隔）；raw 留空
 );
 
 -- 上次成功抓取时间：事件型表（分红/股本）没有"当期"概念，只能按时间间隔节流
@@ -47,6 +52,34 @@ CREATE TABLE IF NOT EXISTS "{name}" (
     value REAL
 );
 """
+
+
+# 老库补列（新库由 METADATA_DDL 直接建好）。SQLite 的 ADD COLUMN 带 DEFAULT 时
+# 会把已有行填成默认值，所以 source 老行自然是 'raw'——它们本来就是原始表。
+METADATA_MIGRATIONS: dict[str, str] = {
+    "source": "ALTER TABLE metadata ADD COLUMN source TEXT DEFAULT 'raw'",
+    "depends": "ALTER TABLE metadata ADD COLUMN depends TEXT",
+}
+
+
+def migrate_metadata(con: sqlite3.Connection) -> list[str]:
+    """给已有库补 metadata 的新列。幂等：缺哪列补哪列，全都有就什么都不做。
+
+    返回这次补上的列名，供调用方打日志。
+    """
+    if not con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='metadata'"
+                       ).fetchone():
+        return []                     # 全新的库：DATA_DDL 会直接建好，不用迁移
+    have = {r[1] for r in con.execute("PRAGMA table_info(metadata)")}
+    done = []
+    for col, ddl in METADATA_MIGRATIONS.items():
+        if col not in have:
+            con.execute(ddl)
+            done.append(col)
+    if done:
+        con.commit()
+    return done
+
 
 INDEX_DDL = 'CREATE INDEX IF NOT EXISTS "idx_{name}_date" ON "{name}"(date);'
 

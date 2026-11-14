@@ -12,9 +12,11 @@
 ```
 datahub/
 ├── __init__.py      ROOT / DB_PATH / __version__
-├── core/            conn.py（连接与事务） schema.py（DATA_DDL / OPS_DDL） errors.py
+├── port.py          DataPort —— 其他模块只准通过它拿数据（AGENTS §2①）
+├── core/            conn.py（连接与事务） schema.py（DDL + 老库补列） errors.py
 ├── fin/             金融数据：read / update / sources / check / intake
-└── ops/             运维状态：OpsStore（状态 + 消息，单事务落盘）
+├── ops/             运维状态：OpsStore（状态 + 消息，单事务落盘）
+└── web/             /data 页（表清单 + 手工录入）
 ```
 
 **两个命名空间是隔离的**：`fin` 只认 `metadata` 里登记过的表；`ops` 只碰 `ops_*`。
@@ -30,7 +32,10 @@ datahub/
 
 **2026-11-13 起**：`csi_all` 合并了成交额/换手率（三表合一）；`etf_shares` 从 multi 改成 long。
 **2026-11-14 起**：新增公司四表 `company` / `shares_history` / `dividend` / `financials`，
-接入 ashareapi；`breadth_*` 计划删除（改由 `stock_daily` 派生）。
+接入 ashareapi；`metadata` 加 `source` / `depends` 两列（标记原始 vs 派生）。
+**过渡中**：`breadth_*` 已停止采集（`SOURCES` 里两条注册已删），但**表还在**
+（`state_layer` 仍在读它）——等派生函数与旧表比对一致后再删表。
+`csi_all_amount` / `csi_all_turnover` 同理：已合并进 `csi_all`，不再单独采集。
 
 ---
 
@@ -41,21 +46,25 @@ datahub/
 
 ---
 
-## 3. 两类表（`metadata.kind`）
+## 3. 四种表（`metadata.kind`）
 
 | kind | 结构 | `read()` 返回 |
 |---|---|---|
 | `single` | `date TEXT PK, value REAL` | `Series` |
 | `multi` | `date TEXT PK, <列1>, <列2>, …` | `DataFrame`（或 `column=` 取 Series） |
+| `long` | `code, date, <字段…>`，PK `(code,date)` | `DataFrame`（`read_long()`；`pivot()` 转宽表） |
+| `static` | `code, <字段…>`，PK `code`，无日期轴 | `DataFrame`（`read_static()`） |
 
 **合并的前提（缺一不可）：共享 date 主键、同频、同源、同生命周期。**
 
 | 表 | kind | 说明 |
 |---|---|---|
-| `csi_all` | multi | open/high/low/close/volume |
+| `csi_all` | multi | open/high/low/close/volume/amount/turnover |
 | `gold_cny` | multi | 同上，上期所主力连续 |
-| `etf_shares` | multi | 24 只 ETF 份额，列名 `c<代码>`；各列起始日不同 |
+| `etf_shares` | long | 24 只 ETF 份额，`(code, date, shares)`；各只起始日不同 |
 | `dividend_annual` | multi | 分红总额/净利润/分红率/家数 |
+| `stock_daily` / `adj_factor` / `financials` / `dividend` / `shares_history` | long | 标的是数据（五千只没法一列一只） |
+| `company` | static | 全市场清单，一个标的一行 |
 | 其余 | single | 单序列 |
 
 ---
@@ -74,17 +83,21 @@ datahub/
 ## 5. 读接口（唯一对外暴露的部分）
 
 ```python
-from datahub.fin import read, metadata, tables, check, missing
+from datahub.fin import read, metadata, tables, run_check, missing
 
-tables()                        # 表名列表
-metadata()                      # name/display/freq/unit/start/end/n_rows/note/kind/columns/market/lag_days
+tables()                        # 表名列表（= metadata 里登记过的表）
+metadata()                      # name/display/freq/unit/start/end/n_rows/note/
+                                #   kind/columns/market/lag_days/source/depends
 read("vix")                     # single  → Series
 read("csi_all")                 # multi   → DataFrame
 read("csi_all", column="close") #         → Series
 read_many(["vix", "usdcny"])    # 多个 single → DataFrame
-check()                         # 完整性检查，空 = 通过
+run_check()                     # 完整性检查，空 = 通过
 missing()                       # 已人工确认的正常缺口
 ```
+
+注意**不要**写 `from datahub.fin import check`：`check` 是子模块名，
+`datahub/fin/__init__.py` 里已把它换成 `run_check` / `missing` 两个函数名。
 
 **写接口不对外。** 写库只发生在 `update.py` / `intake` 内部。
 
@@ -107,9 +120,10 @@ class Source:
     table: str          # 目标表；"a|b|c" 表示拆成多张单表
     func: Callable      # 取数函数
     params: dict = field(default_factory=dict)
-    kind: str = "auto"  # auto / manual
-    enabled: bool = True
-    note: str = ""
+    kind: str = "auto"  # auto / manual（只影响 note 前缀，不影响调度）
+    shape: str = "auto"  # auto / long / static（**决定用哪个 writer**）
+    enabled: bool = True  # False = 日常更新跳过
+    note: str = ""      # 写进 metadata.note
 ```
 
 **所有取数函数签名统一**：
@@ -136,7 +150,8 @@ datahub/fin/intake/
 │   ├── wgc_etf.py         WGC ETF 月报 → gold_etf_holdings
 │   └── cb_basket.txt      87 国篮子
 ├── registry.py     # 源标识 → (parser, 目标表, 频率)
-└── cli.py
+├── cli.py          # python -m datahub.fin.intake <source> <raw 文件>
+└── stock_daily.py  # 一次性：同花顺 parquet → stock_daily / adj_factor
 ```
 
 ```bash
@@ -193,26 +208,20 @@ python -m datahub.fin.check --ack vix:2026-10-20 --reason "美股休市数据源
 |---|---|
 | `industrial_yoy` / `exports_yoy` | akshare 只有财经日历接口，数据停在 2025-08 |
 | `geopolitic_risk` | FRED 无此序列，旧数据冻结；新数据改用 `world_tension`（2026-03 起） |
-| `etf_shares` | 各列起始日跨度大（2016-01 ~ 2025-04），部分列有采集空洞 |
+| `etf_shares` | 各只起始日跨度大（2016-01 ~ 2025-04），部分标的有采集空洞 |
 | `cb_holdings` | 2026Q2 有 23/87 国 `AWAITED`，按 Q1 补齐 → 低估 |
 
-## 三种表
-
-| kind | 形状 | 例 |
-|---|---|---|
-| `single` | `date, value` | `vix`、`csi300` |
-| `multi` | `date, 列…` | `csi_all`（OHLCV + 成交额/换手） |
-| `long` | `code, date, 字段…` | `stock_daily`、`etf_shares`、`adj_factor` |
+## 11. long 表的读法
 
 `long` 用于"标的是数据而不是结构"的场景（五千只股票没法一列一只）。
-schema 登记在 `datahub/fin/long.py` 的 `LONG_SCHEMAS`，建表按登记来。
-
-读取：
+schema 登记在 `datahub/fin/read.py` 的 `LONG_SCHEMAS` / `STATIC_SCHEMAS`，建表按登记来。
 
 ```python
-from datahub import fin
-df = fin.read_long("stock_daily", start="2026-01-01", codes=["000001"])
-wide = fin.long.pivot(df, "close")      # long → 日期 × 代码
+from datahub.fin import read_long
+from datahub.fin.read import pivot        # 注意：pivot 在 read 模块里，不在包级
+
+df = read_long("stock_daily", start="2026-01-01", codes=["000001"])
+wide = pivot(df, "close")                 # long → 日期 × 代码
 ```
 
 装配给资产面板用 `DataPort.series_map(tables)`——single/multi/long 都统一成 `{key: Series}`。

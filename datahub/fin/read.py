@@ -2,12 +2,12 @@
 
     from datahub.fin import read
 
-    read("vix")                     # single → Series
-    db.read("csi_all")                 # multi  → DataFrame
-    db.read("csi_all", column="close") # multi  → Series
-    db.read_many(["vix", "usdcny"])    # 多个 single → DataFrame
-    db.metadata()                      # 元数据（含 kind / columns）
-    db.run_check()                     # 完整性检查
+    read("vix")                        # single → Series
+    read("csi_all")                    # multi  → DataFrame
+    read("csi_all", column="close")    # multi  → Series
+    read_many(["vix", "usdcny"])       # 多个 single → DataFrame
+    metadata()                         # 元数据（含 kind / columns / source / depends）
+    run_check()                        # 完整性检查
 """
 
 from __future__ import annotations

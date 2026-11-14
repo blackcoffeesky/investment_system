@@ -1,7 +1,7 @@
 """完整性检查：用交易日历判断"该有的日期有没有缺"。
 
-    python -m datahub.check              # 列出问题
-    python -m datahub.check --ack vix:2026-10-20 --reason "美股休市数据源未更新"
+    python -m datahub.fin.check              # 列出问题
+    python -m datahub.fin.check --ack vix:2026-10-20 --reason "美股休市数据源未更新"
 
 判定逻辑
 --------
@@ -101,14 +101,14 @@ def run(path: Path | None = None, recent_days: int = 90) -> pd.DataFrame:
     for _, r in acked.iterrows():
         ack_map.setdefault(r["name"], set()).add(str(r["date"]))
 
-    import datahub.fin as db
+    import datahub.fin as fin
 
     cutoff = str((pd.Timestamp.today() - pd.Timedelta(days=recent_days)).date())
     rows = []
     for _, m in meta.iterrows():
         name = m["name"]
         try:
-            obj = db.read(name, path=path)
+            obj = fin.read(name, path=path)
         except Exception as e:  # noqa: BLE001
             rows.append({"name": name, "issues": f"读取失败 {type(e).__name__}"})
             continue

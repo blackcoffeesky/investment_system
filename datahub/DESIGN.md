@@ -12,7 +12,8 @@
 三条硬约束：
 
 1. **一个表 = 一条（或一组同源同频的）序列**
-2. **除 `db.read` 外不对外暴露写接口**
+2. **写接口不对外**：对外只有 `fin.read`（进程内）与 `port.DataPort`（跨模块），
+   写库只发生在 `update` / `intake` 内部
 3. **数据层不依赖任何上游包**（`causual` 不能反过来被 import）
 
 ---
@@ -32,9 +33,10 @@
           datahub.sqlite
           ├── metadata   每个变量的元信息
           ├── missing    已确认的正常缺口
+          ├── sync_log   事件型表的上次抓取时间
           └── <表>       一表一序列
                     │
-                    │  db.read()
+                    │  read() / port.DataPort
                     ▼
               任何消费方
 ```
@@ -48,34 +50,40 @@
 
 ```
 datahub/
-├── __init__.py            只放 ROOT / DB_PATH / __version__
+├── __init__.py            只放 ROOT / DB_PATH / __version__（+ 读仓库根 .env）
+├── port.py                **唯一对外面**：DataPort / get_port，其他模块只能走这里
 ├── core/
 │   ├── conn.py            connect / transaction / connection / exec_ddl
-│   ├── schema.py          DATA_DDL 与 OPS_DDL（分开写，同文件）
+│   ├── schema.py          DATA_DDL / OPS_DDL / METADATA_MIGRATIONS（DDL 与改表唯一出处）
 │   └── errors.py          DatahubError / TableNotFound / OpsTableAccess / SchemaError
 ├── fin/
-│   ├── __init__.py        对外：read / read_many / read_long / metadata / tables / check
-│   ├── read.py            读接口 + **四种表结构**（single/multi/long/static）
+│   ├── __init__.py        对外：read / read_many / read_long / metadata / tables / run_check / missing
+│   ├── read.py            读接口 + **四种表结构**（single/multi/long/static）+ pivot
 │   ├── update.py          写库（四种 kind 各一个 writer）+ 按频率跳过 + 元数据
 │   ├── sources.py         取数函数 + SOURCES 注册表（含 ashareapi 客户端）
 │   ├── check.py           交易日历 + 完整性检查
 │   ├── write.py           单值 upsert（intake 用）
-│   ├── intake/            raw / clean / parsers / registry / cli
-│   └── import_panels.py   一次性建库（遗留）
-└── ops/
-    ├── __init__.py        对外：OpsStore
-    └── store.py           状态 + 消息，单事务 save_result
+│   └── intake/            raw / clean / parsers / registry / cli / stock_daily
+├── ops/
+│   ├── __init__.py        对外：OpsStore
+│   └── store.py           状态 + 消息，单事务 save_result
+└── web/
+    └── routes.py          /data 页（表清单 + 手工录入），经 port 取数
 ```
 
 | 文件 | 职责 | 谁调用 |
 |---|---|---|
+| `port.py` | 跨模块唯一面：读、装配、受控动作（update / intake） | service / 各模块 cli / web |
 | `core/conn.py` | 连接超时、事务边界、DDL 执行 | fin / ops |
-| `core/schema.py` | 所有 DDL 的唯一出处 | update / intake / ops |
-| `fin/read.py` | 只读 API + 表结构定义 | 服务层 / 脚本 |
+| `core/schema.py` | 所有 DDL 的唯一出处 + 老库补列（`migrate_metadata`） | update / intake / ops |
+| `fin/read.py` | 只读 API + 表结构定义（列名与类型） | 服务层 / 脚本 / port |
 | `fin/sources.py` | "从哪拿"（含外部 API 客户端） | update |
-| `fin/update.py` | "怎么写"（四种 kind + 元数据 + 该不该跑） | 人 / 服务层 |
-| `fin/check.py` | 缺口判断（日历驱动） | 状态机 / 人 |
+| `fin/update.py` | "怎么写"（四种 kind + 元数据 + 该不该跑） | 人 / 服务层 / port |
+| `fin/check.py` | 缺口判断（日历驱动） | 状态机 / 人 / port |
+| `fin/write.py` | 单值/整表写入（手工录入页用） | `web/routes.py` |
+| `fin/intake/` | 手工源解析 + 一次性建库脚本 | `web/routes.py` / 人 |
 | `ops/store.py` | 运维状态持久化 | Manager |
+| `web/routes.py` | `/data` 页：清单 + 上传 + 录一个数 | `service.registry` |
 
 **隔离原则**：`ops` 不 import `service`（消息以 dict 传入）；
 `fin.tables()` 只读 `metadata`，所以 `ops_*` 永远不会混进金融表清单。
@@ -95,8 +103,10 @@ datahub/
 ### 4.2 为什么频率要还原
 
 历史面板是日频 ffill 过的，月频变量每天一行。若原样入库，`cpi_yoy` 就成了"日频"，
-之后任何 `resample` 或分位计算都会错。所以 `import_panels._resample` 把它还原成月末一行，
+之后任何 `resample` 或分位计算都会错。所以入库前要还原成月末一行
+（`sources._cn_month` 把统计局/央行的「月份」标签统一推到月末），
 并且**截断尾部 ffill 撑出来的假行**（源数据 8 月停了，9/10 月仍被填成 8 月的值）。
+当年做这件事的 `import_panels.py` 已删除，口径留在这里。
 
 ### 4.3 为什么要有 `lag_days`
 
@@ -127,7 +137,7 @@ datahub/
 ### 5.1 每天（自动源）
 
 ```
-python -m datahub.update
+python -m datahub.fin.update
   │
   ├─ for s in SOURCES if s.enabled:
   │     obj = s.func(start=, end=, table=, **s.params)     # sources.py
@@ -135,19 +145,19 @@ python -m datahub.update
   │     _write(con, table, obj, end)                       # upsert，不删历史
   │     _apply_note(con, s, tables)                        # 把 note 落到 metadata
   │
-  ├─ _ensure_meta(con)          # 有表没 metadata 的，补一条
-  ├─ refresh_metadata(con)      # 重算 start/end/n_rows
+  ├─ _ensure_meta(con)          # 补 metadata 行 + 老库补列 + 清掉误登的基础设施表
+  ├─ refresh_metadata(con)      # 重算 start/end/n_rows（static 表只算行数）
   └─ 失败 → data/missing/update_failures.log
 ```
 
 ### 5.2 每月/每季（手工源）
 
 ```
-① 把文件丢进 intake/raw/
-② python -m datahub.intake wgc <file> --load
+① 把文件丢进 fin/intake/raw/
+② python -m datahub.fin.intake wgc <file> --load
      ├─ registry.SOURCES["wgc"].parser(raw)                # 解析
      ├─ diff_to_write(new, 库里的旧值)                       # 只留新增 + 修订
-     ├─ 写 intake/clean/<table>.csv
+     ├─ 写 fin/intake/clean/<table>.csv
      └─ upsert 入库 + 刷新 metadata
 ③ 解析失败 → 提示"raw 的结构可能变了"，指出哪一环对不上
 ```
@@ -155,7 +165,7 @@ python -m datahub.update
 ### 5.3 检查
 
 ```
-python -m datahub.check
+python -m datahub.fin.check
   ├─ 按 metadata.freq + market 生成"应有日期"（交易日历）
   ├─ 与实际日期做差
   ├─ 减掉 missing 表里已登记的缺口
@@ -165,10 +175,12 @@ python -m datahub.check
 ### 5.4 消费方
 
 ```
-from datahub import db
-s = db.read("vix")            # Series
-d = db.read("csi_all")        # DataFrame
+from datahub.fin import read
+s = read("vix")               # Series
+d = read("csi_all")           # DataFrame
 ```
+
+跨模块**不走这条**——其他模块只准 `from datahub.port import DataPort`（AGENTS §2①）。
 
 ---
 
@@ -193,6 +205,10 @@ d = db.read("csi_all")        # DataFrame
 | `sources.fred` 里 `os.environ.setdefault` 设代理 | 全局副作用，可能污染其他请求 | 改成显式传 `proxies=` |
 | `cfc` 查询 `$limit=50000` 硬编码 | CFTC 历史若继续增长会被截断 | 加分页或检测截断 |
 | `check` 只检查「有没有这个日期」 | 不检查数值突变（如 10 倍跳变） | 加一层"与前值比值"的合理性检查 |
+| **月频表同月两行**：`m1_yoy`/`m2_yoy`/`m1_level`/`m2_level`（397 行 / 225 月）、`total_shares`/`total_mktcap`（398/226）、`equity_fin_monthly`（162/81） | 月初 + 月末两行并存（值多数相同）→ `resample`/分位/差分**重复计数**；`check` 还会把它误报成「历史缺口」 | 先让 `check` 单报「同月多行」，数据迁移单独做（本轮不动库） |
+| `check` 只查观测区间内的**空洞**，不查**尾部停更** | `vix` 停在 11-06、`csi_all` 停在 11-10 都不告警 | 等 FRED 那批表的 `market` 从 NYSE 改成自然日/联邦工作日后再加 |
+| `check` 的 `long` 表只看日期集合，不看**标的覆盖度** | `financials`/`dividend`/`shares_history` 只有 5 只也全部通过 | 加一层"标的数 vs `company` 行数"的覆盖检查 |
+| `static` 表没有日期轴 | `check` 实际不检查它（只算行数） | 由 `company` 之外的来源保证新鲜度，或给 static 表加 `updated_at` |
 
 ---
 
@@ -232,7 +248,9 @@ key 只在 `.env` / 环境变量 `ASHARE_API_KEY`，代码不存。
 | `/v1/finance` | 三大报表 → `financials` | 每季 |
 | `/v1/dividend` | 分红送转 → `dividend`（**接口是每 10 股，入库除以 10**） | 事件，7 天节流 |
 | `/v1/snapshot` | 当日股本 → `shares_history`（`kind=base`） | 季度 |
-| `/v1/changedist` | 当日涨跌家数（免费） | 可选 |
+
+**没有接的两个**：`/v1/changedist`（涨跌家数）与 `/v1/market-kline`（全市场单日 K 线，专业版）。
+涨跌家数不要单独采：它是 `stock_daily` 的按日聚合，属于派生（见 §11）。
 
 **额度**：标准版买断 10 万次。`finance`/`dividend`/`snapshot` 都是**单只一次调用**，
 所以《每天全量 5000 只》是不可行的（10 天烧完）。按上表的频率，一年约 5 万次。
@@ -256,3 +274,27 @@ key 只在 `.env` / 环境变量 `ASHARE_API_KEY`，代码不存。
 
 **为什么现算**：估值入库约 5000×2500×4 个浮点 ≈ 3 GB，且都是可推导量；
 一旦入库就要操心"股本变了要重算历史"。
+
+### 11.1 怎么标记"原始 / 派生"
+
+`metadata` 有两个列区分（2026-11-14 加）：
+
+| 列 | 值 | 含义 |
+|---|---|---|
+| `source` | `raw`（默认）/ `derived` | 这张表是原始数据，还是由别的表算出来的 |
+| `depends` | 表名，逗号分隔 | 派生表依赖哪几张原生表；`raw` 留空 |
+
+本轮只**把列准备好**，不写派生数据、不建派生表。将来派生函数落地时，
+用 `source='derived' + depends=...` 登记，`check` 才知道"这张表缺了不用去抓"。
+
+### 11.2 名字撞车：`total_shares` 有三种含义（刻意不改名）
+
+| 出现的地方 | 指的是 |
+|---|---|
+| `total_shares`（表） | **交易所月度合计**：沪+深全部上市公司的总股本（亿股），月频 |
+| `company.total_shares`（字段） | **单只个股**的总股本（股），静态快照 |
+| §11 派生市值公式里的 `total_shares` | 同上，取自 **`shares_history` 按日期 ffill** 的个股股本 |
+
+`shares_history` 是按事件累积的权威口径，`company.total_shares` 只是当前快照
+（而且这一列现在还是空的，要 `/v1/snapshot` 补）。**不改名**：改名要动
+`read()` 的消费方，收益只是少一层注释——这里写清楚就够了。
