@@ -122,11 +122,19 @@ pyright --project pyrightconfig_off.json     # 必须 0 error
 `git add -A` 把代理的半成品一起卷进了自己的 commit。没丢数据，但两个 commit
 的边界糊了，事后要逐个比对才知道谁改了什么。
 
-正确做法：
+**第二次同类事故（2026-11-14 晚）**：`datahub-agent` 用 `git rm` 暂存了 `sources.py` 的删除，
+orchestrator 随后 `git add <causual 的文件>` 再 `git commit` —— **`git commit` 提交的是整个索引**，
+把别人暂存的删除一起带走了。结果 `fbe207f` 到 `84f36df` 之间，HEAD 上 `datahub/fin/sources` 完全不存在，
+**从 HEAD 检出的环境 import 直接失败**。
 
-- orchastrator 只 `git add <自己的文件>`，**永远不用 `-A`**
-- 代理提交前先 `git status` 看一眼有没有别人的改动混进来
-- 代理之间并行时，各自负责的目录是**不相交**的，看到别人目录的文件被暂存就该警觉
+正确做法（按可靠度排序）：
+
+1. **`git commit -- <明确的路径>`** —— 路径限定的提交**只提交列出的文件**，别人的暂存区不会被带走（首选）
+2. 提交前必看 **`git diff --cached --name-only`**，确认暂存区里只有自己的文件
+3. 永远不用 `git add -A` / `git commit -a`
+4. 只 `git add <自己的文件>` 是**必要但不充分**的——它挡不住别人之前已经暂存的东西
+
+代理之间并行时，各自负责的目录是**不相交**的，看到别人目录的文件被暂存就该停下来问。
 
 ## 8. 提交规范
 
