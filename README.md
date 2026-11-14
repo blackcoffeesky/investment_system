@@ -113,7 +113,7 @@ uvicorn service.app:app --host 127.0.0.1 --port 8000
 或者干脆只起服务，在 `/ops` 页面点「运行一次 / 重跑」——那会按状态机
 依次执行 fetch → validate → generate_cards → generate_macro。
 
-手工数据（WGC 季报、ETF 月报）走 `datahub.intake`：
+手工数据（WGC 季报、ETF 月报）走 `datahub.fin.intake`：
 
 ```bash
 python -m datahub.fin.intake wgc <xlsx> --load

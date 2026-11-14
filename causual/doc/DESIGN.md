@@ -171,8 +171,8 @@ python -m causual.causual_core.cli edges --asset ashare
 ### 6.4 数据更新（在 datahub 里）
 
 ```
-python -m datahub.update
-python -m datahub.check
+python -m datahub.fin.update
+python -m datahub.fin.check
 ```
 
 ---

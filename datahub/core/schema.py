@@ -2,7 +2,7 @@
 
 - `DATA_DDL`：金融数据（metadata / missing / 各序列表）
 - `OPS_DDL` ：运维状态（ops_state / ops_messages）
-- `METADATA_MIGRATIONS` / `migrate_metadata`：老库补列（改表也只能有这一处）
+- `METADATA_MIGRATIONS` / `migrate_metadata`：老库补列 + 空串日期转 NULL（改表也只能有这一处）
 
 它们共用一个 sqlite 文件（为了"状态 + 消息"的单事务原子写），但**语义隔离**：
 `fin.tables()` 只认 metadata 里登记过的表，ops_* 永不进 metadata。
@@ -63,9 +63,12 @@ METADATA_MIGRATIONS: dict[str, str] = {
 
 
 def migrate_metadata(con: sqlite3.Connection) -> list[str]:
-    """给已有库补 metadata 的新列。幂等：缺哪列补哪列，全都有就什么都不做。
+    """给已有库补 metadata 的新列、并把空串日期统一成 NULL。幂等：没有要改的就返回 []。
 
-    返回这次补上的列名，供调用方打日志。
+    为什么空串要转 NULL：`''` 会让下游的 `isna()` 漏过去（static 表的
+    start_date/end_date 就是空串），排序时 `''` 又会排在最前，都是暗坑。
+
+    返回这次做了哪些改动，供调用方打日志。
     """
     if not con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='metadata'"
                        ).fetchone():
@@ -76,6 +79,10 @@ def migrate_metadata(con: sqlite3.Connection) -> list[str]:
         if col not in have:
             con.execute(ddl)
             done.append(col)
+    for col in ("start_date", "end_date"):
+        cur = con.execute(f"UPDATE metadata SET {col}=NULL WHERE {col}=''")
+        if cur.rowcount:
+            done.append(f"{col}: '' → NULL（{cur.rowcount} 行）")
     if done:
         con.commit()
     return done

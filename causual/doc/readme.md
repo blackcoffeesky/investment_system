@@ -193,10 +193,10 @@ regime（状态） / signal（边） / narrative（卡片）
 ### 4.4 更新数据
 
 ```bash
-python -m datahub.update                       # 自动源（FRED / akshare / CFTC / XAUS / WTM）
-python -m datahub.intake wgc <xlsx> --load     # 手工源：WGC 季报
-python -m datahub.intake wgc_etf <xlsx> --load # 手工源：WGC ETF 月报
-python -m datahub.check                        # 完整性（按交易日历判缺）
+python -m datahub.fin.update                       # 自动源（FRED / akshare / CFTC / XAUS / WTM）
+python -m datahub.fin.intake wgc <xlsx> --load     # 手工源：WGC 季报
+python -m datahub.fin.intake wgc_etf <xlsx> --load # 手工源：WGC ETF 月报
+python -m datahub.fin.check                        # 完整性（按交易日历判缺）
 ```
 
 ### 4.5 已知数据问题
@@ -421,8 +421,8 @@ python -m causual.causual_core.daily --asset ashare
 python -m causual.causual_core.daily --asset gold
 
 # 数据（在 datahub 里）
-python -m datahub.update
-python -m datahub.check
+python -m datahub.fin.update
+python -m datahub.fin.check
 
 # 维护
 python -m causual.causual_core.cli regime --asset ashare   # 重拟状态模型
@@ -437,8 +437,8 @@ python -m causual.causual_assets.ashare.dividend
 
 | 文件 | 内容 | 更新方式 |
 |---|---|---|
-| `raw/ETF_Flows_*.xlsx` | WGC ETF 月报 | `python -m datahub.intake wgc_etf <file> --load` |
-| `raw/GDT / WGC 季报` | WGC 央行储备季报 | `python -m datahub.intake wgc <file> --load` |
+| `raw/ETF_Flows_*.xlsx` | WGC ETF 月报 | `python -m datahub.fin.intake wgc_etf <file> --load` |
+| `raw/GDT / WGC 季报` | WGC 央行储备季报 | `python -m datahub.fin.intake wgc <file> --load` |
 | `clean/insider_net.csv` | 内部人净增持（东财导出） | 手工追加行 |
 | `clean/equity_fin_monthly.csv` | 人行社融表解析后导出 | 手工追加行 |
 

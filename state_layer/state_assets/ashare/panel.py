@@ -1,7 +1,7 @@
 """A 股状态面板：**只声明状态识别需要的数据**。
 
 和 `causual_assets/ashare/panel.py` 是两份独立的声明——因果层要的宏观表更多，
-状态层只取识别状态用得到的几列。两边的拼装逻辑都走 `datahub.panel.build`，
+状态层只取识别状态用得到的几列。两边的拼装逻辑都走 `datahub.fin.read`，
 所以对齐口径（lag_days、ffill）只有一份实现。
 
 数据来源：调用方传 `series`（{表名: Series}），状态层不自己去读库。

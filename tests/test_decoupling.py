@@ -28,7 +28,7 @@ def _violations(base: str, self_name: str) -> list[str]:
             if mod == self_name:
                 continue
             line = text[m.start():].lstrip().split("\n")[0]
-            # 纯工具（datahub.align）不是数据访问，允许
+            # 纯工具（shared.panel_align）不是数据访问，允许
             if mod == "datahub" and "align" in line:
                 continue
             # 模块注册不是数据访问，允许

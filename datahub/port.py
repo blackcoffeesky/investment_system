@@ -66,10 +66,16 @@ class DataPort:
         - single → `{表名: Series}`
         - multi  → `{表名: 列名}`
         - long   → pivot 成宽表后 `{表名: 代码}`（代码多时请自己先过滤）
+        - static → **跳过并告警**：没有日期轴，本来就不是时间序列
+
+        static 跳过而不是抛异常：调用方常把整份表清单直接传进来，
+        一张 `company` 不该把整个面板带崩（它的 code/name 是文本，`astype(float)` 必炸）。
 
         装配规则只写在这一个地方，四个调用方（两个 CLI、service、web）
         不用各写一遍。
         """
+        import sys
+
         import datahub.fin as fin
         # 注意：`datahub.fin.read` 这个**属性**被同名函数占用了，
         # 所以要按函数名 import，不能 `from datahub.fin import read as rd`。
@@ -81,6 +87,10 @@ class DataPort:
         out: dict[str, pd.Series] = {}
         for t in names:
             kind = kind_of(t)
+            if kind == "static":
+                print(f"[datahub] series_map 跳过 static 表 {t!r}：没有日期轴，"
+                      f"不是时间序列", file=sys.stderr)
+                continue
             if kind == "long":
                 df = fin.read_long(t)
                 if df.empty:
