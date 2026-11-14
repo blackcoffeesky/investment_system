@@ -62,6 +62,7 @@ datahub/
 │   ├── update.py          写库（四种 kind 各一个 writer）+ 按频率跳过 + 元数据
 │   ├── sources.py         取数函数 + SOURCES 注册表（含 ashareapi 客户端）
 │   ├── check.py           交易日历 + 完整性检查
+│   ├── derive.py          派生量（市场宽度），**不落表**、不注册成源
 │   ├── write.py           单值 upsert（intake 用）
 │   └── intake/            raw / clean / parsers / registry / cli / stock_daily
 ├── ops/
@@ -73,13 +74,14 @@ datahub/
 
 | 文件 | 职责 | 谁调用 |
 |---|---|---|
-| `port.py` | 跨模块唯一面：读、装配、受控动作（update / intake） | service / 各模块 cli / web |
+| `port.py` | 跨模块唯一面：读、装配、受控动作（update / intake）；`series_map` 跳过 static 表并告警 | service / 各模块 cli / web |
 | `core/conn.py` | 连接超时、事务边界、DDL 执行 | fin / ops |
 | `core/schema.py` | 所有 DDL 的唯一出处 + 老库补列（`migrate_metadata`） | update / intake / ops |
 | `fin/read.py` | 只读 API + 表结构定义（列名与类型） | 服务层 / 脚本 / port |
 | `fin/sources.py` | "从哪拿"（含外部 API 客户端） | update |
 | `fin/update.py` | "怎么写"（四种 kind + 元数据 + 该不该跑） | 人 / 服务层 / port |
-| `fin/check.py` | 缺口判断（日历驱动） | 状态机 / 人 / port |
+| `fin/check.py` | 缺口判断（日历驱动；低频表按周期比，报「同月多行」） | 状态机 / 人 / port |
+| `fin/derive.py` | 派生量现算（市场宽度），不建表、不注册成源 | 消费方 / 脚本 |
 | `fin/write.py` | 单值/整表写入（手工录入页用） | `web/routes.py` |
 | `fin/intake/` | 手工源解析 + 一次性建库脚本 | `web/routes.py` / 人 |
 | `ops/store.py` | 运维状态持久化 | Manager |
@@ -167,9 +169,10 @@ python -m datahub.fin.update
 ```
 python -m datahub.fin.check
   ├─ 按 metadata.freq + market 生成"应有日期"（交易日历）
-  ├─ 与实际日期做差
+  ├─ 与实际日期做差（M/Q/Y 按**周期**比，不按天）
   ├─ 减掉 missing 表里已登记的缺口
-  └─ 分「近期缺」与「历史缺口」两档报告
+  ├─ 低频表同期多行 → 报「同月多行」，算重复不算缺口
+  └─ 分「近期缺」与「历史缺口」两档报告（只报不改）
 ```
 
 ### 5.4 消费方
@@ -205,7 +208,7 @@ d = read("csi_all")           # DataFrame
 | `sources.fred` 里 `os.environ.setdefault` 设代理 | 全局副作用，可能污染其他请求 | 改成显式传 `proxies=` |
 | `cfc` 查询 `$limit=50000` 硬编码 | CFTC 历史若继续增长会被截断 | 加分页或检测截断 |
 | `check` 只检查「有没有这个日期」 | 不检查数值突变（如 10 倍跳变） | 加一层"与前值比值"的合理性检查 |
-| **月频表同月两行**：`m1_yoy`/`m2_yoy`/`m1_level`/`m2_level`（397 行 / 225 月）、`total_shares`/`total_mktcap`（398/226）、`equity_fin_monthly`（162/81） | 月初 + 月末两行并存（值多数相同）→ `resample`/分位/差分**重复计数**；`check` 还会把它误报成「历史缺口」 | 先让 `check` 单报「同月多行」，数据迁移单独做（本轮不动库） |
+| **月频表同月两行**：`m1_yoy`/`m2_yoy`/`m1_level`/`m2_level`（397 行 / 225 月）、`total_shares`/`total_mktcap`（398/226）、`equity_fin_monthly`（162/81） | 月初 + 月末两行并存（值多数相同）→ `resample`/分位/差分**重复计数** | **已能报出来**（`check` 的「同月多行 N 期」）；数据迁移单独做，本轮不动库 |
 | `check` 只查观测区间内的**空洞**，不查**尾部停更** | `vix` 停在 11-06、`csi_all` 停在 11-10 都不告警 | 等 FRED 那批表的 `market` 从 NYSE 改成自然日/联邦工作日后再加 |
 | `check` 的 `long` 表只看日期集合，不看**标的覆盖度** | `financials`/`dividend`/`shares_history` 只有 5 只也全部通过 | 加一层"标的数 vs `company` 行数"的覆盖检查 |
 | `static` 表没有日期轴 | `check` 实际不检查它（只算行数） | 由 `company` 之外的来源保证新鲜度，或给 static 表加 `updated_at` |
@@ -266,11 +269,21 @@ key 只在 `.env` / 环境变量 `ASHARE_API_KEY`，代码不存。
 
 | 派生量 | 公式 | 依赖 |
 |---|---|---|
+| 市场宽度 ✅ | 按日聚合 `stock_daily`：涨/跌/平、涨跌停（**已实现**，见 `fin/derive.py`） | `stock_daily` + `company`(ST) |
 | 总市值 | `close × total_shares`（股本按日期 ffill） | `stock_daily` + `shares_history` |
 | PE_ttm | `总市值 / 净利润TTM` | + `financials` |
 | PB | `总市值 / 净资产` | + `financials` |
-| 市场宽度 | 按日聚合 `stock_daily`：涨跌家数、涨跌停家数 | `stock_daily` |
 | ETF 资金流 | `etf_shares` 差分 | `etf_shares` |
+
+**市场宽度**已落地（2026-11-14）：
+
+```python
+from datahub.fin.derive import breadth
+df = breadth("2026-01-01", "2026-11-10")   # index=date，列 adv/dec/flat/limit_up/limit_down/total
+```
+
+口径与已知偏差写在 `derive.py` 的模块 docstring 里（涨跌基准、停牌、板块阈值、ST、未复权除权坑）。
+它**不建表、不注册成 Source**；等与旧表 `breadth_*` 比对确认后，第三轮再删旧表并切换 `state_layer`。
 
 **为什么现算**：估值入库约 5000×2500×4 个浮点 ≈ 3 GB，且都是可推导量；
 一旦入库就要操心"股本变了要重算历史"。

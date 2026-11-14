@@ -99,6 +99,16 @@ missing()                       # 已人工确认的正常缺口
 注意**不要**写 `from datahub.fin import check`：`check` 是子模块名，
 `datahub/fin/__init__.py` 里已把它换成 `run_check` / `missing` 两个函数名。
 
+派生量（不落表、现算）：
+
+```python
+from datahub.fin.derive import breadth
+breadth("2026-11-10", "2026-11-10")   # 市场宽度：adv/dec/flat/limit_up/limit_down/total
+```
+
+**`series_map()` 会跳过 `static` 表并打一行警告**——static 没有日期轴，
+不是时间序列；调用方把整份表清单传进来也不会炸。
+
 **写接口不对外。** 写库只发生在 `update.py` / `intake` 内部。
 
 ---

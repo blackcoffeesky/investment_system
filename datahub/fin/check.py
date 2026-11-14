@@ -9,6 +9,9 @@
 2. 与表里实际存在的日期做差
 3. 减掉 `missing` 表里**已人工确认**的缺口
 4. 剩下的才报出来
+5. 低频表（M/Q/Y）**按周期**比对：同一个月两行（月初 + 月末）报「同月多行」，
+   算**重复**不算缺口——按天比会把月初那批误报成「历史缺口」
+6. 只报不改：这里从不修改任何表
 
 `missing` 只有一张表，不论频率；没有缺口时它是空的。
 """
@@ -18,6 +21,7 @@ from __future__ import annotations
 import argparse
 import sqlite3
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 
@@ -25,6 +29,10 @@ from datahub import DB_PATH
 import pandas as pd
 
 _MARKET_ALIAS = {"CN": "SSE", "US": "NYSE"}
+
+# 低频表按**周期**比对，不按天（天比会把"月初 + 月末"两行误判成缺口）
+_PERIOD = {"M": "M", "Q": "Q", "Y": "Y"}
+_DUP_LABEL = {"M": "同月", "Q": "同季", "Y": "同年"}
 
 
 def trading_days(market: str, start: str, end: str) -> pd.DatetimeIndex:
@@ -92,20 +100,20 @@ def run(path: Path | None = None, recent_days: int = 90) -> pd.DataFrame:
     更早的缺口单独计数——那是历史源数据留下的，不是运维该天天盯的。
     """
     con = _conn(path)
-    meta = pd.read_sql("SELECT * FROM metadata", con)
+    meta = cast(pd.DataFrame, pd.read_sql("SELECT * FROM metadata", con))
     con.executescript(DATA_DDL)
-    acked = pd.read_sql("SELECT name, date FROM missing", con)
+    acked = cast(pd.DataFrame, pd.read_sql("SELECT name, date FROM missing", con))
     con.close()
 
     ack_map: dict[str, set[str]] = {}
-    for _, r in acked.iterrows():
-        ack_map.setdefault(r["name"], set()).add(str(r["date"]))
+    for r in acked.to_dict("records"):
+        ack_map.setdefault(str(r["name"]), set()).add(str(r["date"]))
 
     import datahub.fin as fin
 
     cutoff = str((pd.Timestamp.today() - pd.Timedelta(days=recent_days)).date())
     rows = []
-    for _, m in meta.iterrows():
+    for m in meta.to_dict("records"):
         name = m["name"]
         try:
             obj = fin.read(name, path=path)
@@ -119,6 +127,11 @@ def run(path: Path | None = None, recent_days: int = 90) -> pd.DataFrame:
         if str(m["kind"] or "single") == "long":
             # long 表一行一个 (标的, 日期)：只关心"有哪些交易日"
             dates = pd.DatetimeIndex(pd.to_datetime(obj["date"]).unique())
+        elif str(m["kind"] or "single") == "static":
+            # static 没有日期轴（`obj.index` 只是 RangeIndex），
+            # 拿它转日期会得到 1970-01-01 从而报出「同月多行 5578 行」这种假问题。
+            # 它本来就不参与缺口检查（行数由 refresh_metadata 保证）。
+            continue
         else:
             dates = pd.DatetimeIndex(obj.index)
 
@@ -140,12 +153,31 @@ def run(path: Path | None = None, recent_days: int = 90) -> pd.DataFrame:
             rows.append({"name": name, "issues": f"日历失败 {type(e).__name__}: {e}"})
             continue
 
-        expected = set(str(d.date()) for d in exp)
-        missing = sorted(expected - actual - ack_map.get(name, set()))
+        issues: list[str] = []
+        dup = pd.Series(dtype="int64")
+        per = _PERIOD.get(freq.upper())          # M/Q/Y → "M"/"Q"/"Y"；D/W → None
+        if per:
+            # 低频表按**周期**比对：同一个月里"月初一行 + 月末一行"是**重复**，不是缺口。
+            # 按天比会把月初那批算成缺口（m1/m2/total_* 的「53 天缺口」就是这么误报的）。
+            actual_per = pd.DatetimeIndex(sorted(dates)).to_period(per)
+            exp_per = pd.DatetimeIndex(exp).to_period(per)
+            acked = ack_map.get(name, set())
+            ack_per = (pd.DatetimeIndex(sorted(acked)).to_period(per)
+                       if acked else pd.PeriodIndex([], freq=per))
+            missing_per = sorted(set(exp_per) - set(actual_per) - set(ack_per))
+            missing = [str(p.end_time.date()) for p in missing_per]
+            counts = pd.Series(actual_per).value_counts()
+            dup = counts[counts > 1].sort_index()
+        else:
+            expected = set(str(d.date()) for d in exp)
+            missing = sorted(expected - actual - ack_map.get(name, set()))
+
         recent = [d for d in missing if d >= cutoff]
         old = len(missing) - len(recent)
 
-        issues = []
+        if per and len(dup):
+            issues.append(f"{_DUP_LABEL[per]}多行 {len(dup)} 期"
+                          f"（最多 {int(dup.max())} 行，首见 {dup.index[0]}）")
         if recent:
             sample = ", ".join(recent[:5])
             more = f" … 共 {len(recent)} 天" if len(recent) > 5 else ""

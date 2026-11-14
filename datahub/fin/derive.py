@@ -21,8 +21,11 @@
    |---|---|---|
    | ST | `company.name` 含 `ST` | ±4.8 |
    | 创业板 300/301、科创板 688/689 | 代码前缀 | ±19.8 |
-   | 北交所 8xx / 4xx | 代码前缀 | ±29.8 |
+   | 北交所 920xxx（新）/ 8xx / 4xx（老） | 代码前缀 | ±29.8 |
    | 其余（600/601/603/605/000/001/002/003…） | 兜底 | ±9.8 |
+
+   ⚠️ 北交所自 2024 年起新代码是 **920xxx**（库里现有 355 只全是 920 开头），
+   只按 "8xx/4xx" 判会把它们错当主板用 ±9.8，涨停家数会虚高。
 
    ST 判定**优先级最高**（先按板给阈值，再被 ST 覆盖）。
 5. `limit_up` / `limit_down` 是 `adv` / `dec` 的**子集**，不再单独加减。
@@ -44,6 +47,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -60,7 +64,7 @@ _LIMIT_BJ = 29.8            # 北交所 8xx / 4xx
 _LIMIT_ST = 4.8
 
 _GROWTH_PREFIX = ("300", "301", "688", "689")
-_BJ_PREFIX = ("8", "4")
+_BJ_PREFIX = ("920", "8", "4")    # 920xxx 是 2024 起的新北交所代码
 
 _COLUMNS = ["adv", "dec", "flat", "limit_up", "limit_down", "total"]
 
@@ -72,9 +76,9 @@ def _conn(path: Path | None = None) -> sqlite3.Connection:
     return sqlite3.connect(str(p), timeout=60)
 
 
-def _bare_code(codes: pd.Series) -> pd.Series:
+def _bare_code(codes: Any) -> pd.Series:
     """`sh600519` / `600519` → `600519`（stock_daily 是裸 6 位，company 带前缀）。"""
-    return codes.astype(str).str[-6:]
+    return cast(pd.Series, codes).astype(str).str[-6:]
 
 
 def _st_codes(path: Path | None = None) -> set[str]:
@@ -167,4 +171,4 @@ def breadth(start: str | None = None, end: str | None = None, *,
     })
     out = flags.groupby("date", sort=True)[_COLUMNS].sum().astype(int)
     out.index = pd.DatetimeIndex(pd.to_datetime(out.index), name="date")
-    return out
+    return cast(pd.DataFrame, out)
