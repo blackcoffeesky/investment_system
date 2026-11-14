@@ -47,3 +47,44 @@
 
 **不要**指望用它每天拿全市场市值：`snapshot` 是单只一次，5000 只/天在 200 次额度下不可行。
 市值请用 `收盘价 × 总股本`，总股本从 `adj_factor` 的送股/配股事件递推。
+
+
+---
+
+# 标准版实测（2026-11-14，¥29.9）
+
+额度：**总共 10 万次**（lifetime），120 次/分；`kline-full` 另有 200 次/日。
+
+| 端点 | 标准版 | 说明 |
+|---|---|---|
+| `index-constituent` | ✅ | 300 行，字段 code/name/IndexName |
+| `limit-up` | ✅ | 37 条，含 `reason` 涨停原因、`seal_amount` 封单 |
+| `suspension` | ✅ | 5 条，含停牌原因 |
+| `snapshot` | ✅ | 35 字段：**pe_ttm / pb / total_market_cap / total_shares** 都有 |
+| `technical` | ✅ | 55 项指标 |
+| `chip` | ✅ | 筹码分布 |
+| `search` | ✅ | 代码检索 |
+| `fund-flow` | ❌ | **需要专业版** |
+| `shareholder` | ❌ | 参数名应为 `codes` 但传了仍 422，待查 |
+
+## 两条硬约束
+
+1. **`snapshot` 不支持逗号批量**（传 `sh600519,sz000001` 返回 ok:false）
+2. 全市场 5000 只 × 1 次 = 5000 次/天 → **10 万次额度 20 天烧完**
+
+所以**每日全市场估值不能靠 snapshot**。它只给"当日"的 PE/PB（响应里 `time` 是当天），
+也**不能回填历史**。
+
+## 估值的结论
+
+| 做法 | 可行性 |
+|---|---|
+| 存进 `stock_daily` | 5000 × 2500 × 4 个浮点 ≈ 3 GB，且是派生量 |
+| 建日频 `valuation` 表 | 同样大，且历史数据拿不到（API 只给当日） |
+| **现算** | `PE = close × total_shares / 净利润TTM`、`PB = close × total_shares / 净资产` |
+
+现算需要两样东西：
+- `shares_history`（股本变动，由增发/回购/送转事件维护）
+- `financials`（季频净利/净资产）
+
+**ashareapi 标准版没有财务报表端点**（只有"披露日历"），财报得走 akshare。
