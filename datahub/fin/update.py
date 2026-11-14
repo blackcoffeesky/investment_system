@@ -24,6 +24,8 @@ import pandas as pd
 
 from datahub import DB_PATH, ROOT
 from datahub.core.schema import DATA_DDL
+from datahub.fin.read import (LONG_SCHEMAS, STATIC_SCHEMAS,
+                              _long_columns, _static_columns)
 from datahub.fin.sources import SOURCES, Source
 
 MISSING_DIR = ROOT / "data" / "missing"
@@ -104,8 +106,8 @@ def _ensure_meta(con: sqlite3.Connection) -> int:
         if name in have:
             continue
         cols = [r[1] for r in con.execute(f'PRAGMA table_info("{name}")')]
-        from datahub.fin.long import LONG_SCHEMAS
-        from datahub.fin.static import STATIC_SCHEMAS
+        from datahub.fin.read import LONG_SCHEMAS
+        from datahub.fin.read import STATIC_SCHEMAS
 
         if name in LONG_SCHEMAS:
             kind = "long"
@@ -272,9 +274,7 @@ def run(start: str = "2000-01-01", end: str | None = None,
                 continue
 
             if s.shape in ("long", "static"):
-                from datahub.fin import long as _L, static as _S
-
-                writer = _L.write if s.shape == "long" else _S.write
+                writer = write_long if s.shape == "long" else write_static
                 if dry_run:
                     print(f"  [dry] {tables[0]:22s} {s.shape:6s} {len(obj):5d} 行  {s.func.__name__}")
                     results.append({"table": s.table, "status": "dry", "rows": len(obj), "msg": ""})
@@ -329,3 +329,50 @@ if __name__ == "__main__":
              dry_run=a.dry_run, force=a.force)
     print("\n汇总：")
     print(df.groupby("status").size().to_string())
+
+# ======================================================================
+# 写库：long / static。表结构（列名+类型）在 read.py，那里是唯一出处。
+# ======================================================================
+def _ddl_long(table: str) -> str:
+    cols = ", ".join(f"{c} {t}" for c, t in LONG_SCHEMAS[table].items())
+    return (f'CREATE TABLE IF NOT EXISTS "{table}" (\n'
+            f'    code TEXT NOT NULL,\n    date TEXT NOT NULL,\n'
+            f'    {cols},\n    PRIMARY KEY (code, date))\n')
+
+
+def _ddl_static(table: str) -> str:
+    cols = ", ".join(f"{c} {t}" for c, t in STATIC_SCHEMAS[table].items())
+    return (f'CREATE TABLE IF NOT EXISTS "{table}" (\n'
+            f'    code TEXT PRIMARY KEY,\n    {cols}\n)')
+
+
+def write_long(con: sqlite3.Connection, table: str, df: pd.DataFrame) -> int:
+    """写 long 表（upsert）。df 需含 code / date 及已登记字段。"""
+    con.executescript(_ddl_long(table))
+    con.execute(f'CREATE INDEX IF NOT EXISTS "idx_{table}_date" ON "{table}"(date)')
+    cols = _long_columns(table)
+    use = ["code", "date"] + [c for c in cols if c in df.columns]
+    frame = df[use].copy()
+    frame["date"] = pd.to_datetime(frame["date"]).dt.strftime("%Y-%m-%d")
+    sql = (f'INSERT INTO "{table}" ({", ".join(use)}) '
+           f'VALUES ({", ".join("?" * len(use))}) '
+           f'ON CONFLICT(code, date) DO UPDATE SET '
+           + ", ".join(f"{c}=excluded.{c}" for c in use[2:]))
+    con.executemany(sql, frame.itertuples(index=False, name=None))
+    con.commit()
+    return len(frame)
+
+
+def write_static(con: sqlite3.Connection, table: str, df: pd.DataFrame) -> int:
+    """写 static 表（按 code upsert）。"""
+    con.executescript(_ddl_static(table))
+    cols = _static_columns(table)
+    use = ["code"] + [c for c in cols if c in df.columns]
+    frame = df[use].copy()
+    sql = (f'INSERT INTO "{table}" ({", ".join(use)}) '
+           f'VALUES ({", ".join("?" * len(use))}) '
+           f'ON CONFLICT(code) DO UPDATE SET '
+           + ", ".join(f"{c}=excluded.{c}" for c in use[1:]))
+    con.executemany(sql, frame.itertuples(index=False, name=None))
+    con.commit()
+    return len(frame)

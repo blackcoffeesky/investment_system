@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import random
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -535,20 +536,6 @@ def market_breadth(start: str, end: str, **_) -> pd.DataFrame:
     }, index=[today])
 
 
-# ---------------------------------------------------------------- 公司三表
-from datahub.fin import sources_ashare as _SA  # noqa: E402
-
-COMPANY_SOURCES = [
-    # 全市场清单：一次调用拿全，每月刷一次足够
-    Source("company", _SA.company, shape="static", note="ashareapi /v1/stocks"),
-    # 当前股本快照：只抓池子，季度刷一次（股本变动由事件补）
-    Source("shares_history", _SA.shares, shape="long", note="ashareapi /v1/snapshot"),
-    # 季频财报：报告期 + 披露日，用于算 PE/PB/ROE
-    Source("financials", _SA.financials, shape="long", note="ashareapi /v1/finance"),
-    # 分红送转：除权日 + 每股现金/送股/配股
-    Source("dividend", _SA.dividend, shape="long", note="ashareapi /v1/dividend"),
-]
-
 # ---------------------------------------------------------------- 注册表
 SOURCES: list[Source] = [
     # 共享宏观
@@ -600,4 +587,255 @@ SOURCES: list[Source] = [
     Source("dividend_annual", dividend_annual, {"years": 6}, note="年度分红，逐年补齐"),
 ]
 
-SOURCES += COMPANY_SOURCES
+
+# ======================================================================
+# ashareapi：HTTP 客户端 + 四个取数函数
+# ======================================================================
+# key 只从环境变量 / 仓库根的 .env 读，绝不写进代码。
+import json as _json
+import os as _os
+import urllib.error as _urlerr
+import urllib.parse as _urlparse
+import urllib.request as _urlreq
+
+API_BASE = "https://api.ashareapi.com/v1"
+_API_MIN_GAP = 0.55          # 标准版 120 次/分，留点余量
+_api_last = [0.0]
+
+
+def api_key() -> str:
+    return _os.environ.get("ASHARE_API_KEY", "").strip()
+
+
+def api_enabled() -> bool:
+    return bool(api_key())
+
+
+def api_get(path: str, **params) -> dict:
+    """GET 一个端点，返回解析后的 JSON（失败也返回 dict，不抛）。"""
+    if not api_enabled():
+        return {"ok": False, "error": "没有设置 ASHARE_API_KEY"}
+
+    gap = time.time() - _api_last[0]
+    if gap < _API_MIN_GAP:
+        time.sleep(_API_MIN_GAP - gap)
+    _api_last[0] = time.time()
+
+    url = f"{API_BASE}{path}" + (f"?{_urlparse.urlencode(params)}" if params else "")
+    req = _urlreq.Request(url, headers={"Authorization": f"Bearer {api_key()}",
+                                        "User-Agent": "datahub"})
+    try:
+        with _urlreq.urlopen(req, timeout=60) as r:
+            return _json.loads(r.read().decode("utf-8"))
+    except _urlerr.HTTPError as e:
+        body = e.read().decode("utf-8", "ignore")
+        try:
+            info = _json.loads(body)
+        except Exception:  # noqa: BLE001
+            info = {"raw": body[:300]}
+        info.setdefault("ok", False)
+        info["http"] = e.code
+        return info
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def api_rows(res: dict) -> list[dict]:
+    """取行数组形态的 data（行数组 / 表列表 / 嵌套 data 都兼容）。"""
+    data = res.get("data")
+    if isinstance(data, dict):          # /stocks：{total, returned, data: [...]}
+        inner = data.get("data")
+        return [x for x in inner if isinstance(x, dict)] if isinstance(inner, list) else []
+    if isinstance(data, list):
+        if data and isinstance(data[0], list):     # 表列表
+            return data[0]
+        return [x for x in data if isinstance(x, dict)]
+    st = res.get("structured")
+    return st if isinstance(st, list) else []
+
+
+def _iso_date(s) -> str | None:
+    """20251231 / 2026-12-31 → 2026-12-31；空 → None。"""
+    if not s:
+        return None
+    s = str(s).strip()
+    if len(s) == 8 and s.isdigit():
+        return f"{s[:4]}-{s[4:6]}-{s[6:]}"
+    return s[:10]
+
+
+def _num(v):
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if f == f else None
+
+
+def board_of(code: str) -> str:
+    """创业板 300/301、科创板 688/689、北交所 8xx/4xx，其余主板。"""
+    c = str(code)
+    num = c[2:] if c[:2] in ("sh", "sz", "bj") else c
+    if num.startswith(("300", "301")):
+        return "创业板"
+    if num.startswith(("688", "689")):
+        return "科创板"
+    if c.startswith("bj") or num.startswith(("8", "4")):
+        return "北交所"
+    return "主板"
+
+
+def _exchange_of(code: str) -> str:
+    c = str(code)
+    return "SH" if c.startswith("sh") else "SZ" if c.startswith("sz") else "BJ"
+
+
+# ---------------------------------------------------------------- 取数
+def ashare_company(start: str = "", end: str = "", table: str = "", **_) -> pd.DataFrame:
+    """全市场清单（一次调用拿全 ~5578 只）。"""
+    res = api_get("/stocks", limit=6000)
+    if not res.get("ok"):
+        raise RuntimeError(f"/v1/stocks 失败：{res.get('error') or res.get('http')}")
+    inner = (res.get("data") or {}).get("data") or []
+    if not inner:
+        raise RuntimeError("/v1/stocks 返回空")
+
+    df = pd.DataFrame(inner)
+    out = pd.DataFrame({
+        "code": df["code"],
+        "name": df.get("name"),
+        "exchange": df["code"].map(_exchange_of),
+        "board": df["code"].map(board_of),
+        "list_date": df.get("listedDate"),
+        "delist_date": None,
+        "industry": df.get("industry"),
+        "total_shares": None,      # 股本要 /v1/snapshot，由 shares 源补
+        "float_shares": None,
+    })
+    return out
+
+
+def ashare_financials(start: str = "", end: str = "", table: str = "",
+                      num: int = 8, **_) -> pd.DataFrame:
+    """季频财报：利润表 + 资产负债表拼成一张 long（全市场，季度跑一次）。"""
+    rows = []
+    for code in _all_codes():
+        res = api_get("/finance", code=code, num=num)
+        tables = res.get("data") if res.get("ok") else None
+        if not tables or len(tables) < 2:
+            continue
+        inc, bal = tables[0], tables[1]
+        bal_by_end = {r.get("EndDate"): r for r in bal}
+        for r in inc:
+            end_date = r.get("EndDate")
+            if not end_date:
+                continue
+            b = bal_by_end.get(end_date, {})
+            net = _num(r.get("NPParentCompanyOwners"))
+            eq = _num(b.get("TotalShareholderEquity"))
+            rows.append({
+                "code": code,
+                "date": _iso_date(end_date),
+                "publ_date": _iso_date(r.get("InfoPublDate")),
+                "revenue": _num(r.get("OperatingRevenue")),
+                "net_profit": net,
+                "equity": eq,
+                "eps": _num(r.get("EPS")),
+                "roe": (net / eq) if (net and eq) else None,
+            })
+    return pd.DataFrame(rows)
+
+
+def ashare_dividend(start: str = "", end: str = "", table: str = "", **_) -> pd.DataFrame:
+    """分红送转。⚠️ 接口给的是**每 10 股**（`dividendPlan` 写「10派280.242元」），
+    入库统一除以 10 换成每股。"""
+    rows = []
+    for code in _all_codes():
+        res = api_get("/dividend", code=code)
+        if not res.get("ok"):
+            continue
+        for r in api_rows(res):
+            ex = r.get("exDiviDate")
+            if not ex:
+                continue
+            plan = str(r.get("dividendPlan") or "")
+            cash10, bonus10, allot10 = _parse_plan(plan)
+            if cash10 is None:
+                cash10 = _num(r.get("cashDiviRMB"))
+            if bonus10 is None:
+                b10 = (_num(r.get("bonusShareRatio")) or 0) + \
+                      (_num(r.get("tranAddShareRatio")) or 0)
+                bonus10 = b10 or None
+            rows.append({
+                "code": code,
+                "date": _iso_date(ex),
+                "report_end": _iso_date(r.get("reportEndDate")),
+                "cash": (cash10 / 10.0) if cash10 is not None else None,
+                "bonus": (bonus10 / 10.0) if bonus10 is not None else None,
+                "allot_ratio": (allot10 / 10.0) if allot10 is not None else None,
+                "allot_price": None,
+                "plan": plan or None,
+            })
+    return pd.DataFrame(rows)
+
+
+def ashare_shares(start: str = "", end: str = "", table: str = "", **_) -> pd.DataFrame:
+    """当前股本快照 → shares_history 的一行（kind=base）。
+
+    历史变动靠以后的增发/回购/送转事件往前推，不从今天倒推（倒推会把增发漏掉）。
+    """
+    today = str(pd.Timestamp.today().date())
+    rows = []
+    for code in _all_codes():
+        res = api_get("/snapshot", code=code)
+        data = api_rows(res)
+        if not data:
+            continue
+        r = data[0]
+        total = _num(r.get("total_shares"))
+        if not total:
+            continue
+        rows.append({"code": code, "date": today, "kind": "base",
+                     "delta_total": None, "total_after": total,
+                     "float_after": _num(r.get("float_shares"))})
+    return pd.DataFrame(rows)
+
+
+def _parse_plan(plan: str) -> tuple[float | None, float | None, float | None]:
+    """「10派2.5元送3股转2股」→ (2.5, 5.0, None)，单位都是每 10 股。"""
+    if not plan:
+        return None, None, None
+    cash = re.search(r"派\s*([\d.]+)", plan)
+    song = re.search(r"送\s*([\d.]+)", plan)
+    zhuan = re.search(r"转\s*([\d.]+)", plan)
+    pei = re.search(r"配\s*([\d.]+)", plan)
+    bonus = None
+    if song or zhuan:
+        bonus = float(song.group(1) if song else 0) + float(zhuan.group(1) if zhuan else 0)
+    return (float(cash.group(1)) if cash else None,
+            bonus,
+            float(pei.group(1)) if pei else None)
+
+
+def _all_codes() -> list[str]:
+    """全市场代码（来自 company 表；表还没建就现场拉一次清单）。"""
+    try:
+        df = read("company")
+        if len(df):
+            return [str(c) for c in df["code"]]
+    except Exception:  # noqa: BLE001
+        pass
+    res = api_get("/stocks", limit=6000)
+    inner = (res.get("data") or {}).get("data") or []
+    return [str(r["code"]) for r in inner if r.get("code")]
+
+SOURCES += [
+    # 全市场清单：一次调用拿全，每月刷一次足够
+    Source("company", ashare_company, shape="static", note="ashareapi /v1/stocks"),
+    # 当前股本快照：季度刷一次（历史变动靠事件推）
+    Source("shares_history", ashare_shares, shape="long", note="ashareapi /v1/snapshot"),
+    # 季频财报：报告期 + 披露日，用于算 PE/PB/ROE
+    Source("financials", ashare_financials, shape="long", note="ashareapi /v1/finance"),
+    # 分红送转：除权日 + 每股现金/送股/配股
+    Source("dividend", ashare_dividend, shape="long", note="ashareapi /v1/dividend"),
+]

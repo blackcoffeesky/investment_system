@@ -21,7 +21,7 @@ import pandas as pd
 
 from datahub import DB_PATH
 from datahub.core.schema import DATA_DDL
-from datahub.fin import long as L
+from datahub.fin import read as L
 
 ROOT = Path(__file__).resolve().parents[3]
 DATA = ROOT / "data"
@@ -54,7 +54,7 @@ def ingest_k(con: sqlite3.Connection, path: Path = K_FILE) -> int:
         "turnover": df["turnover"],
     })
     t0 = time.time()
-    n = L.write(con, "stock_daily", out)
+    n = write_long(con, "stock_daily", out)
     print(f"stock_daily: {n} 行，{out.code.nunique()} 只，"
           f"{out.date.min()} ~ {out.date.max()}，{time.time()-t0:.1f}s")
     return n
@@ -74,14 +74,14 @@ def ingest_adj(con: sqlite3.Connection, path: Path = ADJ_FILE) -> int:
     out = out.groupby(["code", "date"], as_index=False).agg(
         dividend=("dividend", "sum"), bonus=("bonus", "sum"),
         allot_ratio=("allot_ratio", "sum"), allot_price=("allot_price", "max"))
-    n = L.write(con, "adj_factor", out)
+    n = write_long(con, "adj_factor", out)
     print(f"adj_factor: {n} 条事件，{out.code.nunique()} 只")
     return n
 
 
 def register(con: sqlite3.Connection, table: str, freq: str = "D",
              market: str = "CN", note: str = "") -> None:
-    st = L.stats(table)
+    st = L.long_stats(table)
     con.execute("DELETE FROM metadata WHERE name=?", (table,))
     con.execute(
         "INSERT INTO metadata(name, display, freq, unit, start_date, end_date,"
@@ -89,7 +89,7 @@ def register(con: sqlite3.Connection, table: str, freq: str = "D",
         " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         (table, table, freq, "", st["start_date"], st["end_date"], st["n_rows"],
          note or f"long 表，{st['codes']} 个标的", "long",
-         ",".join(L.columns_of(table)), market, 0))
+         ",".join(L._long_columns(table)), market, 0))
     con.commit()
     print(f"metadata: {table} n_rows={st['n_rows']} codes={st['codes']}")
 

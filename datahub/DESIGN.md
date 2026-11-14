@@ -1,6 +1,6 @@
 # datahub 设计文档
 
-> **更新日期：2026-11-04**　｜　使用说明见 [`README.md`](README.md)
+> **更新日期：2026-11-14**　｜　使用说明见 [`README.md`](README.md)
 
 ---
 
@@ -54,11 +54,12 @@ datahub/
 │   ├── schema.py          DATA_DDL 与 OPS_DDL（分开写，同文件）
 │   └── errors.py          DatahubError / TableNotFound / OpsTableAccess / SchemaError
 ├── fin/
-│   ├── __init__.py        对外：read / read_many / metadata / tables / check / missing
-│   ├── read.py            读接口
-│   ├── update.py          按 SOURCES 更新 + 元数据刷新
-│   ├── sources.py         取数函数 + SOURCES 注册表
+│   ├── __init__.py        对外：read / read_many / read_long / metadata / tables / check
+│   ├── read.py            读接口 + **四种表结构**（single/multi/long/static）
+│   ├── update.py          写库（四种 kind 各一个 writer）+ 按频率跳过 + 元数据
+│   ├── sources.py         取数函数 + SOURCES 注册表（含 ashareapi 客户端）
 │   ├── check.py           交易日历 + 完整性检查
+│   ├── write.py           单值 upsert（intake 用）
 │   ├── intake/            raw / clean / parsers / registry / cli
 │   └── import_panels.py   一次性建库（遗留）
 └── ops/
@@ -70,9 +71,9 @@ datahub/
 |---|---|---|
 | `core/conn.py` | 连接超时、事务边界、DDL 执行 | fin / ops |
 | `core/schema.py` | 所有 DDL 的唯一出处 | update / intake / ops |
-| `fin/read.py` | 只读 API | 服务层 / 脚本 |
-| `fin/sources.py` | "从哪拿" | update |
-| `fin/update.py` | "怎么写"（upsert + 元数据） | 人 / 服务层 |
+| `fin/read.py` | 只读 API + 表结构定义 | 服务层 / 脚本 |
+| `fin/sources.py` | "从哪拿"（含外部 API 客户端） | update |
+| `fin/update.py` | "怎么写"（四种 kind + 元数据 + 该不该跑） | 人 / 服务层 |
 | `fin/check.py` | 缺口判断（日历驱动） | 状态机 / 人 |
 | `ops/store.py` | 运维状态持久化 | Manager |
 
@@ -191,3 +192,29 @@ d = db.read("csi_all")        # DataFrame
 | `sources.fred` 里 `os.environ.setdefault` 设代理 | 全局副作用，可能污染其他请求 | 改成显式传 `proxies=` |
 | `cfc` 查询 `$limit=50000` 硬编码 | CFTC 历史若继续增长会被截断 | 加分页或检测截断 |
 | `check` 只检查「有没有这个日期」 | 不检查数值突变（如 10 倍跳变） | 加一层"与前值比值"的合理性检查 |
+
+---
+
+## 4. 四种表结构
+
+| kind | 形状 | 主键 | 例 |
+|---|---|---|---|
+| `single` | `date, value` | date | `vix`、`csi300` |
+| `multi` | `date, 列…` | date | `csi_all`（OHLCV + 成交额/换手） |
+| `long` | `code, date, 字段…` | (code, date) | `stock_daily`、`dividend`、`financials` |
+| `static` | `code, 字段…` | code | `company` |
+
+- **列名与类型**在 `read.py` 的 `LONG_SCHEMAS` / `STATIC_SCHEMAS` 里，是唯一出处
+  （`metadata.columns` 只有列名、没有类型，建表需要类型）
+- **写库**在 `update.py`：`write_long` / `write_static`，按 `Source.shape` 分派
+- `multi` 用于"列是写死的"场景；`long` 用于"标的是数据"（五千只股票没法一列一只）
+
+## 5. 什么时候跑（低频跳过）
+
+| freq | 规则 |
+|---|---|
+| `D` | 每次都跑 |
+| `W/M/Q/Y` | 按 `lag_days` 算"应到哪一期"，`metadata.end_date` 已覆盖就跳过 |
+| `SPARSE` | 事件表，按 `sync_log.last_at` + 各自间隔（分红 7 天、股本 90 天） |
+
+`--force` 可跳过判断强制更新。

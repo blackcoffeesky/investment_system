@@ -89,11 +89,15 @@ def timeline(asset: str, obs: pd.DataFrame, days: int = 250) -> list[dict]:
     close = obs["close"] if "close" in obs else None
     rows = []
     for d, r in df.iterrows():
+        ts = pd.Timestamp(str(d))
+        c = close.get(d) if close is not None else None
+        a = r.get("amount")
+        ar = r.get("advance_ratio")
         rows.append({
-            "date": str(d.date()),
-            "close": None if close is None or pd.isna(close.get(d)) else float(close.get(d)),
-            "amount": None if pd.isna(r.get("amount")) else float(r.get("amount")),
-            "advance_ratio": None if pd.isna(r.get("advance_ratio")) else float(r.get("advance_ratio")),
+            "date": str(ts.date()),
+            "close": None if c is None or pd.isna(c) else float(c),
+            "amount": None if a is None or pd.isna(a) else float(a),
+            "advance_ratio": None if ar is None or pd.isna(ar) else float(ar),
             "label": str(r.get("label") or ""),
         })
     return rows

@@ -71,8 +71,12 @@ class DataPort:
         不用各写一遍。
         """
         import datahub.fin as fin
-        from datahub.fin import long as L
-        from datahub.fin.read import kind_of
+        # 注意：`datahub.fin.read` 这个**属性**被同名函数占用了，
+        # 所以要按函数名 import，不能 `from datahub.fin import read as rd`。
+        from datahub.fin.read import _long_columns, kind_of
+        from datahub.fin.read import pivot as pivot_long
+
+        from typing import cast
 
         out: dict[str, pd.Series] = {}
         for t in names:
@@ -81,19 +85,19 @@ class DataPort:
                 df = fin.read_long(t)
                 if df.empty:
                     continue
-                value = "close" if "close" in df.columns else L.columns_of(t)[0]
-                wide = L.pivot(df, value)
+                value = "close" if "close" in df.columns else _long_columns(t)[0]
+                wide = cast(pd.DataFrame, pivot_long(df, value))
                 for code in wide.columns:
-                    out[f"{t}:{code}"] = wide[code]
+                    out[f"{t}:{code}"] = cast(pd.Series, wide[code]).astype(float)
             else:
                 s = fin.read(t)
                 if s is None:
                     continue
-                if hasattr(s, "columns"):
+                if isinstance(s, pd.DataFrame):
                     for c in s.columns:
-                        out[f"{t}:{c}"] = s[c]
+                        out[f"{t}:{c}"] = cast(pd.Series, s[c]).astype(float)
                 else:
-                    out[t] = s
+                    out[t] = cast(pd.Series, s)
         return out
 
     def tables(self) -> list[str]:

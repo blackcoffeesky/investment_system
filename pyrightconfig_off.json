@@ -13,8 +13,7 @@
     "datahub/fin/write.py",
     "state_layer/port.py",
     "state_layer/web",
-    "state_layer/inference.py",
-    "state_layer/observations.py"
+    "state_layer/analysis"
   ],
   "exclude": ["**/__pycache__",
               // 卡片渲染是 pandas 密集的展示代码，接口由 test_card_smoke 守着
