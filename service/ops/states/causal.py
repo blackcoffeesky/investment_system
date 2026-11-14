@@ -16,11 +16,15 @@ def _load_series(data, cards, asset: str, state=None) -> dict:
     """按模块声明的表清单把数据读成 {表名: Series}。
 
     因果层要的表 ∪ 状态层要的表，一次读齐，两边共用同一份快照。
+    派生量（股息率等）由 `causual` 的 port 统一装配——CLI 和这里走同一个入口，
+    否则两套路径会出现「CLI 出的卡有这行、网页出的卡没有」。
     """
     tables = list(cards.required_tables(asset))
     if state is not None:
         tables += [t for t in state.required_tables(asset) if t not in tables]
-    return data.series_map(tables)
+    series = data.series_map(tables)
+    series.update(cards.derived_series(asset, data))
+    return series
 
 
 class GenerateMacroState(BaseState):
@@ -47,7 +51,7 @@ class GenerateMacroState(BaseState):
         made, skipped, failed = [], [], []
         for asset in ASSETS:
             try:
-                month = cards.macro_month(data.metadata())
+                month = cards.macro_month(data.metadata(), asset=asset)
                 if cards.exists(asset, month, kind="macro"):
                     skipped.append(f"{asset} {month}")
                     continue
