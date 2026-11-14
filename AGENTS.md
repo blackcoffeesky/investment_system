@@ -110,7 +110,21 @@ pyright --project pyrightconfig_off.json     # 必须 0 error
 
 ---
 
-## 7. 提交规范
+## 7. 提交纪律（orchestrator 尤其注意）
+
+**代理干活期间，orchestrator 不要跑 `git add -A`。**
+
+2026-11-14 踩过：datahub-agent 正在写 `derive.py`，orchestrator 同时提交文档修改，
+`git add -A` 把代理的半成品一起卷进了自己的 commit。没丢数据，但两个 commit
+的边界糊了，事后要逐个比对才知道谁改了什么。
+
+正确做法：
+
+- orchastrator 只 `git add <自己的文件>`，**永远不用 `-A`**
+- 代理提交前先 `git status` 看一眼有没有别人的改动混进来
+- 代理之间并行时，各自负责的目录是**不相交**的，看到别人目录的文件被暂存就该警觉
+
+## 8. 提交规范
 
 ```
 <模块>: <一句话做了什么>
@@ -124,7 +138,7 @@ pyright --project pyrightconfig_off.json     # 必须 0 error
 
 ---
 
-## 8. 每个模块的文档在哪
+## 9. 每个模块的文档在哪
 
 | 模块 | DESIGN | README |
 |---|---|---|
