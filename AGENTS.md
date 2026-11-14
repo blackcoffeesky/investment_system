@@ -72,7 +72,7 @@ pyright --project pyrightconfig_off.json     # 必须 0 error
 
 | 准则 | 含义 |
 |---|---|
-| **一个文件一件事** | 解析归 `read.py`、取数归 `sources.py`、写库归 `update.py`。不要新建"什么都有"的模块 |
+| **一个文件一件事** | 不要新建"什么都有"的模块 |
 | **数据只在一处定义** | 表结构、字段类型、常量：一份。副本必然漂移 |
 | **纯函数优先** | 能写成 `输入 → 输出` 的，就不要写带状态的类 |
 | **不藏副作用** | 函数名管什么就干什么；写库的函数不叫 `load` |
@@ -107,6 +107,10 @@ pyright --project pyrightconfig_off.json     # 必须 0 error
 5. **模型产物不进 git** → `state_layer/saved_models/`、`causual/data/` 部署时要单独搬。
 6. **改特征 = 换标签体系** → `label_signature` 变了，边快照全部失效，必须重估 edges。
 7. **`.env` 的 BOM** → PowerShell 写入带 BOM，第一个键名会变成 `\ufeffKEY`。
+8. **改标识格式要全库 grep** → 2026-11-14 把 ETF 代码从裸码 `510300` 改成 `sh510300` 时，
+   `state_layer` 和 `causual` 里各有一处"按裸码做字符串匹配"的写法（`GROUPS` 硬编码 + `startswith("c")`），
+   结果**一列特征变 NaN、几列派生量整体消失**，全程没有任何报错。
+   改任何标识（代码 / 表名 / 列名）之前，先 `grep` 一遍有没有按它做字符串匹配的地方。
 
 ---
 
