@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import pandas as pd
 
 from shared import panel_align as common
@@ -52,12 +54,31 @@ ASHARE = {
 # 旧面板有、数据层没有的列：补空列，避免下游 KeyError
 STUB_COLS = ["SOCIAL_FINANCING", "EQUITY_SUPPLY", "AFRE_STOCK", "EQUITY_FIN_STOCK"]
 
-# 分组用于派生：按宽基规模排序
+# 分组用于派生：按宽基规模排序（裸 6 位码；比对时两侧都归一化）
 GROUPS = {
     "SSE50": ["510050", "510710", "510100", "510190"],
     "CSI300": ["510300", "510310", "510330"],
     "CSI1000": ["512100", "560010", "510580", "510510"],
 }
+
+
+def bare_code(name: object) -> str:
+    """把各种写法的 ETF 代码归一成裸 6 位数字。
+
+    数据层 2026-11 起给代码加了市场前缀（`etf_shares:sh510300`），之前是
+    `c510300` / `510300` 之类的写法。统一取**最后 6 位数字**：
+    `sh510300` / `sz159919` / `c510300` / `510300` / `510300.SH` → `510300`。
+
+    不认得的形状原样返回（不足 6 位数字）——匹配不上就自然跳过，
+    但「派生列整体消失」会被 `tests/test_causual_panel_derived.py` 抓住。
+    """
+    digits = "".join(ch for ch in str(name) if ch.isdigit())
+    return digits[-6:] if len(digits) >= 6 else str(name)
+
+
+def _warn(msg: str) -> None:
+    """派生列降级时**要响**：不抛异常（下游还能跑），但必须说出来。"""
+    print(f"[面板] {msg}", file=sys.stderr)
 
 
 def _multi(table: str, series: dict) -> pd.DataFrame:
@@ -68,13 +89,30 @@ def _multi(table: str, series: dict) -> pd.DataFrame:
 
 
 def _derived(idx: pd.DatetimeIndex, series) -> dict[str, pd.Series]:
-    """由 `etf_shares` **现算**的派生列（数据层不存派生量）。"""
+    """由 `etf_shares` **现算**的派生列（数据层不存派生量）。
+
+    2026-11 的坑：数据层把 ETF 代码从裸码改成带前缀（`sh510300`），这里还按
+    裸码和 `GROUPS` 比对，一个都匹配不上 → 四个派生列**整体消失**，
+    而且 `sum([])` 抛的 `AttributeError` 被外层 except 吞掉，全程无报错。
+    所以现在：① 列名与 `GROUPS` 两侧都过 `bare_code`；② 降级时打印原因。
+    """
     out: dict[str, pd.Series] = {}
     try:
-        w = _multi("etf_shares", series)
-        if not isinstance(w, pd.DataFrame) or w.shape[1] < 3:
+        raw = _multi("etf_shares", series)
+        if not isinstance(raw, pd.DataFrame) or raw.shape[1] < 3:
+            n = raw.shape[1] if isinstance(raw, pd.DataFrame) else 0
+            _warn(f"etf_shares 可用列只有 {n} 个，"
+                  "SIZE_FLOW / ETF_DISPERSION / NATIONAL_ETF 全部缺席")
             return out
-        w = w.rename(columns=lambda c: str(c)[1:] if str(c).startswith("c") else str(c))
+
+        # 代码前缀怎么变都不怕：两侧统一按裸 6 位比
+        norm: dict[str, pd.Series] = {}
+        for c in raw.columns:
+            b = bare_code(c)
+            if b in norm:
+                _warn(f"etf_shares 归一后代码重复：{b}（多列），只保留最后一列")
+            norm[b] = raw[c]
+        w = pd.DataFrame(norm)
 
         def group(g: str):
             cols = [c for c in GROUPS.get(g, []) if c in w.columns]
@@ -92,12 +130,17 @@ def _derived(idx: pd.DatetimeIndex, series) -> dict[str, pd.Series]:
                 idx, method="ffill")
 
         wide = [g for g in (group("SSE50"), group("CSI300")) if g is not None]
+        if not wide:
+            _warn("SSE50 / CSI300 一个都没匹配上，NATIONAL_ETF 缺席")
+            return out
         nat = sum(wide).diff()
         out["NATIONAL_ETF"] = nat.reindex(idx, method="ffill")
         q95 = nat.rolling(60, min_periods=40).quantile(0.95)
         out["NATIONAL_ETF_EVENT"] = (nat > q95).astype(float).reindex(
             idx, method="ffill").fillna(0)
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        _warn(f"派生列计算失败（{type(exc).__name__}: {exc}），本次只保留已算出的 "
+              f"{sorted(out)}")
         return out
     return out
 

@@ -2,6 +2,58 @@
 
 ---
 
+# v5.40（2026-11-14）：ETF 代码归一，派生列复活
+
+## 一、bug：四列派生量整体消失，且全程无报错
+
+数据层 2026-11-14 把 ETF 代码从裸码 `510300` 统一成带前缀 `sh510300`，
+`causual_assets/ashare/panel.py::_derived` 有三处按裸码做字符串匹配：
+
+```python
+w.rename(columns=lambda c: c[1:] if c.startswith("c") else c)   # 只为旧 c510300 设计
+cols = [c for c in GROUPS[g] if c in w.columns]                 # GROUPS 里是裸码
+```
+
+后果链条（**每一环都不报错**）：
+
+1. `group()` 全部返回 `None` → `SIZE_FLOW` / `ETF_DISPERSION` / `NATIONAL_ETF` /
+   `NATIONAL_ETF_EVENT` 四列不进面板；
+2. `sum([])` 抛的 `AttributeError` 被 `except Exception: return out` 吞掉；
+3. `TREATMENT_COL["NATIONAL_ETF"]` 指向的 `NATIONAL_ETF_EVENT` 不在面板里 →
+   `signal_layer.build_bundle` 里 `tcol not in df.columns` 直接 `continue`
+   → **国家队这条边整条从卡片消失**（config 里正式声明的节点悄悄没了）。
+
+实测：修复前卡片可见边 **9 条**，修复后 **10 条**，差的正是
+`NATIONAL_ETF->CSI_ALL`。
+
+## 二、修法
+
+| 改动 | 说明 |
+|---|---|
+| 新增 `panel.bare_code()` | 只取数字、末 6 位：`sh510300` / `sz159919` / `c510300` / `510300` / `510300.SH` → `510300` |
+| 列名归一 | `_derived` 里先把列名过 `bare_code` 再建宽表，`GROUPS` 仍是裸码（两侧同口径） |
+| 归一后重复列告警 | 同一代码出现两次（`510300` + `sh510300`）时打印，只保留最后一列 |
+| 不再静默降级 | 原 `except: return out` 保留（下游还能跑），但**打印原因**；`wide` 为空时提前返回，不再靠 `AttributeError` 兜底 |
+
+## 三、修掉一个无关的 KeyError（CLI 出卡最后一步）
+
+`causual_core/pipeline.py` 两处用了 `spec['label_signature']`，而签名实际在
+`spec["data"]["label_signature"]`（同文件 54 行就是对的）。`quiet=True` 的测试
+路径不打印，所以一直没暴露；`python -m causual.causual_core.cli daily` 会在
+**卡片已经全部写完**之后崩在最后一行 print 上（退出码 1）。
+
+## 四、回归测试
+
+新增 `tests/test_causual_panel_derived.py`（5 条）：
+
+- `REQUIRED_TABLES` 每张表都真的取到数据（**故意 fail-closed**：数据层删表要立刻红）
+- 四个派生列存在且最后有效日在最近交易日 5 个交易日内
+- `bare_code` 各种写法的归一
+- 每条边的 treatment / source 列都在面板里（防"整条边被静默跳过"）
+- **反向验证**：把 `_derived` 打桩成返回 `{}`，上面两种判定必须变红
+
+---
+
 # v5.39（2026-11-04）：日频卡与月频卡分家
 
 ## 一、为什么拆

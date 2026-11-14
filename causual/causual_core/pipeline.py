@@ -54,7 +54,7 @@ def run(
     if snap_meta["label_signature"] != spec["data"]["label_signature"]:
         raise CardRejected(
             "标签体系不一致："
-            f"状态模型 {spec['label_signature']} vs 边快照 {snap_meta['label_signature']}；"
+            f"状态模型 {spec['data']['label_signature']} vs 边快照 {snap_meta['label_signature']}；"
             f"先跑 `python -m causual.causual_core.cli edges --asset {asset}`")
 
     fit_date = pd.Timestamp(snap_meta["fit_date"])
@@ -137,7 +137,7 @@ def run(
         print(card.split("\n\n")[0])
         print(f"\n日频卡 -> {path}")
         print(f"月频卡 -> {macro_path}")
-        print(f"（{asset} 签名 {spec['label_signature']} / 边快照 {snap_meta['fit_date']}"
+        print(f"（{asset} 签名 {spec['data']['label_signature']} / 边快照 {snap_meta['fit_date']}"
               f" / 龄期 {age} 天）")
     return Path(path)
 

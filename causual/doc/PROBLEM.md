@@ -258,6 +258,36 @@
   确认了断点的影响。
 - **状态**：**已解决**。
 
+## P34 `dividend_annual` 要被删表，causual 是唯一硬依赖【v5.40，待裁决】
+
+- **现象**：数据层计划删 `dividend_annual`（改成派生「股息率」`fin.derive.dividend_yield()`）。
+  causual 里这张表**只有一个用途**：
+  `panel.ASHARE["PAYOUT"] → PAYOUT_RATIO → supply_items()` 的
+  「增长转化 · 分红 / 净利润」一行（`macro_layer.pair_view`）。
+  **不涉及任何边**（`EDGES` 里没有 `PAYOUT` 源）、不进 α、不是状态层特征。
+- **为什么不能"等等再改"**：`dividend_annual` 在 `REQUIRED_TABLES` 里，
+  表一删 `series_map` 会抛 `DatabaseError: no such table`（不是降级成 NaN），
+  **整张面板连卡片一起挂**。删表与改依赖必须同批落地。
+- **口径现状**：`PAYOUT_RATIO` 是全市场「分红总额 / 归母净利润」（年度，延后一年用）。
+  库里只有 **5 个年度点**，进 `pair_view` 后被 resample 成月频 →
+  真实信息量是 **4 个不同值**，却给出「位置 23 分位 / 边际 31 分位」这种
+  看起来很精确的读数。**这是伪量化**。
+- **两个方案**：
+  - **A** 换派生股息率：`dividend_yield()` 已实现（`index=year`，列
+    `yield_mcap_weighted` / `yield_median` / `n_stocks`，2016–2026 共 11 年，单次约 3.7s）。
+    经济含义更贴「股东回报」这一节（现金回报率 vs 分配率）。
+    代价：① `DataPort` 目前**不暴露派生量**，要让数据层加一个方法（跨模块接口改动，要先报）；
+    ② `panel(series, meta)` 只吃 `series`/`meta`，派生帧得由 CLI 装配进 `series`；
+    ③ 年份索引 → 日频要自己定「哪天才算可见」（年末值次年才知道），
+    当前 `_payout_series` 的 `year-1` 写法可以照搬。
+  - **B** 删掉这一行（连同 `PAYOUT` 映射、`PAYOUT_RATIO` 派生）：
+    3.4 节还剩「大股东净增持」一行，不至于空掉；4 个点的阶梯对本就撑不起
+    「位置 × 边际」两维读数。
+- **倾向**：**B 先删、A 以后按需加**。股息率是有信息量的量，但它的正确位置是
+  「价值」而不是「增长转化」，真要加应该连同 `yield_median`（中位数）一起
+  做成新的一行，而不是把这行原地换口径。
+- **状态**：**等用户裁决**（未动手改依赖）。
+
 ---
 
 ## 数据存档

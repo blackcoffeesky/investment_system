@@ -1,6 +1,6 @@
 # causual —— 因果归因层
 
-> **更新日期：2026-11-07**
+> **更新日期：2026-11-14**
 > 多代理协作约束见 [`../../AGENTS.md`](../../AGENTS.md)。
 
 把宏观、制度与资金关系写成一张**显式的因果图**，每天算一次"这些机制现在把标的往哪边推"，
@@ -186,6 +186,12 @@ regime（状态） / signal（边） / narrative（卡片）
 | `PAYOUT_RATIO` | 读 `dividend_annual`，取**上一年度**值（避免前视） |
 
 判定标准：**去掉它之后能不能用库里其他数据算出来**。算得出来的就不入库。
+
+> **坑：ETF 代码按裸 6 位归一。** 数据层的 `etf_shares` 键是 `etf_shares:sh510300`
+> （2026-11-14 起带市场前缀），而 `GROUPS` 写的是裸码。`panel.bare_code()` 把
+> `sh510300` / `c510300` / `510300.SH` 一律归一成 `510300`，**列名与 `GROUPS` 两侧
+> 同口径比对**——否则四列派生量会整体消失，而且不报错（详见 CHANGES v5.40）。
+> `tests/test_causual_panel_derived.py` 盯着这件事。
 
 > **坑：差分必须在原始频率上做。** 不能对日频 ffill 后的列再 `resample().diff()`——
 > 月末/季末落点依赖交易日，会错位一到两期（实测 ETF 流入相关性从 0.999 掉到 0.32）。
@@ -524,4 +530,4 @@ python -m causual.causual_assets.ashare.dividend
 
 ## 12. 版本
 
-当前 v5.37（2026-11-04）。逐版变更见 [`CHANGES.md`](CHANGES.md)。
+当前 v5.40（2026-11-14）。逐版变更见 [`CHANGES.md`](CHANGES.md)。

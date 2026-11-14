@@ -90,7 +90,7 @@ causual/output/{asset}/cards/
 | 文件 | 职责 |
 |---|---|
 | `common.py` | 面板组装公用件：列名映射、按 `lag_days` 推后、日频化 |
-| `ashare/panel.py` | A 股字段映射 + 派生列（ETF 分流/分歧度/国家队） |
+| `ashare/panel.py` | A 股字段映射 + 派生列（ETF 分流/分歧度/国家队）；ETF 代码按**裸 6 位**归一（两侧同口径，数据层换前缀不影响匹配） |
 | `ashare/pipeline.py` | `prepare()` 算特征、供需层、分红率 |
 | `ashare/config.py` | 10 条边的定义（机制、方向、估计器、是否进 α） |
 | `ashare/label.py` | 状态标签命名与极值状态 |
@@ -196,6 +196,17 @@ python -m datahub.fin.check
 | `pipeline.prepare()` 既算特征又算供需层 | 职责混在一起 | 拆 `features.py` / `supply.py` |
 | 状态外推用"上次模型 + 新数据" | 模型老了会失真，卡片有"龄期"提示但不会自动重训 | 加龄期阈值告警 |
 | `CAUSUAL_DATA_SOURCE=csv` 已废弃但代码里还有残留判断 | 迷惑 | 清掉 |
+| `PAYOUT_RATIO` 只来自 `dividend_annual`（数据层计划删表） | 表一删，`series_map` 直接抛 `DatabaseError`，**整张面板连卡片一起挂**（不是降级成 NaN） | 改用派生股息率或删掉该行，见 PROBLEM.md |
+| `STUB_COLS` 里的 `EQUITY_SUPPLY` 恒 NaN → `EQUITY_SUPPLY` 边 `n=0` | 该边在卡片里永远"未估计"，但不会报错 | 接上真实月度净融资额，或把边标成「无数据」 |
+
+### 8.1 识别口径的坑（都是静默的）
+
+派生列 / 特征列消失时**不会抛异常**，只会让卡片"少一行"。两条防线：
+
+| 防线 | 位置 |
+|---|---|
+| 代码归一 `bare_code()`：列名与 `GROUPS` 两侧同口径 | `ashare/panel.py` |
+| 计数盘点：`REQUIRED_TABLES` 有数据 + 派生列新鲜 + 每条边的列都在面板里 | `tests/test_causual_panel_derived.py` |
 
 ---
 
