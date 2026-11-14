@@ -41,6 +41,11 @@ def build(df: pd.DataFrame) -> pd.DataFrame:
     out["log_return"] = np.log1p(ret)
     out["realized_vol_20"] = ret.rolling(20).std()
     out["volume_z"] = df["VOLUME_Z"]
+    # 20 日均线斜率：均线每天上移多少（占价格的比例）
+    # 用比例而不是"元/天"，不同价位的资产才可比；上行/下行都能表示
+    ma20 = df["CLOSE"].rolling(20, min_periods=10).mean()
+    out["ma20_slope"] = ma20.diff() / df["CLOSE"].replace(0, np.nan) * 100.0
+    # 旧特征：已不在 FEATURES 里，但现存模型还在用它，保留计算以兼容
     out["up_day_ratio"] = (ret > 0).astype(float).rolling(20).mean()
     out["size_mom"] = ((df["CSI1000"] / df["CSI300"]).pct_change(20)
                        if "CSI1000" in df else np.nan)
@@ -53,4 +58,5 @@ def build(df: pd.DataFrame) -> pd.DataFrame:
         raw=False)
     out["etf_dispersion"] = df.get("ETF_DISPERSION",
                                    pd.Series(np.nan, index=df.index))
-    return out[C.FEATURES]
+    # 返回全部列：用哪几列由 config.FEATURES 决定（老模型据此仍可推理）
+    return out

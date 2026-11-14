@@ -68,7 +68,7 @@ def fit_pipeline(
     """在面板上依次跑模型链，返回 {spec, labels, models, chain}（不落盘）。"""
     pkg = state_assets.load(asset)
     c = pkg.config
-    feats = pkg.features.build(panel)
+    feats = pkg.features.build(panel)[list(c.FEATURES)]
 
     chain = tuple(getattr(c, "MODEL_CHAIN", ("hmm",)))
     params = dict(getattr(c, "MODEL_PARAMS", {}))

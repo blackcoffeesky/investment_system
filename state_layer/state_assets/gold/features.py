@@ -44,4 +44,5 @@ def build(df: pd.DataFrame) -> pd.DataFrame:
     out["mom_20"] = df["CLOSE"] / df["CLOSE"].shift(20) - 1.0
     out["rv_ratio"] = ret.rolling(5).std() / ret.rolling(20).std()
     out["gap"] = df["OPEN"] / df["CLOSE"].shift(1) - 1.0
-    return out[C.FEATURES]
+    # 返回全部列，用哪几列由 config.FEATURES 决定
+    return out

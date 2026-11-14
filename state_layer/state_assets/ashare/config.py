@@ -36,7 +36,7 @@ FEATURES = [
     "log_return",
     "realized_vol_20",
     "volume_z",
-    "up_day_ratio",
+    "ma20_slope",
     "size_mom",
     "margin_chg_z",
     "rv_ratio",
