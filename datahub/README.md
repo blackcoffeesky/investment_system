@@ -67,6 +67,10 @@ datahub/
 | `company` | static | 全市场清单，一个标的一行 |
 | 其余 | single | 单序列 |
 
+> **`adj_factor` 已吸收 `dividend`**（2026-11-14）：数值以 Fuyao 合计为准，
+> 多出 `report_end` / `plan` 两列。`dividend` 表先留着、标了"待删"，
+> 等股息率派生验证过再删；`SOURCES` 里 `ashare_dividend` 已 `enabled=False`。
+
 **代码格式**：所有 `long` / `static` 表的 `code` 一律带市场前缀
 （`sh600519` / `sz000001` / `bj920045`）。2026-11-14 起
 `stock_daily`(1040 万行) / `adj_factor` / `etf_shares` 已从 Fuyao 的裸 6 位迁过来；

@@ -925,6 +925,9 @@ SOURCES += [
     Source("shares_history", ashare_shares, shape="long", note="ashareapi /v1/snapshot"),
     # 季频财报：报告期 + 披露日，用于算 PE/PB/ROE
     Source("financials", ashare_financials, shape="long", note="ashareapi /v1/finance"),
-    # 分红送转：除权日 + 每股现金/送股/配股
-    Source("dividend", ashare_dividend, shape="long", note="ashareapi /v1/dividend"),
+    # 分红送转：**2026-11-14 起停用** —— 已并入 adj_factor（Fuyao 合计值更准、1991 起、
+    # 覆盖全市场），而本源只覆盖 5 只且现金值与 Fuyao 有 2/27 不一致。
+    # 等全市场分红回填方案定下来再决定是恢复本源还是改用 adj_factor。
+    Source("dividend", ashare_dividend, shape="long", enabled=False,
+           note="已停用：并入 adj_factor；全市场分红待回填"),
 ]

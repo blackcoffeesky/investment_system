@@ -61,28 +61,59 @@ METADATA_MIGRATIONS: dict[str, str] = {
     "depends": "ALTER TABLE metadata ADD COLUMN depends TEXT",
 }
 
+# 数据表补列（列定义在 `fin/read.py` 的 LONG_SCHEMAS，这里只放"给老库补"的 DDL）
+DATA_MIGRATIONS: dict[str, dict[str, str]] = {
+    # 2026-11-14：dividend 并入 adj_factor，只借它这两列（其余列 adj_factor 本来就有）
+    "adj_factor": {
+        "report_end": "ALTER TABLE adj_factor ADD COLUMN report_end TEXT",
+        "plan": "ALTER TABLE adj_factor ADD COLUMN plan TEXT",
+    },
+}
+
+
+def _table_exists(con: sqlite3.Connection, name: str) -> bool:
+    return bool(con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone())
+
+
+def _add_columns(con: sqlite3.Connection, table: str, wanted: dict[str, str]) -> list[str]:
+    """给已存在的表补缺列（幂等）。表还不存在就跳过——建表由 DATA_DDL / LONG_SCHEMAS 负责。"""
+    if not _table_exists(con, table):
+        return []
+    have = {r[1] for r in con.execute(f'PRAGMA table_info("{table}")')}
+    done = []
+    for col, ddl in wanted.items():
+        if col not in have:
+            con.execute(ddl)
+            done.append(f"{table}.{col}")
+    return done
+
 
 def migrate_metadata(con: sqlite3.Connection) -> list[str]:
-    """给已有库补 metadata 的新列、并把空串日期统一成 NULL。幂等：没有要改的就返回 []。
+    """给已有库补 metadata 的新列、并把空串日期统一成 NULL。幂等：没有要改的就返回 [].
 
     为什么空串要转 NULL：`''` 会让下游的 `isna()` 漏过去（static 表的
     start_date/end_date 就是空串），排序时 `''` 又会排在最前，都是暗坑。
 
     返回这次做了哪些改动，供调用方打日志。
     """
-    if not con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='metadata'"
-                       ).fetchone():
+    if not _table_exists(con, "metadata"):
         return []                     # 全新的库：DATA_DDL 会直接建好，不用迁移
-    have = {r[1] for r in con.execute("PRAGMA table_info(metadata)")}
-    done = []
-    for col, ddl in METADATA_MIGRATIONS.items():
-        if col not in have:
-            con.execute(ddl)
-            done.append(col)
+    done = _add_columns(con, "metadata", METADATA_MIGRATIONS)
     for col in ("start_date", "end_date"):
         cur = con.execute(f"UPDATE metadata SET {col}=NULL WHERE {col}=''")
         if cur.rowcount:
             done.append(f"{col}: '' → NULL（{cur.rowcount} 行）")
+    if done:
+        con.commit()
+    return done
+
+
+def migrate_data_tables(con: sqlite3.Connection) -> list[str]:
+    """给已有的**数据表**补列（`DATA_MIGRATIONS`）。幂等。"""
+    done: list[str] = []
+    for table, wanted in DATA_MIGRATIONS.items():
+        done += _add_columns(con, table, wanted)
     if done:
         con.commit()
     return done

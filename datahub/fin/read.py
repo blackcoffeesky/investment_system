@@ -119,12 +119,15 @@ LONG_SCHEMAS: dict[str, dict[str, str]] = {
         "volume": "REAL",       # 成交量（股）
         "turnover": "REAL",     # 成交额（元）
     },
-    # 除权除息事件：每股分红/送股/配股
+    # 除权除息事件：每股分红/送股/配股（2026-11-14 起把 dividend 表并了进来，
+    # 多了 report_end/plan 两列；数值一律以本表的 Fuyao 合计为准）
     "adj_factor": {
-        "dividend": "REAL",     # 每股现金分红（税前）
+        "dividend": "REAL",     # 每股现金分红（税前，合计）
         "bonus": "REAL",        # 每股送股比例
         "allot_ratio": "REAL",  # 配股比例
         "allot_price": "REAL",  # 配股价格
+        "report_end": "TEXT",   # 所属报告期 YYYY-MM-DD（原 dividend 表，可空）
+        "plan": "TEXT",         # 原始方案文案，如「10派280.242元」（原 dividend 表，可空）
     },
     # ETF 份额（原 multi 表，改 long 以便随时加基金）
     "etf_shares": {"shares": "REAL"},

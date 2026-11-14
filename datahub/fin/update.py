@@ -23,7 +23,7 @@ from pathlib import Path
 import pandas as pd
 
 from datahub import DB_PATH, ROOT
-from datahub.core.schema import DATA_DDL, migrate_metadata
+from datahub.core.schema import DATA_DDL, migrate_data_tables, migrate_metadata
 from datahub.fin.read import (LONG_SCHEMAS, STATIC_SCHEMAS,
                               _long_columns, _static_columns)
 from datahub.fin.sources import SOURCES, Source
@@ -99,6 +99,7 @@ def _ensure_meta(con: sqlite3.Connection) -> int:
     已经落库的那一行得删掉，否则 `fin.tables()` / `check` 会一直带着它。
     """
     migrate_metadata(con)
+    migrate_data_tables(con)
     ph = ",".join("?" * len(INFRA_TABLES))
     con.execute(f"DELETE FROM metadata WHERE name IN ({ph})", INFRA_TABLES)
 
