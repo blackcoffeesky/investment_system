@@ -1,0 +1,90 @@
+{
+  "free": {
+    "changedist": {
+      "ok": true,
+      "tier": "free",
+      "shape": "ok · 1 行 · 字段 ['上涨', '上涨占比', '下跌', '停牌', '平盘', '涨停', '跌停']",
+      "desc": "市场涨跌分布（今日快照：涨跌家数/涨跌停/成交额）"
+    },
+    "quote": {
+      "ok": true,
+      "tier": "free",
+      "shape": "ok · 列表 30 条 · 字段 ['date', 'open', 'last', 'high', 'low', 'volume', 'amount', 'turnover']",
+      "desc": "行情（返回近 30 日日线）"
+    },
+    "market_overview": {
+      "ok": true,
+      "tier": "free",
+      "shape": "ok · 13 行 · 字段 ['维度', '得分', '状态']",
+      "desc": "市场总览（13 个维度打分）"
+    },
+    "hot": {
+      "ok": true,
+      "tier": "free",
+      "shape": "ok · 列表 30 条 · 字段 ['code', 'name', 'zdf', 'zxj', 'status', 'stock_type']",
+      "desc": "热搜股票"
+    },
+    "kline": {
+      "ok": true,
+      "tier": "free",
+      "shape": "ok · 列表 5 条 · 字段 ['date', 'open', 'last', 'high', 'low', 'volume', 'amount', 'turnover']",
+      "desc": "日 K"
+    },
+    "search": {
+      "ok": false,
+      "tier": null,
+      "shape": "失败 {\"error\":\"需要 API Key（此端点属付费层）\",\"pricing\":\"https://ashareapi.com/pricing\"}",
+      "desc": "代码检索"
+    }
+  },
+  "paid": {
+    "index_constituent": {
+      "ok": false,
+      "tier": null,
+      "shape": "失败 {\"error\":\"需要 API Key（此端点属付费层）\",\"pricing\":\"https://ashareapi.com/pricing\"}",
+      "desc": "指数成分股"
+    },
+    "limit_up": {
+      "ok": false,
+      "tier": null,
+      "shape": "失败 {\"error\":\"需要 API Key（此端点属付费层）\",\"pricing\":\"https://ashareapi.com/pricing\"}",
+      "desc": "涨停池明细"
+    },
+    "suspension": {
+      "ok": false,
+      "tier": null,
+      "shape": "失败 {\"error\":\"需要 API Key（此端点属付费层）\",\"pricing\":\"https://ashareapi.com/pricing\"}",
+      "desc": "停复牌"
+    },
+    "fund_flow": {
+      "ok": false,
+      "tier": null,
+      "shape": "失败 {\"error\":\"需要 API Key（此端点属付费层）\",\"pricing\":\"https://ashareapi.com/pricing\"}",
+      "desc": "个股资金流"
+    },
+    "snapshot": {
+      "ok": false,
+      "tier": null,
+      "shape": "失败 {\"error\":\"需要 API Key（此端点属付费层）\",\"pricing\":\"https://ashareapi.com/pricing\"}",
+      "desc": "全字段画像（含市值/股本）"
+    },
+    "technical": {
+      "ok": false,
+      "tier": null,
+      "shape": "失败 {\"error\":\"需要 API Key（此端点属付费层）\",\"pricing\":\"https://ashareapi.com/pricing\"}",
+      "desc": "技术指标"
+    },
+    "chip": {
+      "ok": false,
+      "tier": null,
+      "shape": "失败 {\"error\":\"需要 API Key（此端点属付费层）\",\"pricing\":\"https://ashareapi.com/pricing\"}",
+      "desc": "筹码分布"
+    },
+    "usage": {
+      "ok": false,
+      "tier": null,
+      "shape": "失败 {\"error\":\"API Key 无效\"}",
+      "desc": "额度用量"
+    }
+  }
+}

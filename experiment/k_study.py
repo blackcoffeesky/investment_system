@@ -26,7 +26,8 @@ EXTREME = "extreme"
 
 
 # ---------------------------------------------------------------- 数据
-def load_features(asset: str = "ashare") -> tuple[pd.DataFrame, pd.Series]:
+def load_features(asset: str = "ashare",
+                  drop: tuple[str, ...] = ()) -> tuple[pd.DataFrame, pd.Series]:
     """按生产同一条路径取特征：datahub 端口 → 资产包面板 → 特征。
 
     同时返回收盘价——画分割图时用真实价格，比累计收益直观。
@@ -38,9 +39,13 @@ def load_features(asset: str = "ashare") -> tuple[pd.DataFrame, pd.Series]:
     port = data_port()
     series = port.series_map(list(pkg.REQUIRED_TABLES))
     panel = pkg.panel(series, port.metadata())
-    feats = pkg.features.build(panel)
-    close = panel["CLOSE"].reindex(feats.dropna().index)
-    return feats.dropna(), close
+    all_feats = pkg.features.build(panel)
+    # 只取 config 里声明的特征，再按需去掉几列
+    # （不这么做的话，未使用但含 NaN 的列会把样本一起削掉）
+    cols = [c for c in pkg.config.FEATURES if c not in drop]
+    feats = all_feats[cols].dropna()
+    close = panel["CLOSE"].reindex(feats.index)
+    return feats, close
 
 
 def split_extreme(feats: pd.DataFrame, asset: str = "ashare",
@@ -115,7 +120,6 @@ def profile(res: dict, regular: pd.DataFrame) -> pd.DataFrame:
 def segment_figure(res: dict, close: pd.Series, title: str):
     """价格曲线 + 按状态分段上色。返回 Figure，notebook 里直接 display。"""
     import matplotlib
-    matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     st = res["states"]
@@ -185,8 +189,8 @@ def plot_segments(res: dict, feats: pd.DataFrame, close: pd.Series,
 
 # ---------------------------------------------------------------- 主流程
 def run(asset: str = "ashare", ks: tuple[int, ...] = (2, 3, 4, 5, 6),
-        seed: int = 42) -> pd.DataFrame:
-    feats, close = load_features(asset)
+        seed: int = 42, drop: tuple[str, ...] = ()) -> pd.DataFrame:
+    feats, close = load_features(asset, drop)
     regular, ext = split_extreme(feats, asset)
 
     summary = []
@@ -220,9 +224,11 @@ def main(argv=None) -> int:
     ap.add_argument("--asset", default="ashare")
     ap.add_argument("--k", default="2,3,4,5,6")
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--drop", default="", help="逗号分隔，去掉这些特征")
     a = ap.parse_args(argv)
     ks = tuple(int(x) for x in a.k.split(","))
-    out = run(a.asset, ks, a.seed)
+    drop = tuple(x.strip() for x in a.drop.split(",") if x.strip())
+    out = run(a.asset, ks, a.seed, drop)
     print()
     print(out.round(3).to_string(index=False))
     print(f"\n产物：{OUT}")
