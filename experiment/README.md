@@ -8,6 +8,7 @@
 ```
 experiment/
 ├── api_probe.py      ashareapi 端点探测（免费层可直接跑，付费层要 key）
+├── api_tier.py       逐个端点测 tier：标准版能用哪些、哪些要专业版
 ├── ashareapi_notes.md 免费层实测结论
 ├── k_study.py        K 值研究：不同状态数下的画像 / 分离度 / BIC / 分割图
 ├── k_study.ipynb     同一套逻辑的 notebook 版（图**直接出在单元下面**，不落盘）

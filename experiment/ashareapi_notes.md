@@ -88,3 +88,46 @@
 - `financials`（季频净利/净资产）
 
 **ashareapi 标准版没有财务报表端点**（只有"披露日历"），财报得走 akshare。
+
+
+---
+
+# 标准版可用性总表（2026-11-14 逐个实测）
+
+判断依据：HTTP 200 + `ok:true` 为可用；403 + `min_tier` 为权限不足。
+
+## 可用
+
+| 端点 | 说明 |
+|---|---|
+| `/v1/stocks` | **全市场清单**（代码/名称/上市日/行业）—— 一次灌满 `company` 表 |
+| `/v1/trade-calendar` | 交易日历 |
+| `/v1/kline-full` | 单只 10 年日线（**前复权**，2492 根） |
+| `/v1/finance` | **三大报表**（利润/资产负债/现金流，多期）单只 |
+| `/v1/profile` | 公司简况 |
+| `/v1/dividend` | 分红送转 |
+| `/v1/suspension` | 停复牌（含原因） |
+| `/v1/index-constituent` | 指数成分（沪深300 等） |
+| `/v1/limit-up` | 涨停池（含涨停原因、封单） |
+| `/v1/events` | 42 类事件标签 |
+| `/v1/notice` | 公告 |
+
+## 需要专业版（¥99）
+
+`market-kline`（全市场单日 K 线）、`snapshot-batch`、`quote-batch`、
+`kline-batch`、`finance-batch`、`profile-batch`
+
+## 需要不限量/机构版
+
+`market-mood`、`broken-board`、`limit-reason`
+
+## 对设计的影响
+
+1. **每日全市场增量，标准版做不了**：`market-kline` 是专业版；`snapshot` 是单只。
+   要么继续用 akshare spot（一次全市场），要么升专业版。
+2. **财报能拿，但只能单只**：5000 只 × 1 次 = 5000 次，120 次/分 → 约 42 分钟。
+   额度 10 万 → 能跑 20 轮全市场。财报是季度更新，**每季度一次可行**，
+   但更实际的做法是只对持仓池 / 指数成分抓。
+3. **公司静态表可以一次灌满**：`/v1/stocks` 单次返回全市场。
+4. **`kline-full` 是前复权**：与我们 `stock_daily`（原始价）+ `adj_factor` 的口径不同，
+   对接时要么只用它做校验，要么换算。
