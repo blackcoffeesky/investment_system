@@ -35,7 +35,7 @@ COLS = {
     "MARGIN_BALANCE": "margin_balance",
 }
 
-# ETF 分组：宽基规模由小到大
+# ETF 分组：宽基规模由小到大（裸 6 位码；比对时双方都会归一化）
 GROUPS = {
     "SSE50": ["510050", "510710", "510100", "510190"],
     "CSI300": ["510300", "510310", "510330"],
@@ -43,20 +43,37 @@ GROUPS = {
 }
 
 
+def bare_code(name: object) -> str:
+    """把各种写法的 ETF 代码归一成裸 6 位。
+
+    数据层 2026-11 起给代码加了市场前缀（`etf_shares:sh510300`），
+    而这之前是 `c510300` / `510300` 之类的写法。统一取**最后 6 位数字**：
+    `sh510300` / `sz159919` / `c510300` / `510300` → `510300`。
+
+    不认得的形状原样返回（长度不足 6 位数字）——匹配不上就自然跳过，
+    但下面的「整列 NaN」会在 `tests/test_state_features_fresh.py` 里被抓住。
+    """
+    digits = "".join(ch for ch in str(name) if ch.isdigit())
+    return digits[-6:] if len(digits) >= 6 else str(name)
+
+
 def _etf_dispersion(idx: pd.DatetimeIndex, series) -> pd.Series:
     """宽基 ETF 申赎的分歧度：各组份额变化的截面标准差。
 
-    数据层不存派生量，这里现算。缺失就返回空序列，特征里自然为 NaN。
+    数据层不存派生量，这里现算。缺失就返回空序列，特征里自然为 NaN——
+    注意**这是静默失效**：整列 NaN 会让 HMM 一行都不认领，所以
+    `tests/test_state_features_fresh.py` 专门盯着每列的最后有效日期。
     """
     keys = [k for k in series if k.startswith("etf_shares:")]
     if len(keys) < 3:
         return pd.Series(index=idx, dtype=float)
-    w = pd.DataFrame({k.split(":", 1)[1]: series[k] for k in keys})
-    w = w.rename(columns=lambda c: str(c)[1:] if str(c).startswith("c") else str(c))
+    # 列名按裸 6 位归一，GROUPS 也按同样口径比——代码前缀怎么变都不怕
+    w = pd.DataFrame({bare_code(k.split(":", 1)[1]): series[k] for k in keys})
 
     parts = []
     for g in ("SSE50", "CSI300", "CSI1000"):
-        cols = [c for c in GROUPS.get(g, []) if c in w.columns]
+        want = [bare_code(code) for code in GROUPS.get(g, [])]
+        cols = [c for c in want if c in w.columns]
         if cols:
             parts.append(w[cols].sum(axis=1).pct_change())
     if len(parts) < 2:

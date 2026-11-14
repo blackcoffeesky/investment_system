@@ -48,7 +48,7 @@ saved_models/<asset>/     current.json / labels.csv / chain.pkl / hmm_last.pkl
 | 文件/目录 | 职责 | 谁调用 |
 |---|---|---|
 | `state_assets/<asset>/config.py` | K / 特征清单 / 极端阈值 / 标签词表 / `MODEL_CHAIN` / `METRICS` | fit / port |
-| `state_assets/<asset>/panel.py` | 声明 `REQUIRED_TABLES` + 拼日频宽表 | cli / web / fit |
+| `state_assets/<asset>/panel.py` | 声明 `REQUIRED_TABLES` + 拼日频宽表；ETF 代码按**裸 6 位**归一（数据层换前缀不影响匹配） | cli / web / fit |
 | `state_assets/<asset>/features.py` | 面板 → 特征矩阵（纯函数） | fit |
 | `model/base.py` | `Model` 协议：fit / infer / state_params / to_dict | 所有模型 |
 | `model/hmm/` | GaussianHMM + 拟合 + 选 K + 序列化 | 链 |
@@ -172,6 +172,10 @@ saved_models/<asset>/
 - **市场宽度不在状态层**：`breadth_adv / breadth_dec / breadth_limitup` 三张表已从数据层
   删除，宽度改由 `datahub.fin.derive.breadth()` 现算；`/state` 的时间轴暂不展示宽度。
   `config.FEATURES` 里从来没有宽度类特征，所以这次摘除**不影响模型、不需要重拟合**
+- **特征整列 NaN 是静默的**：HMM 的 `valid_index` 要求 `FEATURES` 全非空，一列整体失效就会
+  一行都不认领——标签停更、卡片因「没有状态标签」被拒、页面 `transition` 缺 `stay_prob`。
+  全程不抛异常。`tests/test_state_features_fresh.py` 守着「每列最后有效日期不早于
+  `csi_all` 最近交易日 + 5 个交易日」，并顺带校验 ETF 代码归一（`sh510300` → `510300`）
 - **K 不是瓶颈，特征才是**：`experiment/k_study.py` 实测 K=3 会切出一个 2.7%、
   `stay_prob≈0` 的退化状态；K=2 更干净但切的是波动率不是趋势
 - **退市股缺失**：`stock_daily` 只有当前在市股票，历史回测有幸存者偏差
