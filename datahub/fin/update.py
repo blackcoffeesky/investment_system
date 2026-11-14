@@ -46,6 +46,11 @@ FREQ_HINT = {
     "breadth_adv": ("D", "CN", 0),
     "breadth_dec": ("D", "CN", 0),
     "breadth_limitup": ("D", "CN", 0),
+    # 公司三表：低频 + 事件型
+    "company": ("M", "CN", 0),          # 静态档案，每月刷
+    "shares_history": ("Q", "CN", 0),   # 股本快照，季度刷
+    "financials": ("Q", "CN", 45),       # 财报披露滞后约 45 天
+    "dividend": ("SPARSE", "NONE", 0),   # 事件表，不查逐日缺口
 }
 
 
@@ -99,7 +104,17 @@ def _ensure_meta(con: sqlite3.Connection) -> int:
         if name in have:
             continue
         cols = [r[1] for r in con.execute(f'PRAGMA table_info("{name}")')]
-        kind = "single" if cols == ["date", "value"] else "multi"
+        from datahub.fin.long import LONG_SCHEMAS
+        from datahub.fin.static import STATIC_SCHEMAS
+
+        if name in LONG_SCHEMAS:
+            kind = "long"
+        elif name in STATIC_SCHEMAS:
+            kind = "static"
+        elif cols == ["date", "value"]:
+            kind = "single"
+        else:
+            kind = "multi"
         freq, market, lag = FREQ_HINT.get(name, ("D", "NONE", 0))
         con.execute(
             "INSERT OR IGNORE INTO metadata(name, display, freq, unit, start_date,"
@@ -111,6 +126,73 @@ def _ensure_meta(con: sqlite3.Connection) -> int:
     con.commit()
     return n
 
+
+# ---------------------------------------------------------------- 该不该跑
+def _period_end(freq: str, today: pd.Timestamp, lag: int) -> pd.Timestamp | None:
+    """按频率与公布滞后，算出"现在应该已经有的最新一期"是哪天。"""
+    t = today - pd.Timedelta(days=max(int(lag), 0))
+    f = str(freq or "D").upper()
+    if f == "D":
+        return t.normalize()
+    if f == "W":
+        return (t - pd.Timedelta(days=t.weekday() + 1)).normalize()
+    if f == "M":
+        return (t.replace(day=1) - pd.Timedelta(days=1)).normalize()
+    if f == "Q":
+        q_start = t.replace(month=((t.month - 1) // 3) * 3 + 1, day=1)
+        return (q_start - pd.Timedelta(days=1)).normalize()
+    if f == "Y":
+        return pd.Timestamp(year=t.year - 1, month=12, day=31)
+    return None
+
+
+# 事件型表的刷新间隔（天）：没有"当期"概念，只能按时间节流
+REFRESH_DAYS = {"dividend": 7, "shares_history": 90, "adj_factor": 365}
+
+
+def _last_synced(con: sqlite3.Connection, table: str) -> pd.Timestamp | None:
+    try:
+        row = con.execute("SELECT last_at FROM sync_log WHERE name=?", (table,)).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    return pd.Timestamp(row[0]) if row and row[0] else None
+
+
+def _mark_synced(con: sqlite3.Connection, table: str) -> None:
+    con.execute("INSERT OR REPLACE INTO sync_log(name, last_at) VALUES (?,?)",
+                (table, pd.Timestamp.now().isoformat(timespec="seconds")))
+    con.commit()
+
+
+def _due(con: sqlite3.Connection, table: str, today: pd.Timestamp,
+         sparse_days: int = 30) -> tuple[bool, str]:
+    """这张表现在该不该更新。
+
+    低频表（月/季/年）如果已有当期数据就不跑——省时间也省 API 额度。
+    """
+    row = con.execute("SELECT freq, lag_days, end_date FROM metadata WHERE name=?",
+                      (table,)).fetchone()
+    if row is None:                 # 还没有元数据（第一次跑）
+        return True, "首次"
+    freq, lag, end = str(row[0] or "D"), int(row[1] or 0), row[2]
+
+    if freq.upper() == "D":
+        return True, ""
+    if freq.upper() in ("SPARSE", "EVENT"):
+        # 事件表：按"上次抓取时间"节流，不看数据截止日
+        days = REFRESH_DAYS.get(table, sparse_days)
+        last = _last_synced(con, table)
+        if last is None:
+            return True, "首次"
+        age = (today - last.normalize()).days
+        return (age >= days), (f"{age} 天前抓过（间隔 {days} 天）" if age < days else "")
+
+    exp = _period_end(freq, today, lag)
+    if exp is None:
+        return True, ""
+    if end and pd.Timestamp(str(end)) >= exp:
+        return False, f"已覆盖 {end}（应到 {exp.date()}）"
+    return True, ""
 
 def _apply_note(con: sqlite3.Connection, s: Source, tables: list[str]) -> None:
     """把 Source.note / kind 落到 metadata。"""
@@ -142,7 +224,8 @@ def refresh_metadata(con: sqlite3.Connection) -> int:
 
 
 def run(start: str = "2000-01-01", end: str | None = None,
-        only: list[str] | None = None, dry_run: bool = False) -> pd.DataFrame:
+        only: list[str] | None = None, dry_run: bool = False,
+        force: bool = False) -> pd.DataFrame:
     end = end or str(pd.Timestamp.today().date())
     picked = [s for s in SOURCES if s.enabled]
     if only:
@@ -154,8 +237,18 @@ def run(start: str = "2000-01-01", end: str | None = None,
         con.executescript(DATA_DDL)
 
     results = []
+    today = pd.Timestamp.today().normalize()
     for s in picked:
         tables = [t.strip() for t in s.table.split("|")]
+
+        # 低频表已经有当期数据就跳过：省时间，也省 ashareapi 的额度
+        if con is not None and not force:
+            due, why = _due(con, tables[0], today)
+            if not due:
+                print(f"  {tables[0]:22s} 跳过  {why}")
+                results.append({"table": s.table, "status": "跳过", "rows": 0, "msg": why})
+                continue
+
         try:
             obj = s.func(start=start, end=end, table=tables[0], **s.params)
 
@@ -178,6 +271,22 @@ def run(start: str = "2000-01-01", end: str | None = None,
                                 "rows": int(len(obj)), "msg": f"拆分为 {len(tables)} 表"})
                 continue
 
+            if s.shape in ("long", "static"):
+                from datahub.fin import long as _L, static as _S
+
+                writer = _L.write if s.shape == "long" else _S.write
+                if dry_run:
+                    print(f"  [dry] {tables[0]:22s} {s.shape:6s} {len(obj):5d} 行  {s.func.__name__}")
+                    results.append({"table": s.table, "status": "dry", "rows": len(obj), "msg": ""})
+                    continue
+                n = writer(con, tables[0], obj)
+                con.commit()
+                _mark_synced(con, tables[0])
+                _apply_note(con, s, tables)
+                print(f"  {tables[0]:22s} {s.shape:6s} +{n:5d} 行  {s.func.__name__}")
+                results.append({"table": s.table, "status": "ok", "rows": n, "msg": ""})
+                continue
+
             kind = "multi" if isinstance(obj, pd.DataFrame) else "single"
             if dry_run:
                 print(f"  [dry] {tables[0]:22s} {kind:6s} {len(obj):5d} 行  {s.func.__name__}")
@@ -185,6 +294,7 @@ def run(start: str = "2000-01-01", end: str | None = None,
                 continue
             n = _write(con, tables[0], obj, end)
             con.commit()          # 立刻释放写锁：源函数内部可能还要读库
+            _mark_synced(con, tables[0])
             _apply_note(con, s, tables)
             print(f"  {tables[0]:22s} {kind:6s} +{n:5d} 行  {s.func.__name__}")
             results.append({"table": s.table, "status": "ok", "rows": n, "msg": ""})
@@ -212,9 +322,10 @@ if __name__ == "__main__":
     ap.add_argument("--end", default=None, help="截止日期（默认今天）")
     ap.add_argument("--only", default=None, help="只更新这些表，逗号分隔")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--force", action="store_true", help="忽略频率判断，强制更新")
     a = ap.parse_args()
     df = run(start=a.start, end=a.end,
              only=[x.strip() for x in a.only.split(",")] if a.only else None,
-             dry_run=a.dry_run)
+             dry_run=a.dry_run, force=a.force)
     print("\n汇总：")
     print(df.groupby("status").size().to_string())

@@ -48,6 +48,7 @@ class Source:
     func: Callable
     params: dict = field(default_factory=dict)
     kind: str = "auto"        # auto / manual
+    shape: str = "auto"       # auto / long / static（决定写库方式）
     enabled: bool = True
     note: str = ""
 
@@ -534,6 +535,20 @@ def market_breadth(start: str, end: str, **_) -> pd.DataFrame:
     }, index=[today])
 
 
+# ---------------------------------------------------------------- 公司三表
+from datahub.fin import sources_ashare as _SA  # noqa: E402
+
+COMPANY_SOURCES = [
+    # 全市场清单：一次调用拿全，每月刷一次足够
+    Source("company", _SA.company, shape="static", note="ashareapi /v1/stocks"),
+    # 当前股本快照：只抓池子，季度刷一次（股本变动由事件补）
+    Source("shares_history", _SA.shares, shape="long", note="ashareapi /v1/snapshot"),
+    # 季频财报：报告期 + 披露日，用于算 PE/PB/ROE
+    Source("financials", _SA.financials, shape="long", note="ashareapi /v1/finance"),
+    # 分红送转：除权日 + 每股现金/送股/配股
+    Source("dividend", _SA.dividend, shape="long", note="ashareapi /v1/dividend"),
+]
+
 # ---------------------------------------------------------------- 注册表
 SOURCES: list[Source] = [
     # 共享宏观
@@ -584,3 +599,5 @@ SOURCES: list[Source] = [
     Source("etf_shares", etf_shares, {"weeks": 8}, note="上交所份额；只补最近 8 周"),
     Source("dividend_annual", dividend_annual, {"years": 6}, note="年度分红，逐年补齐"),
 ]
+
+SOURCES += COMPANY_SOURCES

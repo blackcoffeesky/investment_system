@@ -26,6 +26,12 @@ CREATE TABLE IF NOT EXISTS metadata (
     lag_days    INTEGER DEFAULT 0     -- 公布滞后天数：数据期结束后多少天才可见
 );
 
+-- 上次成功抓取时间：事件型表（分红/股本）没有"当期"概念，只能按时间间隔节流
+CREATE TABLE IF NOT EXISTS sync_log (
+    name     TEXT PRIMARY KEY,
+    last_at  TEXT
+);
+
 CREATE TABLE IF NOT EXISTS missing (
     name      TEXT NOT NULL,
     date      TEXT NOT NULL,

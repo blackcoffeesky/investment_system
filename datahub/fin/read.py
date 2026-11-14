@@ -62,6 +62,10 @@ def read(name: str, *, column: str | None = None,
         from datahub.fin import long as L
 
         return L.read(name, start=start, end=end, path=path)
+    if k == "static":
+        from datahub.fin import static as S
+
+        return S.read(name, path=path)
 
     cond, args = [], []
     if start:
