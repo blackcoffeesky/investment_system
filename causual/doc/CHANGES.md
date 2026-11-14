@@ -2,6 +2,62 @@
 
 ---
 
+# v5.43（2026-11-14）：装配点收口 + 月频卡按资产归档 + 卡片不再出现 nan
+
+## 一、`CausalPort.derived_series(asset, data)`
+
+派生量（当前 = 股息率）原先只有 CLI 装配点会装，**service 侧不知道**，于是
+web/ops 生成的卡片上那一行显示「无数据」。现在收成一个入口：
+
+```python
+CausalPort.derived_series(asset, data)   # → {"dividend_yield:yield_mcap_weighted": Series}
+```
+
+CLI 的 `_load_series` 与服务侧的装配点都调它，**两边不再各拼一份**
+（各拼一份必然漂移：一边有股息率、一边没有）。
+`cli._derived_series` 随之改成公开的 `cli.derived_series`。
+
+## 二、`macro_month(meta, *, asset=None)`
+
+`metadata()` 是全局的，所以月频卡的归档月原来是**两个资产宏观表的并集**：
+A 股 → 2026-10（对），黄金 → 2026-10（**错**，黄金只支撑到 2026-09）。
+
+`asset` 做成**关键字参数**，不是位置参数：旧调用是
+`macro_month(data.metadata())`，把 `asset` 放第一位会让 DataFrame 绑定到资产名上，
+静默退回"自然月"——正是这一轮在杀的那类 bug。
+
+⚠️ 必须与 `exists(asset, month)` 同时收窄：幂等链是
+`macro_month → exists(asset, month) → 生成`，只改一边会让同一张卡被反复重生成。
+
+实测归档目录：
+
+| 资产 | 归档 |
+|---|---|
+| ashare | `cards/2026/10/macro_2026-10.md` |
+| gold | `cards/2026/09/macro_2026-09.md` |
+
+## 三、卡片里不再出现 `nan`
+
+| 位置 | 现象 | 修法 |
+|---|---|---|
+| 详情卡 分状态 β 表 / 逐期系数 / 分组系数 | CI 缺失时印成 `[+nan, +nan]` | 新增 `_ci(lo, hi)`，非有限值写「—」 |
+| 详情卡 贡献计算表 | `z` 算不出来时印成 `+nan`（政策利率连续数月不动 → 滚动标准差 0） | 新增 `_num(x, spec, suffix)`，非有限值写「—」 |
+
+「—」的含义是**今天这条机制没有读数**，不是 0——比 `+nan` 诚实，也读得懂。
+
+## 四、测试（77 → 78）
+
+`tests/test_card_smoke.py` 重写：
+
+| 测试 | 覆盖 |
+|---|---|
+| `test_card_generation_smoke` | 出卡 + 四张产物都在 + ashare 归档月 = 2026-10 + Markdown 表格能渲染 |
+| `test_all_cards_have_no_nan` | **两个资产 × 四张产物** 都不许出现 `nan` 字样 |
+
+以前只盯**日频卡**一个文件，所以明细里的 nan 藏了整整几版。
+
+---
+
 # v5.42（2026-11-14）：分红率 → 股息率，`dividend_annual` 彻底摘掉
 
 ## 一、为什么要换

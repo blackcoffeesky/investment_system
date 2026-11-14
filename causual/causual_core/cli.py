@@ -57,7 +57,7 @@ def cmd_audit(args) -> int:
     return 0
 
 
-def _derived_series(asset: str, port) -> dict[str, pd.Series]:
+def derived_series(asset: str, port) -> dict[str, pd.Series]:
     """数据层**现算的派生量** → 按 `"表名:列名"` 塞进 series。
 
     目前只有 A 股的股息率（`DataPort.dividend_yield()`，年度，百分数）。
@@ -105,9 +105,8 @@ def _load_series(asset: str, state=None):
     """命令行入口负责装配数据：causual 库代码不碰数据层，入口文件可以。
 
     传了 `state` 端口就把状态层要的表一起读了（两边共用一份快照）。
-    派生量（不落表的那种）也在这里装进 series——**service 侧的装配点
-    （`service/ops/states/causal.py::_load_series`）要装同样的东西**，
-    否则 web 生成的卡片上股息率那行会显示「无数据」。
+    派生量走 `derived_series()`——**service 侧走同一个函数**
+    （`CausalPort.derived_series`），不要再各拼一份。
     """
     from datahub.port import get_port
 
@@ -117,7 +116,7 @@ def _load_series(asset: str, state=None):
     if state is not None:
         tables += [t for t in state.required_tables(asset) if t not in tables]
     series = port.series_map(tables)
-    series.update(_derived_series(asset, port))
+    series.update(derived_series(asset, port))
     return series, port.metadata()
 
 

@@ -78,10 +78,14 @@ causual 不直接对外提供服务，而是暴露三样东西让 service 挂载
 |---|---|---|
 | `panel.panel(ds=None)` | `causual_assets/{asset}/panel.py` | 传入 `DataService`，返回日频宽表 |
 | `pipeline.run(asset, series, meta, asof=None, quiet=...)` | `causual_core/pipeline.py` | 出卡：**只吃数据，不取数** |
+| `required_tables(asset)` / `derived_series(asset, data)` | `port.py` | 装配用：要哪些表 + 现算的派生量（股息率）；**CLI 与 service 共用这一个入口** |
+| `macro_month(meta, *, asset=None)` | `port.py` | 月频卡该覆盖的月份（`asset` 关键字参数，传了按该资产收窄） |
 | `list_cards(asset, start, end)` / `get_card(asset, date, kind)` / `to_html(md)` | `causual_cards.py` | 卡片检索与渲染 |
 | `register_module()` | `web.py` | 返回 `service.registry.Module`（路由 + 模板目录 + 导航） |
 
 service 侧的 `CausalPort` 只调 `pipeline.run`，不碰 causual 内部。
+**装配点有两个**（CLI 与 service），所以表清单与派生量都走 port 的方法，
+不要各自 `series_map` + 手拼——两边各拼一份必然漂移。
 
 **约束**：`causual_core` 不 import service；`DataService` 由调用方注入。
 
@@ -533,4 +537,4 @@ python -m causual.causual_core.cli audit  --asset ashare   # 方向一致性审�
 
 ## 12. 版本
 
-当前 v5.42（2026-11-14）。逐版变更见 [`CHANGES.md`](CHANGES.md)。
+当前 v5.43（2026-11-14）。逐版变更见 [`CHANGES.md`](CHANGES.md)。

@@ -198,7 +198,6 @@ python -m datahub.fin.check
 | 状态外推用"上次模型 + 新数据" | 模型老了会失真，卡片有"龄期"提示但不会自动重训 | 加龄期阈值告警 |
 | `CAUSUAL_DATA_SOURCE=csv` 已废弃但代码里还有残留判断 | 迷惑 | 清掉 |
 | `STUB_COLS` 里的 `EQUITY_SUPPLY` 恒 NaN → `EQUITY_SUPPLY` 边 `n=0` | 该边在卡片里永远"未估计"，但不会报错 | 接上真实月度净融资额，或把边标成「无数据」 |
-| `_month_of` 不分资产（宏观表取并集月） | 黄金的月频卡归档月被 A 股的表拖到 2026-10（其实只支撑到 09） | 要把 `CausalPort.macro_month(meta)` 加 `asset` 参数 **并同步 service 调用点**：只改一边会让 `exists(asset, month)` 与 `run()` 算出不同的月份 → 卡片被反复重生成 |
 
 ### 8.1 识别口径的坑（都是静默的）
 
@@ -232,10 +231,17 @@ causual 不直接对外提供服务。service 通过三样东西使用它：
 |---|---|---|---|
 | `panel(ds=None)` | `causual_assets/{asset}/panel.py` | 传 `DataService`，返回日频宽表 | `pipeline` |
 | `pipeline.run(asset, series, meta, asof, quiet)` | `causual_core/pipeline.py` | 出卡；**只吃数据，不取数** | `causual.port.CausalPort` |
+| `required_tables(asset)` | `causual/port.py` | 该资产要哪些表（纯声明，调用方负责读） | CLI / service 装配点 |
+| `derived_series(asset, data)` | `causual/port.py` | 数据层**现算的派生量**（股息率）→ `{"表名:列名": Series}`，直接 `series.update(...)` | CLI / service 装配点（**唯一入口**，两边别再各拼一份） |
+| `macro_month(meta, *, asset=None)` | `causual/port.py` | 月频卡该覆盖的月份；`asset` 是**关键字参数**（传了就按该资产的表收窄） | service（`exists` 之前） |
 | `list_cards / get_card / to_html` | `causual/port.py` | 卡片检索与 Markdown→HTML | `causual/web/routes.py` |
 | `register_module()` | `web/routes.py` | 返回 `Module`（router + templates + nav + port） | `service.registry.load()` |
 
 `CardService.generate()` 幂等：目标日期已有卡片就直接返回路径。
+
+⚠️ `macro_month` 与 `exists` 必须**同一口径**：幂等链是
+`macro_month → exists(asset, month) → 生成`。只收窄一边（例如按月收窄但 `exists`
+仍用并集月）会让同一张卡被反复重生成，所以 `asset` 只作为关键字参数加。
 `web.py` 的路由挂在 service 的 FastAPI 上，模板 `extends "base.html"`。
 
 **反向禁止**：`causual_core` 不 import `service`；卡片生成不读写 `ops_*` 表。

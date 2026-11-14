@@ -17,6 +17,31 @@ from causual.causual_core.signal_layer import (
 from causual.causual_core.macro_layer import HORIZONS, KIND_DESC, KIND_NAME
 
 
+def _ci(lo: float, hi: float) -> str:
+    """95%CI 的文本；缺 CI 时写「—」。
+
+    以前直接 `f"[{lo:+.3f}, {hi:+.3f}]"`，CI 缺失（nan）就印成 `[+nan, +nan]`
+    ——卡片上出现 nan 字样，读的人会以为模型坏了。
+    """
+    if not (np.isfinite(lo) and np.isfinite(hi)):
+        return "—"
+    return f"[{lo:+.3f}, {hi:+.3f}]"
+
+
+def _num(x: float, spec: str = "+.1f", suffix: str = "") -> str:
+    """数值格式化，**非有限值写「—」**。
+
+    卡片上不许出现 `nan` 字样：它既读不懂，也分不清"没有"和"是 0"。
+    """
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return "—"
+    if not np.isfinite(v):
+        return "—"
+    return f"{v:{spec}}{suffix}"
+
+
 class Section:
     """卡片的一节：key 用来选，title 用来渲染。"""
 
@@ -489,7 +514,7 @@ def build_detail_card(
         for lab, b in m.beta_lead.items():
             lo, hi = m.beta_ci.get(lab, (float("nan"), float("nan")))
             sig = bool(np.isfinite(lo) and np.isfinite(hi) and not (lo <= 0 <= hi))
-            a(f"| {lab} | {b:+.4f} | [{lo:+.3f}, {hi:+.3f}] | {'是' if sig else '否'} | "
+            a(f"| {lab} | {b:+.4f} | {_ci(lo, hi)} | {'是' if sig else '否'} | "
               f"{e.dir_for(lab):+d} |")
         a("")
         a(f"> {m.notes}　n={m.n_obs}"
@@ -521,7 +546,7 @@ def build_detail_card(
                 p = (float(purity(m.path[k], lo, hi))
                      if np.isfinite(lo) and np.isfinite(hi) else 0.0)
                 use = "进 α（当期关联）" if int(k) == 0 else "参考（滞后）"
-                a(f"| lag{int(k)} | {m.path[k]:+.3f} | [{lo:+.3f}, {hi:+.3f}] | "
+                a(f"| lag{int(k)} | {m.path[k]:+.3f} | {_ci(lo, hi)} | "
                   f"{contains} | {p:.2f} | {use} |")
             a("")
             a(f"> lag0 的 p = {m.p_value:.3f}；lag1+ 合计 = "
@@ -542,7 +567,7 @@ def build_detail_card(
                     b_g = m.path_by_group[g][0]
                     lo_g, hi_g = m.path_ci_by_group[g][0]
                     c0 = "是" if (np.isfinite(lo_g) and lo_g <= 0 <= hi_g) else "否"
-                    a(f"| {_GROUP_NAME[g]} | {b_g:+.3f} | [{lo_g:+.3f}, {hi_g:+.3f}] | "
+                    a(f"| {_GROUP_NAME[g]} | {b_g:+.3f} | {_ci(lo_g, hi_g)} | "
                       f"{c0} | {m.n_by_group.get(g, 0)} | {'◀' if g == cur else ''} |")
                 a("")
                 a("> 当前组样本不足时回退全样本。分组只用于判断"
@@ -566,9 +591,12 @@ def build_detail_card(
         for c in sorted(direct, key=lambda x: -abs(x.contrib)):
             g = float(bundle.gate.loc[when, bundle.column[c.edge.key]])
             act = 1.0 if c.active else 0.0
-            a(f"| {c.edge.source} | {c.edge.magnitude:.2f} | {c.beta * 100:+.1f}bp | "
-              f"{c.reading_z:+.2f} | {g:.0f} | {act:.0f} | {c.purity:.2f} | "
-              f"{c.contrib * 100:+.1f} |")
+            # 读数可能是 nan：例如政策利率连续几个月没动，滚动标准差为 0 → z 算不出来。
+            # 那是「今天这条机制没有读数」，不是 0，更不该印成 `+nan`。
+            a(f"| {c.edge.source} | {c.edge.magnitude:.2f} | "
+              f"{_num(c.beta * 100, '+.1f', 'bp')} | {_num(c.reading_z, '+.2f')} | "
+              f"{g:.0f} | {act:.0f} | {_num(c.purity, '.2f')} | "
+              f"{_num(c.contrib * 100, '+.1f')} |")
             total += float(c.contrib) if np.isfinite(c.contrib) else 0.0
         a(f"| **合计** | | | | | | | **{total * 100:+.1f}** |")
         a("")

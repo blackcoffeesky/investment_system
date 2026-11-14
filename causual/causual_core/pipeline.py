@@ -111,7 +111,7 @@ def run(
     _write_fingerprint(meta, path, when, kind="card")
 
     # 月频卡：结构层 + 供需层，按"数据能支撑的最新月"归档
-    month = _month_of(meta)
+    month = _month_of(meta, required=pkg.REQUIRED_TABLES)
     my, mm = month.split("-")
     macro_dir = Path(out_dir) / asset / "cards" / my / mm
     macro_dir.mkdir(parents=True, exist_ok=True)
@@ -152,7 +152,7 @@ def _month_end(month: str) -> str:
     return str((nxt - pd.Timedelta(days=1)).date())
 
 
-def _month_of(meta: pd.DataFrame | None) -> str:
+def _month_of(meta: pd.DataFrame | None, required=None) -> str:
     """月频卡的月份 = 主要宏观表 end_date 的最大值所在月。
 
     用"数据能支撑的最新月"而不是自然月：11-01 时 CPI 还停在 9 月，
@@ -163,25 +163,26 @@ def _month_of(meta: pd.DataFrame | None) -> str:
     实际只靠 `cb_holdings` / `gold_etf_holdings` 命中，于是 **A 股的归档月
     是由黄金的表决定的**（凑巧都是 09-30 才没露出来）。
 
-    ⚠️ **仍然不分资产**：`CausalPort.macro_month(meta)` 没有 `asset` 参数，
-    而 service 的幂等链是「`macro_month(meta)` 给月份 → `exists(asset, month)`
-    判断要不要生成 → 生成」。如果这里按资产收窄，gold 会算出 09 而
-    `exists` 还在问 10，**那张卡会被反复重生成**。
-    所以把两边一起改（port 加 `asset` 参数 + service 调用点）才能收窄；
-    在那之前，这里返回**两个资产宏观表的并集月**（当前 = 2026-10，
-    对黄金偏乐观一个月）。
+    `required`：该资产的 `REQUIRED_TABLES`。传了就**收窄到本资产**的宏观表
+    （否则黄金会被 A 股的表拖到 10 月）。必须与 `CausalPort.exists()` 用同一个
+    口径——`macro_month → exists(asset, month) → 生成` 是一条幂等链，
+    两边算出不同的月份会让同一张卡被反复重生成。
     """
     from causual.causual_core import freshness
+
+    tables = freshness.MONTH_TABLES
+    if required is not None:
+        tables = freshness.scoped(tables, required)
 
     ends: list[str] = []
     if meta is not None and len(meta):
         idx = meta.set_index("name")
-        for t in freshness.MONTH_TABLES:
+        for t in tables:
             if t in idx.index and idx.loc[t, "end_date"]:
                 ends.append(str(idx.loc[t, "end_date"]))
     if not ends:
-        print("[月频卡] 没有任何宏观表在 metadata 里，归档月退回自然月",
-              file=sys.stderr)
+        print(f"[月频卡] {list(tables)[:3]}… 这些宏观表都不在 metadata 里，"
+              "归档月退回自然月", file=sys.stderr)
         return pd.Timestamp.today().strftime("%Y-%m")
     return max(ends)[:7]
 

@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import markdown as _md
+import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "causual" / "data" / "output"
@@ -154,11 +155,33 @@ class CausalPort:
             raise RuntimeError(f"{asset} 没有价格数据（{table} 为空）")
         return str(s.index[-1].date())
 
-    def macro_month(self, meta=None) -> str:
-        """月频卡该覆盖的月份（宏观表 end_date 的最大值所在月）。"""
+    def derived_series(self, asset: str, data) -> dict[str, pd.Series]:
+        """面板需要的**派生量**（数据层现算、不落表的那种）。
+
+        目前只有 A 股的股息率（`data.dividend_yield()`）。CLI 与 service 共用
+        这一个装配点——两边各自拼一份，必然漂移（一边有股息率、一边没有）。
+
+        `data` 是 `DataPort`（由调用方传入）。返回的 Series 已按 `"表名:列名"`
+        命名，直接 `series.update(...)` 即可。
+        """
+        from causual.causual_core.cli import derived_series
+
+        return derived_series(asset, data)
+
+    def macro_month(self, meta=None, *, asset: str | None = None) -> str:
+        """月频卡该覆盖的月份（宏观表 end_date 的最大值所在月）。
+
+        `asset` 是**关键字参数**，不是位置参数——旧调用是
+        `macro_month(data.metadata())`，把 `asset` 放第一位会让 DataFrame
+        绑定到资产名上，静默退回自然月。传了就按该资产的表收窄
+        （不收窄的话黄金的归档月会被 A 股的表拖到 10 月）。
+        """
         from causual.causual_core.pipeline import _month_of
 
-        return _month_of(meta)
+        required = None
+        if asset is not None:
+            required = self.required_tables(asset)
+        return _month_of(meta, required=required)
 
     def exists(self, asset: str, date: str, kind: str = "card") -> bool:
         return card_path(asset, date, kind).exists()
