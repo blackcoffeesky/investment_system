@@ -167,3 +167,116 @@ def breadth(start: str | None = None, end: str | None = None, *,
     out = flags.groupby("date", sort=True)[_COLUMNS].sum().astype(int)
     out.index = pd.DatetimeIndex(pd.to_datetime(out.index), name="date")
     return cast(pd.DataFrame, out)
+
+
+# ======================================================================
+# 股息率
+# ======================================================================
+_YIELD_COLUMNS = ["yield_mcap_weighted", "yield_median", "n_stocks"]
+
+
+def dividend_yield(year: int | None = None, *, path: Path | None = None) -> pd.DataFrame:
+    """全市场年度股息率。`index = year`（int），列固定为 `_YIELD_COLUMNS`。
+
+    | 列 | 含义 | 单位 |
+    |---|---|---|
+    | `yield_mcap_weighted` | 市值加权股息率（**主口径**） | **百分数**（2.5 = 2.5%） |
+    | `yield_median` | 当年**分红股**的股息率中位数 | 百分数 |
+    | `n_stocks` | 参与计算的**分红股**数（覆盖率的分母见下） | 只 |
+
+    口径
+    ----
+    1. **分子**：该年（按**除权日**落在这一自然年）每股现金分红**合计**，来自
+       `adj_factor.dividend`。注意这与 `dividend_annual` 的"按报告期"口径不同——
+       年报分红多数在次年除权，两套口径天然错位一年。
+    2. **分母**：该年每只股票**最后一个交易日**的收盘价（停牌取该年最后一条），
+       来自 `stock_daily`。
+    3. **送转折算**：送转会让"每股"的基数变。第 i 笔分红按
+       `cash_i / Π_{j≥i}(1+bonus_j)` 折算到"该年最后一次送转之后"的股本口径，
+       与年末收盘价（已是送转后）对齐。
+    4. **`yield_mcap_weighted` 的分母是"全市场"**：所有"有年末价 + 有股本"的股票
+       都进权重，**不分红的股票分子记 0、分母照算**——这才是"投 1 元到全市场拿多少
+       现金"的含义（与指数公司口径一致）。
+    5. **`yield_median` 只在分红股内算**：把不分红股（yield=0）掺进来，中位数会被
+       直接拉到 0，失去意义。
+    6. **`n_stocks` 是分红股数**；覆盖率 = `n_stocks / 当年有年末价的股票数`
+       （2025 年约 3785 / 5432）。
+
+    ⚠️ 已知近似（刻意，不修）
+    - **权重用"当前股本"**（`shares_history` 只有 2026-11-14 的一份快照）：
+      `w = 年末价 × 当前总股本`。对近年误差小（股本年变动通常 <5%），**越往前越不准**
+      （送转/增发会累积偏差）。
+    - **`stock_daily` 不含退市股**（元信息自己写了）→ 存量幸存者偏差：早年只统计
+      "活到今天"的股票，股息率可能偏高。
+    - **2016 年不完整**（`stock_daily` 从 2016-11-14 起），只作参考。
+    - **当年（2026）是 YTD**：用的是"截至最新交易日"，不是年末价，会随后续数据变。
+
+    ⚠️ 全历史一次调用约 2~4 秒，绝大部分在读 `stock_daily`（千万行）。
+    """
+    con = _conn(path)
+    try:
+        # 每年每只股票的最后一个交易日（停牌就取该年最后一条记录）。
+        # 不加年份过滤：不带 WHERE 时 SQLite 沿 PK(code,date) 顺序流式分组，10M 行只要
+        # 3.4s；加了 `date BETWEEN` 反而会走 idx_date、拿不到 code 顺序，要额外排序 → 更慢。
+        con.execute("DROP TABLE IF EXISTS temp._ye")
+        con.execute("CREATE TEMP TABLE _ye(code TEXT, y TEXT, d TEXT, PRIMARY KEY(code, y))")
+        con.execute("INSERT INTO _ye(code, y, d) "
+                    "SELECT code, substr(date, 1, 4), MAX(date) FROM stock_daily "
+                    "GROUP BY code, substr(date, 1, 4)")
+        px = pd.read_sql(
+            "SELECT s.code AS code, CAST(y.y AS INTEGER) AS year, s.close AS close "
+            "FROM stock_daily s JOIN _ye y ON s.code = y.code AND s.date = y.d", con)
+        ev = pd.read_sql("SELECT code, date, dividend, bonus FROM adj_factor", con)
+        sh = pd.read_sql("SELECT code, total_after FROM shares_history", con)
+    finally:
+        con.close()
+
+    if px.empty or ev.empty or sh.empty:
+        raise RuntimeError("股息率缺数据：需要 stock_daily + adj_factor + shares_history")
+
+    # 分红事件：按除权日归年，送转折算到"年末股本口径"。
+    # 折算系数 = Π_{j≥i}(1+bonus_j)：按日期**降序**做组内累乘即可（Cython 实现，别用
+    # transform + lambda —— 5 万个组的 Python 回调要 20 多秒）。
+    ev["year"] = pd.to_datetime(ev["date"]).dt.year
+    ev["cash"] = pd.to_numeric(ev["dividend"], errors="coerce").fillna(0.0)
+    ev["bonus"] = pd.to_numeric(ev["bonus"], errors="coerce").fillna(0.0)
+    ev["one_plus_bonus"] = 1.0 + ev["bonus"]
+    ev = ev.sort_values(["code", "year", "date"], ascending=[True, True, False])
+    ev["factor"] = ev.groupby(["code", "year"], sort=False)["one_plus_bonus"].cumprod()
+    ev["cash_end"] = ev["cash"] / ev["factor"].replace(0.0, np.nan)
+    per = cast(pd.DataFrame, ev.groupby(["code", "year"], as_index=False)
+                                .agg(cash=("cash_end", "sum")))
+
+    sh["shares"] = pd.to_numeric(sh["total_after"], errors="coerce")
+    sh = sh.dropna(subset=["shares"])[["code", "shares"]]
+
+    df = cast(pd.DataFrame, px).merge(cast(pd.DataFrame, sh), on="code", how="inner")
+    df = df[df["close"] > 0]
+    df["mcap"] = df["close"] * df["shares"]
+    df = df.merge(per, on=["code", "year"], how="left")
+    df["cash"] = df["cash"].fillna(0.0)
+    df["y"] = df["cash"] / df["close"] * 100.0
+
+    rows: list[dict] = []
+    for y, g0 in df.groupby("year", sort=True):
+        g = cast(pd.DataFrame, g0)
+        cash = cast(pd.Series, g["cash"])
+        shares = cast(pd.Series, g["shares"])
+        mcap = cast(pd.Series, g["mcap"])
+        payers = g[g["cash"] > 0]
+        w = float(mcap.sum())
+        div_amt = float(cash.mul(shares).sum())
+        rows.append({
+            "year": int(str(y)),
+            "yield_mcap_weighted": (div_amt / w * 100.0) if w else np.nan,
+            "yield_median": (float(cast(pd.Series, payers["y"]).median())
+                             if len(payers) else np.nan),
+            "n_stocks": int(len(payers)),
+        })
+    res = cast(pd.DataFrame, pd.DataFrame(rows).set_index("year")[_YIELD_COLUMNS].round(4))
+
+    if year is not None:
+        if int(year) not in res.index:
+            raise KeyError(f"没有 {year} 年的股息率；可用年份：{list(res.index)}")
+        return res.loc[[int(year)]]
+    return res

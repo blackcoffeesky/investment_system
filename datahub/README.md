@@ -113,6 +113,9 @@ missing()                       # 已人工确认的正常缺口
 ```python
 from datahub.fin.derive import breadth
 breadth("2026-11-10", "2026-11-10")   # 市场宽度：adv/dec/flat/limit_up/limit_down/total
+
+from datahub.fin.derive import dividend_yield
+dividend_yield()   # 年度股息率（%）：yield_mcap_weighted / yield_median / n_stocks
 ```
 
 **`series_map()` 会跳过 `static` 表并打一行警告**——static 没有日期轴，

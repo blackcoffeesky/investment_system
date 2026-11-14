@@ -304,6 +304,7 @@ key 只在 `.env` / 环境变量 `ASHARE_API_KEY`，代码不存。
 | 派生量 | 公式 | 依赖 |
 |---|---|---|
 | 市场宽度 ✅ | 按日聚合 `stock_daily`：涨/跌/平、涨跌停（**已实现**，见 `fin/derive.py`） | `stock_daily` + `company`(ST) |
+| 年度股息率 ✅ | 每股现金分红（按**除权日**归年、送转折算）/ 年末收盘价；市值加权 + 分红股中位数（**已实现** `derive.dividend_yield`） | `adj_factor` + `stock_daily` + `shares_history` |
 | 总市值 | `close × total_shares`（股本按日期 ffill） | `stock_daily` + `shares_history` |
 | PE_ttm | `总市值 / 净利润TTM` | + `financials` |
 | PB | `总市值 / 净资产` | + `financials` |
@@ -318,6 +319,27 @@ df = breadth("2026-01-01", "2026-11-10")   # index=date，列 adv/dec/flat/limit
 
 口径与已知偏差写在 `derive.py` 的模块 docstring 里（涨跌基准、停牌、板块阈值、ST、未复权除权坑）。
 它**不建表、不注册成 Source**；等与旧表 `breadth_*` 比对确认后，第三轮再删旧表并切换 `state_layer`。
+
+**年度股息率**已落地（2026-11-14），签名固定（`causual` 依赖）：
+
+```python
+from datahub.fin.derive import dividend_yield
+dividend_yield()        # index=year(int)，列 yield_mcap_weighted / yield_median / n_stocks
+dividend_yield(2025)    # 单年（同样要全表扫一遍，3.7s；循环里按年调是浪费）
+```
+
+三个必须知道的口径：
+- **单位是百分数**（2.1258 = 2.13%），不是小数。
+- **按除权日归年**，不是按报告期——所以和 `dividend_annual`（报告期口径）**不可直接比**，
+  年报分红多数在次年除权，两套口径天然错开一年。
+- **市值加权的分母是全市场**（不分红股分子记 0、分母照算）；**中位数只统计分红股**
+  （掺入 0 会把中位数拉到 0）。
+- 权重用**当前股本**近似（历史股本不可得，见 §11.2），越往前越不准；
+  `stock_daily` 不含退市股 → 存量幸存者偏差；2016 年不完整；当年是 YTD。
+
+实测 `n_stocks / 当年有年末价的股票数` ≈ 67~80%（2025：3760 / 5444）。
+全历史一次 3.7 秒，其中 `stock_daily` 的"每年末收盘价"占 3.4 秒
+（`GROUP BY code, substr(date,1,4)` 沿 PK 流式分组；加 `date BETWEEN` 反而更慢）。
 
 **为什么现算**：估值入库约 5000×2500×4 个浮点 ≈ 3 GB，且都是可推导量；
 一旦入库就要操心"股本变了要重算历史"。
