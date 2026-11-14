@@ -357,12 +357,32 @@ def cot_gold_net(start: str, end: str, timeout: int = 60, **_) -> pd.Series:
 _lock = threading.Lock()
 
 
+def _with_prefix(code: object) -> str:
+    """裸 6 位 → 带市场前缀；已带前缀的原样返回。
+
+    全库统一口径（2026-11-14）：`92xxxx / 8xxxxx / 4xxxxx` → `bj`，
+    `6xxxxx / 5xxxxx`（含 ETF）→ `sh`，其余（`0/1/3` 开头）→ `sz`。
+    """
+    c = str(code).strip()
+    if c[:2] in ("sh", "sz", "bj"):
+        return c
+    if c.startswith(("92", "8", "4")):
+        return "bj" + c
+    if c.startswith(("6", "5")):
+        return "sh" + c
+    return "sz" + c
+
+
 def _existing_dates(table: str) -> set[str]:
+    """库里这张 **long** 表已经有哪些日期（`etf_shares` 的缓存用）。"""
     try:
         import datahub.fin as fin
         if table not in fin.tables():
             return set()
-        return {str(d.date()) for d in fin.read(table).index}
+        from datahub.fin.read import LONG_SCHEMAS
+        first = next(iter(LONG_SCHEMAS[table]))
+        df = fin.read_long(table, columns=[first])
+        return {str(pd.Timestamp(d).date()) for d in df["date"].unique()}
     except Exception:  # noqa: BLE001
         return set()
 
@@ -384,10 +404,13 @@ def _fetch_etf_day(date: str, tries: int = 4) -> list[dict]:
 
 def etf_shares(start: str, end: str, weeks: int | None = 8,
                workers: int = 6, table: str = "etf_shares", **_) -> pd.DataFrame:
-    """ETF 份额宽表（列名 c+代码）。
+    """ETF 份额（**long**：一行一个 `code / date / shares`，code 带市场前缀）。
 
     **以库里已有的日期为缓存**：只补缺的交易日，不依赖本地 CSV。
     默认只看最近 `weeks` 周（接口每次约 8 秒，全历史要几小时）。
+
+    注意：akshare 的 `基金代码` 是裸 6 位（`510050`），`ALL_ETFS` 也按裸码比对，
+    只在**入库前**统一加前缀（`_with_prefix`）。
     """
     import datahub.fin as fin
 
@@ -408,21 +431,26 @@ def etf_shares(start: str, end: str, weeks: int | None = 8,
         with ThreadPoolExecutor(max_workers=workers) as ex:
             list(ex.map(work, todo))
 
-    wide = (pd.DataFrame(rows).pivot_table(index="date", columns="code",
-                                           values="shares", aggfunc="last").sort_index()
-            if rows else pd.DataFrame())
-    try:                                    # 带上库里已有的，保证写库时是完整宽表
-        old = fin.read(table)
-        if isinstance(old, pd.DataFrame) and len(old):
-            old = old.rename(columns=lambda c: str(c)[1:] if str(c).startswith("c") else str(c))
-            wide = pd.concat([old, wide]).sort_index()
-            wide = wide[~wide.index.duplicated(keep="last")]
+    frames: list[pd.DataFrame] = []
+    try:                                    # 带上库里已有的，保证 upsert 后仍是完整表
+        if table in fin.tables():
+            old = fin.read_long(table)
+            if isinstance(old, pd.DataFrame) and len(old):
+                frames.append(old)
     except Exception:  # noqa: BLE001
         pass
-    if wide.empty:
+    if rows:
+        frames.append(pd.DataFrame(rows))
+    if not frames:
         raise RuntimeError("ETF 份额没有取到任何数据")
-    wide.columns = [f"c{c}" for c in wide.columns]
-    return wide.loc[start:end]
+
+    out = pd.concat(frames, ignore_index=True)
+    out["code"] = out["code"].map(_with_prefix)
+    out["date"] = pd.to_datetime(out["date"])
+    out = (out.drop_duplicates(subset=["code", "date"], keep="last")
+              .sort_values(["code", "date"]))
+    out = out[(out["date"] >= pd.Timestamp(start)) & (out["date"] <= pd.Timestamp(end))]
+    return out[["code", "date", "shares"]].reset_index(drop=True)
 
 
 def dividend_annual(start: str, end: str, years: int = 6,
@@ -545,7 +573,8 @@ SOURCES: list[Source] = [
     Source("insider_net", manual_table, kind="manual", note="内部人净增持"),
 
     # 需要多步采集
-    Source("etf_shares", etf_shares, {"weeks": 8}, note="上交所份额；只补最近 8 周"),
+    Source("etf_shares", etf_shares, {"weeks": 8}, shape="long",
+           note="上交所份额；只补最近 8 周"),
     Source("dividend_annual", dividend_annual, {"years": 6}, note="年度分红，逐年补齐"),
 ]
 

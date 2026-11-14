@@ -20,12 +20,12 @@
    | 板块 | 判定方式 | 阈值 |
    |---|---|---|
    | ST | `company.name` 含 `ST` | ±4.8 |
-   | 创业板 300/301、科创板 688/689 | 代码前缀 | ±19.8 |
-   | 北交所 920xxx（新）/ 8xx / 4xx（老） | 代码前缀 | ±29.8 |
-   | 其余（600/601/603/605/000/001/002/003…） | 兜底 | ±9.8 |
+   | 创业板 / 科创板 | `sz300` `sz301` `sh688` `sh689` | ±19.8 |
+   | 北交所 | `bj` 前缀（含 920xxx / 8xx / 4xx） | ±29.8 |
+   | 其余（`sh600/601/603/605`、`sz000/001/002/003`…） | 兜底 | ±9.8 |
 
-   ⚠️ 北交所自 2024 年起新代码是 **920xxx**（库里现有 355 只全是 920 开头），
-   只按 "8xx/4xx" 判会把它们错当主板用 ±9.8，涨停家数会虚高。
+   ⚠️ 全库 code 自 2026-11-14 起统一带 `sh/sz/bj` 前缀（含 `stock_daily`），
+   北交所一律靠 `bj` 判——不要用"8xx/4xx 号码段"，920xxx 也是北交所。
 
    ST 判定**优先级最高**（先按板给阈值，再被 ST 覆盖）。
 5. `limit_up` / `limit_down` 是 `adv` / `dec` 的**子集**，不再单独加减。
@@ -47,7 +47,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -57,14 +57,13 @@ from datahub import DB_PATH
 # 算前收要多取的日历天数（长假 + 停牌够用；端午/国庆最长 8~10 天）
 _LOOKBACK_DAYS = 40
 
-# 板块阈值：按代码前缀判定，ST 最后覆盖
+# 板块阈值：按**带前缀的 code** 判定（2026-11-14 起全库统一 sh/sz/bj 前缀），ST 最后覆盖
 _LIMIT_MAIN = 9.8
-_LIMIT_GROWTH = 19.8        # 创业板 300/301、科创板 688/689
-_LIMIT_BJ = 29.8            # 北交所 8xx / 4xx
+_LIMIT_GROWTH = 19.8        # 创业板 sz300/sz301、科创板 sh688/sh689
+_LIMIT_BJ = 29.8            # 北交所：一律 bj 前缀（含 920xxx / 8xx / 4xx）
 _LIMIT_ST = 4.8
 
-_GROWTH_PREFIX = ("300", "301", "688", "689")
-_BJ_PREFIX = ("920", "8", "4")    # 920xxx 是 2024 起的新北交所代码
+_GROWTH_PREFIX = ("sz300", "sz301", "sh688", "sh689")
 
 _COLUMNS = ["adv", "dec", "flat", "limit_up", "limit_down", "total"]
 
@@ -76,13 +75,8 @@ def _conn(path: Path | None = None) -> sqlite3.Connection:
     return sqlite3.connect(str(p), timeout=60)
 
 
-def _bare_code(codes: Any) -> pd.Series:
-    """`sh600519` / `600519` → `600519`（stock_daily 是裸 6 位，company 带前缀）。"""
-    return cast(pd.Series, codes).astype(str).str[-6:]
-
-
 def _st_codes(path: Path | None = None) -> set[str]:
-    """`company.name` 含 ST 的代码集合（裸 6 位）。表没建/没数据就当没有 ST。"""
+    """`company.name` 含 ST 的代码集合（带前缀，与 stock_daily 同格式）。"""
     try:
         with _conn(path) as con:
             d = pd.read_sql("SELECT code, name FROM company", con)
@@ -91,19 +85,20 @@ def _st_codes(path: Path | None = None) -> set[str]:
     if d.empty:
         return set()
     name = d["name"].fillna("").astype(str)
-    return set(_bare_code(d["code"])[name.str.contains("ST")])
+    return set(d["code"].astype(str)[name.str.contains("ST")])
 
 
-def _limit_thresholds(bare: pd.Series, st: set[str]) -> np.ndarray:
-    """每股一个涨停阈值（跌停取相反数）。ST 优先于板块。"""
-    thr = np.full(len(bare), float(_LIMIT_MAIN))
-    arr = bare.to_numpy()
-    growth = bare.str.startswith(_GROWTH_PREFIX).to_numpy()
-    bj = bare.str.startswith(_BJ_PREFIX).to_numpy()
-    thr[growth] = _LIMIT_GROWTH
-    thr[bj] = _LIMIT_BJ
+def _limit_thresholds(codes: pd.Series, st: set[str]) -> np.ndarray:
+    """每股一个涨停阈值（跌停取相反数）。ST 优先于板块。
+
+    全部按**带前缀**的 code 判：北交所看 `bj` 前缀（比"8xx/4xx"的号码段可靠，
+    920xxx 也是 bj），创业板/科创板看 `sz300/sz301/sh688/sh689`。
+    """
+    thr = np.full(len(codes), float(_LIMIT_MAIN))
+    thr[codes.str.startswith(_GROWTH_PREFIX).to_numpy()] = _LIMIT_GROWTH
+    thr[codes.str.startswith("bj").to_numpy()] = _LIMIT_BJ
     if st:
-        thr[bare.isin(st).to_numpy()] = _LIMIT_ST
+        thr[codes.isin(st).to_numpy()] = _LIMIT_ST
     return thr
 
 
@@ -158,7 +153,7 @@ def breadth(start: str | None = None, end: str | None = None, *,
 
     p = pct.loc[keep]
     hp = has_prev.loc[keep]
-    thr = _limit_thresholds(_bare_code(sub["code"]), _st_codes(path))
+    thr = _limit_thresholds(sub["code"], _st_codes(path))
 
     flags = pd.DataFrame({
         "adv": (hp & (p > 0)).to_numpy(),

@@ -228,6 +228,12 @@ d = read("csi_all")           # DataFrame
   （`metadata.columns` 只有列名、没有类型，建表需要类型）
 - **写库**在 `update.py`：`write_long` / `write_static`，按 `Source.shape` 分派
 - `multi` 用于"列是写死的"场景；`long` 用于"标的是数据"（五千只股票没法一列一只）
+- **`code` 一律带市场前缀**（2026-11-14 起）：`sh600519` / `sz000001` / `bj920045`。
+  `stock_daily`(1040 万行) / `adj_factor` / `etf_shares` 已从 Fuyao 的裸 6 位迁过来。
+  新增数据一律过 `sources._with_prefix()` 归一，**不要再写裸码**——混格式会让
+  `isin`/合并/派生全部对不上（`derive.py` 里原本有个 `_bare_code`，已删除）。
+  迁移方式：`VACUUM INTO` 备份 → 建 `_new` 表 → `INSERT … SELECT` 加前缀 →
+  校验行数 → `DROP` → `RENAME` → 重建 `idx_<表>_date`（不用 `UPDATE`，WAL 会炸）。
 
 ## 9. 什么时候跑（低频跳过）
 

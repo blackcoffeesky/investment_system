@@ -24,6 +24,7 @@ from datahub.core.schema import DATA_DDL
 # 注意：`from datahub.fin import read` 拿到的是**函数**不是模块（包属性被同名函数占了），
 # 所以这里按函数名 import，不能写成 `import ... as L` 再用 L.long_stats。
 from datahub.fin.read import _long_columns, long_stats
+from datahub.fin.sources import _with_prefix
 from datahub.fin.update import write_long
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -32,9 +33,19 @@ DATA = ROOT / "data"
 K_FILE = DATA / "a_share_daily_k_1d_none_10y_20261113.parquet"
 ADJ_FILE = DATA / "a_share_adjustment_factors_event_none_all_20261113.parquet"
 
-# 同花顺的 thscode 形如 000001.SZ：取前面的代码做 code，交易所留在后缀里
+EX_PREFIX = {"SH": "sh", "SZ": "sz", "BJ": "bj"}
+
+
 def _split_code(thscode: pd.Series) -> pd.Series:
-    return thscode.astype(str).str.split(".").str[0]
+    """`000001.SZ` → `sz000001`。
+
+    交易所后缀是**权威**的市场归属（优先用它）；万一没有后缀，按号码段推
+    （`_with_prefix`）。全库 code 自 2026-11-14 起统一带前缀。
+    """
+    c = thscode.astype(str).str.strip()
+    parts = c.str.partition(".")
+    num, ex = parts[0], parts[2].str.upper().map(EX_PREFIX).fillna("")
+    return (ex + num).where(ex != "", num.map(_with_prefix))
 
 
 def _ms_to_date(ms: pd.Series) -> pd.Series:
