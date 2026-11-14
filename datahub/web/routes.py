@@ -65,7 +65,7 @@ def index(request: Request, only: str = "manual"):
         })
     if only == "manual":
         keep = {"cb_holdings", "gold_etf_holdings", "insider_net",
-                "equity_fin_monthly", "dividend_annual"}
+                "equity_fin_monthly"}
         rows = [r for r in rows if r["name"] in keep]
 
     return _tpl(request).TemplateResponse(

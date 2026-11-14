@@ -25,7 +25,6 @@ from datahub.fin.sources.base import Source, _with_prefix
 
 from datahub.fin.sources.ashare import (
     ashare_company,
-    ashare_dividend,
     ashare_financials,
     ashare_shares,
 )
@@ -38,7 +37,6 @@ from datahub.fin.sources.akshare import (
     cn_ppi,
     cn_retail,
     cn_retail_mom,
-    dividend_annual,
     etf_shares,
     fut_daily,
     fut_hold,
@@ -75,10 +73,9 @@ SOURCES: list[Source] = [
 
     # 价格与成交
     Source("csi_all", index_tx, {"symbol": "sh000985"}, note="腾讯指数 OHLCV"),
-    # 2026-11-14 下线两条注册（表还在库里，等派生函数与旧表比对一致后再删表）：
-    # - `csi_all_amount|csi_all_turnover`：csi_all 已合并 amount/turnover 两列，重复采集
-    # - `breadth_adv|breadth_dec|breadth_limitup`：只能取当天快照、不回溯，
-    #   改由 stock_daily 按日聚合派生（state_layer 仍在读这三张表，删表前必须先派生）
+    # 2026-11-14 下线过的两条注册，**表和源都已删**（见 DESIGN §12）：
+    # - `csi_all_amount|csi_all_turnover`：csi_all 已合并 amount/turnover 两列
+    # - `breadth_adv|breadth_dec|breadth_limitup`：改由 `derive.breadth()` 现算
     Source("csi300", index_sina, {"symbol": "sh000300"}, note="新浪指数收盘"),
     Source("csi1000", index_sina, {"symbol": "sh000852"}, note="新浪指数收盘"),
     Source("gold_cny", fut_daily, {"symbol": "AU0"}, note="上期所主力连续"),
@@ -109,7 +106,6 @@ SOURCES: list[Source] = [
     # 需要多步采集
     Source("etf_shares", etf_shares, {"weeks": 8}, shape="long",
            note="上交所份额；只补最近 8 周"),
-    Source("dividend_annual", dividend_annual, {"years": 6}, note="年度分红，逐年补齐"),
 ]
 
 SOURCES += [
@@ -119,9 +115,7 @@ SOURCES += [
     Source("shares_history", ashare_shares, shape="long", note="ashareapi /v1/snapshot"),
     # 季频财报：报告期 + 披露日，用于算 PE/PB/ROE
     Source("financials", ashare_financials, shape="long", note="ashareapi /v1/finance"),
-    # 分红送转：**2026-11-14 起停用** —— 已并入 adj_factor（Fuyao 合计值更准、1991 起、
-    # 覆盖全市场），而本源只覆盖 5 只且现金值与 Fuyao 有 2/27 不一致。
-    # 等全市场分红回填方案定下来再决定是恢复本源还是改用 adj_factor。
-    Source("dividend", ashare_dividend, shape="long", enabled=False,
-           note="已停用：并入 adj_factor；全市场分红待回填"),
 ]
+# 2026-11-14 删掉的源（表也一起删了，见 DESIGN §12）：
+# - `dividend_annual`（→ `derive.dividend_yield()`）
+# - `dividend`（→ 数据并入 `adj_factor`；要全市场分红就写新源直接进 adj_factor）

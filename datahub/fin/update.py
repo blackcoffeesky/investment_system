@@ -47,17 +47,13 @@ FREQ_HINT = {
     "fed_rate": ("D", "US", 2),
     "real_yield_10y": ("D", "US", 2),
     "vix": ("D", "US", 2),
-    # 2026-11-10 新增：成交额/换手率/宽度都是 A 股日频，必须挂 SSE 日历，
+    # 2026-11-10 新增：成交额/换手率都是 A 股日频，必须挂 SSE 日历，
     # 否则会把周末当成缺口（历史缺口 1840 天就是这么来的）
     "csi_all": ("D", "CN", 0),
-    "breadth_adv": ("D", "CN", 0),
-    "breadth_dec": ("D", "CN", 0),
-    "breadth_limitup": ("D", "CN", 0),
     # 公司三表：低频 + 事件型
     "company": ("M", "CN", 0),          # 静态档案，每月刷
     "shares_history": ("Q", "CN", 0),   # 股本快照，季度刷
     "financials": ("Q", "CN", 45),       # 财报披露滞后约 45 天
-    "dividend": ("SPARSE", "NONE", 0),   # 事件表，不查逐日缺口
 }
 
 
@@ -161,7 +157,7 @@ def _period_end(freq: str, today: pd.Timestamp, lag: int) -> pd.Timestamp | None
 
 
 # 事件型表的刷新间隔（天）：没有"当期"概念，只能按时间节流
-REFRESH_DAYS = {"dividend": 7, "shares_history": 90, "adj_factor": 365}
+REFRESH_DAYS = {"shares_history": 90, "adj_factor": 365}
 
 
 def _last_synced(con: sqlite3.Connection, table: str) -> pd.Timestamp | None:

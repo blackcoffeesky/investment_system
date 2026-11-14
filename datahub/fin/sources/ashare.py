@@ -127,22 +127,6 @@ def _exchange_of(code: str) -> str:
     return "SH" if c.startswith("sh") else "SZ" if c.startswith("sz") else "BJ"
 
 
-def _parse_plan(plan: str) -> tuple[float | None, float | None, float | None]:
-    """「10派2.5元送3股转2股」→ (2.5, 5.0, None)，单位都是每 10 股。"""
-    if not plan:
-        return None, None, None
-    cash = re.search(r"派\s*([\d.]+)", plan)
-    song = re.search(r"送\s*([\d.]+)", plan)
-    zhuan = re.search(r"转\s*([\d.]+)", plan)
-    pei = re.search(r"配\s*([\d.]+)", plan)
-    bonus = None
-    if song or zhuan:
-        bonus = float(song.group(1) if song else 0) + float(zhuan.group(1) if zhuan else 0)
-    return (float(cash.group(1)) if cash else None,
-            bonus,
-            float(pei.group(1)) if pei else None)
-
-
 def _all_codes() -> list[str]:
     """全市场代码（来自 company 表；表还没建就现场拉一次清单）。"""
     try:
@@ -287,39 +271,6 @@ def ashare_financials(start: str = "", end: str = "", table: str = "",
               f"下次运行会重试；例：{failed[:5]}")
     print(f"  financials：完成 {len(todo)} 只，本次返回剩余 {len(rows)} 行"
           f"（已落库的由 on_chunk 负责）")
-    return pd.DataFrame(rows)
-
-
-def ashare_dividend(start: str = "", end: str = "", table: str = "", **_) -> pd.DataFrame:
-    """分红送转。⚠️ 接口给的是**每 10 股**（`dividendPlan` 写「10派280.242元」），
-    入库统一除以 10 换成每股。"""
-    rows = []
-    for code in _all_codes():
-        res = api_get("/dividend", code=code)
-        if not res.get("ok"):
-            continue
-        for r in api_rows(res):
-            ex = r.get("exDiviDate")
-            if not ex:
-                continue
-            plan = str(r.get("dividendPlan") or "")
-            cash10, bonus10, allot10 = _parse_plan(plan)
-            if cash10 is None:
-                cash10 = _num(r.get("cashDiviRMB"))
-            if bonus10 is None:
-                b10 = (_num(r.get("bonusShareRatio")) or 0) + \
-                      (_num(r.get("tranAddShareRatio")) or 0)
-                bonus10 = b10 or None
-            rows.append({
-                "code": code,
-                "date": _iso_date(ex),
-                "report_end": _iso_date(r.get("reportEndDate")),
-                "cash": (cash10 / 10.0) if cash10 is not None else None,
-                "bonus": (bonus10 / 10.0) if bonus10 is not None else None,
-                "allot_ratio": (allot10 / 10.0) if allot10 is not None else None,
-                "allot_price": None,
-                "plan": plan or None,
-            })
     return pd.DataFrame(rows)
 
 

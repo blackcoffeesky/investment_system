@@ -242,6 +242,14 @@ python -m datahub.fin.check --ack vix:2026-10-20 --reason "美股休市数据源
 | `cb_holdings` | 2026Q2 有 23/87 国 `AWAITED`，按 Q1 补齐 → 低估 |
 | `financials` | 走 `finance-batch` 回填的 code 只有**最近 4 期**（`只数×periods≤40` 的硬限制）；早期 5 只是 8 期。全市场 5578 只需 **6 天**（100 次/日 × 10 只），靠"只抓缺的 code"续跑 |
 
+## 10.1 已删除的表（2026-11-14）
+
+`breadth_adv` / `breadth_dec` / `breadth_limitup`、`dividend_annual`、`dividend` **已删除**，
+分别由 `derive.breadth()`、`derive.dividend_yield()`、`adj_factor`（吸收了 `report_end`/`plan`）取代。
+删除前的全量快照留在 `fin/intake/clean/dropped_20261114/`，原因见 [DESIGN §12](DESIGN.md)。
+
+> 表数 46 → 41；`catalog()` = 41 表 + 2 派生 = 43 行。
+
 ## 11. long 表的读法
 
 `long` 用于"标的是数据而不是结构"的场景（五千只股票没法一列一只）。

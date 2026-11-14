@@ -187,7 +187,7 @@ def dividend_yield(year: int | None = None, *, path: Path | None = None) -> pd.D
     口径
     ----
     1. **分子**：该年（按**除权日**落在这一自然年）每股现金分红**合计**，来自
-       `adj_factor.dividend`。注意这与 `dividend_annual` 的"按报告期"口径不同——
+       `adj_factor.dividend`。注意这与**已删除的** `dividend_annual`（按报告期口径）不同——
        年报分红多数在次年除权，两套口径天然错位一年。
     2. **分母**：该年每只股票**最后一个交易日**的收盘价（停牌取该年最后一条），
        来自 `stock_daily`。

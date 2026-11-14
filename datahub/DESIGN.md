@@ -356,7 +356,7 @@ dividend_yield(2025)    # 单年（同样要全表扫一遍，3.7s；循环里�
 |---|---|---|
 | `breadth(start=None, end=None)` | DataFrame | 市场宽度，现算 |
 | `dividend_yield(year=None)` | DataFrame | 年度股息率（%）；3.7s，**一次拿全表，别按年循环** |
-| `catalog()` | DataFrame | 所有表 + 这 2 个派生量的清单（48 行 = 46 表 + 2） |
+| `catalog()` | DataFrame | 所有表 + 这 2 个派生量的清单（43 行 = 41 表 + 2） |
 
 `catalog` 的**定位**：描述性、**不稳定**、仅供展示与调度决策，**不要当契约**——
 字段名和行数都可能变。要取数据请用 `read` / `read_many` / `series_map` 或上面两个派生方法。
@@ -387,3 +387,29 @@ dividend_yield(2025)    # 单年（同样要全表扫一遍，3.7s；循环里�
 `shares_history` 是按事件累积的权威口径，`company.total_shares` 只是当前快照
 （而且这一列现在还是空的，要 `/v1/snapshot` 补）。**不改名**：改名要动
 `read()` 的消费方，收益只是少一层注释——这里写清楚就够了。
+
+---
+
+## 12. 已删除的表（2026-11-14）
+
+| 表 | 删除前 | 为什么删 | 取代者 |
+|---|---|---|---|
+| `breadth_adv` / `breadth_dec` / `breadth_limitup` | 各 1 行（2026-11-10） | 只能取**当天快照**、不回溯；口径也错（统一 `pct>=9.8`：把创业板 10% 的大涨当涨停、漏掉 ST 的 5% 涨停）。与交易所口径对账：旧表 42/58 vs 交易所 38/39 | `derive.breadth()` |
+| `dividend_annual` | 5 行（2021–2025） | 按**报告期**汇总，且**近年数据本身不完整**：2021→2025 单调下降（1.74 → 1.59 万亿），与 A 股分红逐年增长的事实矛盾 | `derive.dividend_yield()` |
+| `dividend` | 27 行（5 只） | 已并入 `adj_factor`（补 `report_end` / `plan` 两列；数值以 Fuyao 合计为准，2/27 冲突） | `adj_factor` |
+
+**留档（半年后唯一能知道"曾经有这张表、为什么没了"的东西）**
+
+- 删除前全量快照：`fin/intake/clean/dropped_20261114/*.csv`（含 `_README.md` 说明）
+- 删除前整库备份：`datahub/datahub_backup_20261114_predrop.sqlite`（1.31 GB，已 gitignore）
+
+**删除要四处一起清，少一处就会复活**：① 表本身 `DROP` ② `metadata` 行
+③ `SOURCES` 注册（连源函数一起，含 `FREQ_HINT`）④ 任何按表名硬编码的地方。
+本次除了上面四条，还额外清了三处 grep 才发现的残留：
+
+- `LONG_SCHEMAS["dividend"]`（留着它 `write_long` 会把表重新建出来）
+- `web/routes.py` 手工白名单里的 `dividend_annual`（否则 `/data` 页会列一张不存在的表）
+- `REFRESH_DAYS["dividend"]`（源已删，节流配置成了死配置）
+
+结果：表数 **46 → 41**，`catalog()` = **43 行**（41 表 + 2 派生）；
+`derive.breadth()` / `derive.dividend_yield()` 不读这些表，删后照常工作。

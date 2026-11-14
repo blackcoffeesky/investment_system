@@ -138,15 +138,6 @@ LONG_SCHEMAS: dict[str, dict[str, str]] = {
         "total_after": "REAL",
         "float_after": "REAL",
     },
-    # 分红送转（原 adj_factor 升级：多了报告期，口径统一到"除权日"）
-    "dividend": {
-        "report_end": "TEXT",     # 所属报告期 YYYY-MM-DD
-        "cash": "REAL",           # 每股现金分红（税前）
-        "bonus": "REAL",          # 每股送股比例
-        "allot_ratio": "REAL",    # 配股比例
-        "allot_price": "REAL",    # 配股价格
-        "plan": "TEXT",           # 原始方案文案，如「10派280.242元」
-    },
     # 季频财报：报告期 + 披露日（用披露日算 lag，避免前视）
     "financials": {
         "publ_date": "TEXT",      # 披露日 YYYY-MM-DD

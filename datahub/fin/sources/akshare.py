@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pandas as pd
 
-from datahub.fin.sources.base import (_clip, _existing_keys, _num, _read_cached,
+from datahub.fin.sources.base import (_clip, _existing_keys, _read_cached,
                                       _with_prefix)
 
 
@@ -251,50 +251,6 @@ def etf_shares(start: str, end: str, weeks: int | None = 8,
               .sort_values(["code", "date"]))
     out = out[(out["date"] >= pd.Timestamp(start)) & (out["date"] <= pd.Timestamp(end))]
     return out[["code", "date", "shares"]].reset_index(drop=True)
-
-
-def dividend_annual(start: str, end: str, years: int = 6,
-                    table: str = "dividend_annual", **_) -> pd.DataFrame:
-    """全市场年度分红：分红总额 / 净利润 / 分红率 / 家数。**以库中已有年份为缓存。**"""
-    got: dict[int, dict] = {}
-    old = _read_cached(table)
-    for d, r in old.iterrows():
-        got[int(pd.Timestamp(str(d)).year)] = r.to_dict()
-
-    stop = pd.Timestamp(end)
-    for y in range(max(2000, stop.year - years + 1), stop.year + 1):
-        if y in got:
-            continue
-        r = _fetch_dividend_year(y)
-        if r:
-            got[y] = r
-
-    if not got:
-        raise RuntimeError("年度分红没有取到任何数据")
-    out = pd.DataFrame.from_dict(got, orient="index").sort_index()
-    out.index = pd.to_datetime([f"{y}-12-31" for y in out.index])
-    return out.loc[start:end]
-
-
-def _fetch_dividend_year(year: int) -> dict | None:
-    import akshare as ak
-
-    try:
-        d = ak.stock_fhps_em(date=f"{year}1231")
-    except Exception:  # noqa: BLE001
-        return None
-    if d is None or not len(d):
-        return None
-    col_div = next((c for c in d.columns if "现金分红" in str(c) and "总额" in str(c)), None)
-    col_np = next((c for c in d.columns if "净利润" in str(c)), None)
-    if not col_div:
-        return None
-    div = _num(d[col_div])
-    np_ = _num(d[col_np]).sum() if col_np else float("nan")
-    return {"dividend_total": float(div.sum()),
-            "net_profit_total": float(np_),
-            "payout_ratio": float(div.sum() / np_ * 100) if np_ and np_ > 0 else float("nan"),
-            "dividend_count": int(div.gt(0).sum())}
 
 
 ALL_ETFS = sorted({c for cs in INDEX_ETFS.values() for c in cs})

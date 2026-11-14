@@ -71,7 +71,7 @@ def _read_cached(table: str) -> pd.DataFrame:
 def _existing_keys(table: str, key_of: Callable[[Any], Any]) -> set:
     """库里这张表**已经有哪些 key**（"只补缺的"缓存逻辑，各源共用）。
 
-    `key_of` 把一行的日期转成 key：`etf_shares` 用日期字符串，`dividend_annual` 用年份。
+    `key_of` 把一行的日期转成 key（例如日期字符串）。
     long / multi 两种表都处理；表不存在或读失败就当没有。
     """
     df = _read_cached(table)
