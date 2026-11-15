@@ -153,9 +153,16 @@ features ──► extreme: 认领极端日，返回剩下的
 saved_models/<asset>/
 ├── current.json   spec（model / data / metrics 三段）
 ├── labels.csv     逐日标签
-├── chain.pkl      整条模型链
-└── hmm_last.pkl   最后窗口（在线算后验用）
+├── chain.pkl      整条模型链（**含每个模型的 last_window**，离线后验的唯一真相）
+└── hmm_last.pkl   **遗留**：旧格式的最后窗口，新拟合不再写它
 ```
+
+**最后窗口以 `chain.pkl` 为唯一真相**：`fit.save` 把 spec 与链一次落盘，链里每个统计模型
+自带 `last_window`（含 `state_labels` / `transmat` / 训练时的 `features` 列名）。
+`port._models()` 只在**链里没有窗口**（旧格式链 / 没有 chain.pkl）时才回退到 `hmm_last.pkl`，
+且回退时核对 `fit_id`——那份文件是独立老化的，可能不是这次拟合的。
+2026-11-15 踩过：无条件用 `hmm_last.pkl` 覆盖链内窗口 → 链是新的、窗口是 10 月的旧货
+→ `extend` 的 fit_id 校验永远失败 → 标签停止外推 → 卡片「没有状态标签」被拒。
 
 **不进 git**（`.gitignore` 有 `saved_models/`）。部署要单独搬，删目录时注意别连带删掉。
 
@@ -186,4 +193,5 @@ saved_models/<asset>/
 - **K 不是瓶颈，特征才是**：`experiment/k_study.py` 实测 K=3 会切出一个 2.7%、
   `stay_prob≈0` 的退化状态；K=2 更干净但切的是波动率不是趋势
 - **退市股缺失**：`stock_daily` 只有当前在市股票，历史回测有幸存者偏差
-- **链未在生产验证**：`chain.pkl` 从未生成，目前跑的是"旧模型参数 + 新链结构"
+- **链已进生产**（2026-11-15 重拟合生成 `chain.pkl`）；`hmm_last.pkl` 是 10 月的遗留文件，
+  只在链里没有窗口时回退，见 §6

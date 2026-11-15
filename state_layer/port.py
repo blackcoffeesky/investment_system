@@ -94,6 +94,10 @@ class StatePort:
         **结构以 config.MODEL_CHAIN 为准**，参数优先用落盘的那份；
         落盘里没有的环节（比如旧版本只存了 hmm.pkl）按 config 现场构造，
         这样"旧模型 + 新链结构"也能正确跑，不用先重拟合。
+
+        最后窗口以 **chain.pkl 为唯一真相**：它由 `fit.save` 和 spec 一起落盘，
+        每个模型自带 `last_window`（含 `state_labels` / `transmat`）。
+        `hmm_last.pkl` 是 2026-10 遗留的独立文件，只有链里没带窗口时才回退用它。
         """
         pkg = state_assets.load(asset)
         chain_names = list(getattr(pkg.config, "MODEL_CHAIN", ("hmm",)))
@@ -109,8 +113,10 @@ class StatePort:
             data = saved.get(name)
             m = (MODELS[name].from_dict(data) if data
                  else MODELS[name](params.get(name)))
-            if m.kind != "extreme":
-                # 最后窗口以 hmm_last.pkl 为准：里面有 state_labels 和 fit_id
+            if m.kind != "extreme" and m.last_window is None:
+                # 只在链里**没有**窗口时回退（旧格式 chain / 压根没有 chain.pkl）。
+                # 以前这里是无条件覆盖 —— 链是新的、窗口却是旧文件，等于用两次拟合
+                # 拼出一个模型，`extend` 的 fit_id 校验随即永远失败（2026-11-15 踩过）。
                 try:
                     m.last_window = store.load_model(asset, "hmm_last.pkl")
                 except FileNotFoundError:
@@ -147,7 +153,12 @@ class StatePort:
 
     def extend(self, asset: str, features: pd.DataFrame,
                labels: pd.Series | None = None) -> pd.Series:
-        """把标签外推到断档期：最后窗口的模型 + 极端规则覆盖。"""
+        """把标签外推到断档期：最后窗口的模型 + 极端规则覆盖。
+
+        最后窗口取自**模型链**（`chain.pkl`，和 spec 同一次 `fit.save` 落盘）。
+        它不带 `fit_id`——同源产物不需要核对；只有回退到遗留 `hmm_last.pkl`
+        的路径才可能过期，那份文件自带 `fit_id`，有就比一下。
+        """
         lab = cast(pd.Series, store.load_labels(asset) if labels is None else labels)
         if lab.empty or features is None or features.empty:
             return lab
@@ -159,27 +170,33 @@ class StatePort:
         gap = features.index[features.index > filled.index.max()]
         if not len(gap):
             return lab
-        if not len(gap):
-            return lab
-
-        try:
-            lw = store.load_model(asset, "hmm_last.pkl")
-        except FileNotFoundError:
-            print(f"[state] 缺 hmm_last.pkl，{asset} 的标签不外推")
-            return lab
-        if lw.get("fit_id") != spec.get("data", {}).get("fit_id"):
-            print(f"[state] hmm_last.pkl 与 spec 的 fit_id 不一致，不外推")
-            return lab
 
         models = self._models(asset)
         if not models:
             return lab
+        stat = next((m for m in models if m.kind != "extreme"), None)
+        lw = stat.last_window if stat is not None else None
+        if not lw:
+            print(f"[state] {asset} 的模型链里没有最后窗口，标签不外推")
+            return lab
+        lw_fit_id = lw.get("fit_id")
+        spec_fit_id = spec.get("data", {}).get("fit_id")
+        if lw_fit_id:
+            if lw_fit_id != spec_fit_id:
+                print(f"[state] 最后窗口与 spec 的 fit_id 不一致"
+                      f"（{lw_fit_id} != {spec_fit_id}），不外推")
+                return lab
+            print(f"[state] 用遗留 hmm_last.pkl 的最后窗口外推"
+                  f"（fit_id {lw_fit_id} 与 spec 一致）")
+
         sub = features.loc[features.index <= gap.max()]
         raw = cast(pd.Series, run_infer(models, sub)["states"])
         keep = raw.astype(str) != ""
         add = cast(pd.Series, raw.loc[keep])
         add = cast(pd.Series, add.loc[add.index > filled.index.max()])
         if add.empty:
+            print(f"[state] {asset} 外推没产出标签（模型一天都没认领）；"
+                  f"检查传入的 features 是否覆盖了训练时的列 {list(lw.get('features') or [])}")
             return lab
         span = pd.DatetimeIndex(add.index)
         print(f"[state] 外推 {len(add)} 天标签"

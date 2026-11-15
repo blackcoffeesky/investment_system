@@ -220,8 +220,10 @@ def test_state_contract_fields():
     for k in ("date", "asset", "state_id", "label", "state_probabilities",
               "confidence", "model", "as_of_date"):
         assert k in cur, f"契约缺字段 {k}"
-    assert cur["model"]["version"].startswith("hmm-k")
-    assert cur["label"] in cur["model"].get("features", []) or isinstance(cur["label"], str)
+    # version 形如 `<链>-k<K>-<fit_id>`：单模型是 `hmm-k3-…`，链式是
+    # `extreme+hmm-k3-…`（按 MODEL_CHAIN 生成）。别写死前缀——换链就误报。
+    assert "hmm-k" in cur["model"]["version"], cur["model"]["version"]
+    assert "hmm" in str(cur["model"].get("kind") or ""), cur["model"]
 
 
 
@@ -230,6 +232,7 @@ def test_state_extend_fills_gap():
     import numpy as np
     import pandas as pd
 
+    from state_layer import state_assets
     from state_layer.port import get_port
 
     port = get_port()
@@ -239,12 +242,13 @@ def test_state_extend_fills_gap():
     spaced = labels.reindex(
         pd.bdate_range(labels.index[0], labels.index[-1] + pd.Timedelta(days=20))
     ).fillna("").astype(str)
+    # 列名必须跟 `config.FEATURES` 走：模型的 last_window 按**训练时的列名**重排
+    # （hmm.infer: reindex(columns=cols).dropna()），少一列就整天认领不到、静默不外推。
+    cols = list(state_assets.load("ashare").config.FEATURES)
     feats = pd.DataFrame(
-        np.random.default_rng(0).normal(size=(len(spaced), 9)),
+        np.random.default_rng(0).normal(size=(len(spaced), len(cols))),
         index=spaced.index,
-        columns=["log_return", "realized_vol_20", "volume_z", "up_day_ratio",
-                 "size_mom", "margin_chg_z", "rv_ratio", "shibor_chg_z",
-                 "etf_dispersion"])
+        columns=cols)
     out = port.extend("ashare", feats, spaced)
     assert out.index.max() > labels.index.max(), "没有外推"
     assert (out != "").all(), "外推结果里还有空标签"

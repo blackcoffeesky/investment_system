@@ -6,10 +6,11 @@
 把「存哪儿、什么格式」收在这里，将来换存储（比如进数据库）只改这一个文件。
 
 产物目录：`state_layer/saved_models/{asset}/`
-    hmm.pkl        模型参数（dict，pickle 壳；内容是可 JSON 的纯数据）
-    hmm_last.pkl   最后一个窗口（在线算后验用）
     current.json   spec（model / data / metrics 三段）
     labels.csv     逐日标签
+    chain.pkl      整条模型链（含每个模型的 last_window；离线后验以它为准）
+    hmm.pkl        旧格式单模型参数（遗留）
+    hmm_last.pkl   旧格式最后窗口（遗留，仅在没有链时回退）
 """
 
 from __future__ import annotations
