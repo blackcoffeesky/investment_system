@@ -71,7 +71,7 @@ def _derived(df: pd.DataFrame, base: pd.DataFrame) -> dict[str, pd.Series]:
 
     ⚠️ 落位日是**可见日**（央行购金 +45 天、ETF 持仓 +40 天），不是数据所属日
     ——旧实现用未推后的序列，等于提前 40~45 天就用到了数据（前视）。
-    见 CHANGES v5.45 与 DESIGN 的变更记录。
+    见 CHANGES v5.45（含季度聚合变化的对照表）。
     """
     getattr_ok = ("cb_holdings", "gold_etf_holdings")
     if not all(c in base.columns for c in getattr_ok):
