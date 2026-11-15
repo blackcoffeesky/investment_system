@@ -111,6 +111,15 @@ pyright --project pyrightconfig_off.json     # 必须 0 error
    `state_layer` 和 `causual` 里各有一处"按裸码做字符串匹配"的写法（`GROUPS` 硬编码 + `startswith("c")`），
    结果**一列特征变 NaN、几列派生量整体消失**，全程没有任何报错。
    改任何标识（代码 / 表名 / 列名）之前，先 `grep` 一遍有没有按它做字符串匹配的地方。
+9. **重构必须逐位比对旧输出** → 2026-11-15 把面板列名从 `EQUITY_SUPPLY` 改成
+   `equity_fin_monthly` 时，机械替换只改了 `df["..."]`，**没改条件里的字符串**：
+   ```python
+   sup = df["equity_fin_monthly"] if "EQUITY_SUPPLY" in df.columns else nan
+   ```
+   条件永远假 → 整列变 NaN（1582 格），不报错。
+   **测试全绿、签名没变**（签名只哈希标签值，列里的值坏了它看不出来）。
+   是"改前存 parquet 基线、改后逐位比对"抓到的。
+   ⇒ 任何重构都要先存旧输出基线，改完逐位比；**相差 0 格才叫等价**。
 
 ---
 
