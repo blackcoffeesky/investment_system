@@ -54,8 +54,8 @@ causual/
 │   └── utils/{calendar,zscore}.py
 ├── causual_assets/
 │   ├── common.py                # 面板组装公用件（列名映射 + 公布滞后）
-│   ├── ashare/{panel,pipeline,config,label}.py
-│   └── gold/{panel,pipeline,config,label}.py
+│   ├── ashare/{pipeline,config}.py
+│   └── gold/{pipeline,config}.py
 ├── causual_cards.py             # **对外接口**：list_cards / get_card / to_html
 ├── web.py                       # **对外接口**：FastAPI 路由（供 service 挂载）
 ├── templates/                   # 卡片页面模板（extends service 的 base.html）
@@ -76,7 +76,7 @@ causual 不直接对外提供服务，而是暴露三样东西让 service 挂载
 
 | 接口 | 位置 | 契约 |
 |---|---|---|
-| `panel.panel(ds=None)` | `causual_assets/{asset}/panel.py` | 传入 `DataService`，返回日频宽表 |
+| `load_raw(series=None)` | `causual_assets/{asset}/pipeline.py` | 从耦合层拼日频宽表（`_derived` 是派生列唯一接缝） |
 | `pipeline.run(asset, series, meta, asof=None, quiet=...)` | `causual_core/pipeline.py` | 出卡：**只吃数据，不取数** |
 | `required_tables(asset)` / `derived_series(asset, data)` | `port.py` | 装配用：要哪些表 + 现算的派生量（股息率）；**CLI 与 service 共用这一个入口** |
 | `macro_month(meta, *, asset=None)` | `port.py` | 月频卡该覆盖的月份（`asset` 关键字参数，传了按该资产收窄） |
@@ -159,23 +159,26 @@ saved_models/{asset}/hmm_last.pkl            # 最后窗口模型（在线后验
 
 ```
 datahub/datahub.sqlite
-   ↓  datahub.db.read(...)
-causual_assets/{ashare,gold}/panel.py      列名映射 + 公布滞后 + 派生列
-   ↓  panel.panel()
+   ↓  shared/adapter.get_data(Panel.CAUSUAL_*)   列名映射 + 公布滞后 + 对齐策略
+causual_assets/{ashare,gold}/pipeline.py::load_raw()
+   ↓  基础列 + 派生列（shared.utils.features）+ 股息率（装配点塞的 series）
 causual_assets/{ashare,gold}/pipeline.py   prepare() 算特征与供需层
    ↓
 regime（状态） / signal（边） / narrative（卡片）
 ```
 
-`panel.py` 是唯一知道"数据层表名 ↔ 业务层列名"的地方；`causual_core` **不含任何取数代码**。
+`shared/adapter` 是唯一知道"数据层表名 ↔ 语义列名"的地方；`causual_core` **不含任何取数代码**。
+`load_raw()` 是本模块唯一的装配点，`_derived(df, base)` 是派生列的唯一接缝。
 
 ### 4.2 面板契约
 
-`panel.panel()` 返回日频宽表：
+`load_raw()` 返回日频宽表：
 
 - index = 该资产主价格表的交易日（A 股 `csi_all`，黄金 `gold_cny`）
-- 列名沿用大写旧名（`CLOSE`、`VIX`、`M1_LEVEL`…），供 `prepare()` 直接使用
-- 月频/季频变量按 `metadata.lag_days` **推后**再 ffill
+- 基础列来自耦合层，映射写在各自 `pipeline.BASE_COLS`（本轮仍输出历史大写名
+  `CLOSE` / `VIX` / `M1_LEVEL`…，下一次提交统一改成语义名）
+- 月频/季频变量按 `metadata.lag_days` **推后**再对齐；是 ffill 到每交易日
+  还是只落在观测日，由耦合层**逐列声明**（`daily` / `raw` 两种策略）
 
 例：2026-09-30 的 CPI，`lag_days=9` → 10-09 才进入面板。**这不是消费层的假设，
 是数据层的属性**，所以放在 `metadata` 而不是写死在代码里。

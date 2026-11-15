@@ -2,6 +2,51 @@
 
 ---
 
+# v5.45（2026-11-15）：删掉两个 `panel.py`，装配点收进 `pipeline.load_raw`
+
+`shared/adapter` 定稿后，`causual_assets/{ashare,gold}/panel.py` 的活全被搬走了：
+
+| 原来在 `panel.py` | 现在去哪 |
+|---|---|
+| `{旧列名: 表/元组}` 映射 | `pipeline.BASE_COLS` |
+| 四列 ETF 派生量 | `shared.utils.features`（算法）+ `pipeline._derived`（唯一装配点） |
+| ETF 代码归一 / 分组 | `shared.adapter`（全局一份） |
+| 对齐 / `lag_days` / ffill | `shared.utils.time_align`（逐列 `daily` / `raw` 策略） |
+| `CB_GOLD_BUY` / `ETF_FLOW` | `shared.utils.features.cb_gold_buy` / `etf_flow` |
+| `DIVIDEND_YIELD` | 仍在 `pipeline._dividend_yield`（吃装配点塞的 `series`） |
+| `_required_tables()` | `REQUIRED_TABLES = tables_of(Panel.CAUSUAL_*)`（不抄一份） |
+| `SOCIAL_FINANCING` 桩列 | 暂留 `pipeline.STUB_COLS`（下次提交随改名删掉） |
+
+**验证（逐位比对，parquet 基线）**：
+
+| 资产 | 面板 | 结果 |
+|---|---|---|
+| ashare | raw (3503, 38) / prep (3503, 59) | **列集合与数值全部相同，0 格差异** |
+| gold | raw (4589, 20) / prep (4589, 29) | 只有两条流量列变化，见下 |
+
+## ⚠️ 行为变化：黄金两条流量列的日期口径（前视修复）
+
+旧实现把「季末/月末的持仓变化」算在**数据所属日**；但央行购金要到 **45 天**后、
+ETF 持仓要到 **40 天**后才公布——那等于提前一个半月就用了数据（前视）。
+现在按 `metadata.lag_days` 落到**发布可见日**。
+
+| 列 | 值序列 | 日期口径 |
+|---|---|---|
+| `CB_GOLD_BUY` | 42 → 41 笔，新 = 旧[:-1]（末笔 2026-09-30+45 天晚于面板末日 11-10，尚未可见） | 41/41 == 观测日 + 45 天 → 之后第一个交易日 |
+| `ETF_FLOW` | 226 → 226 笔，值逐位相同（首笔基期观测早于面板起点，差分算不出） | 226/226 通过（40 天） |
+
+**季度聚合随之变化**（不是回归，是修前视的必然结果）：
+
+| 列 | 季度格 | 变化的季度 | 例 |
+|---|---|---|---|
+| `CB_GOLD_BUY` | 42 | **32 个（76%）** | `2026-03-31`：旧 2.32 → 新 120.26 |
+| `ETF_FLOW` | 76 | **76 个（100%）** | `2026-09-30`：旧 211.17 → 新 −69.05 |
+
+黄金卡片的供需段（`pair_view` 的季度位置/分位）会跟着变。**这是有意的**：
+旧数字是拿"还没公布的数据"算出来的。
+
+---
+
 # v5.44（2026-11-15）：信号层清空桩列（宁缺毋滥）
 
 用户的原话：「既然是信号层，相关的没用的都去掉，宁缺毋滥，信号层以后再完善，

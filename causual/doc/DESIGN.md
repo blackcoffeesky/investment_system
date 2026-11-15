@@ -41,10 +41,13 @@ pipeline.run(asset, series, meta, state=state)
 
 ```
 datahub.sqlite
-     │  db.read()
+     │
      ▼
-causual_assets/{ashare,gold}/panel.py     ← 唯一知道"表名 ↔ 列名"的地方
-     │  panel.panel()  → 日频宽表（大写列名）
+shared/adapter/get_data(Panel.CAUSUAL_{ASHARE,GOLD})   ← 唯一知道"表名 ↔ 语义列名"的地方
+     │  返回语义列名的日频宽表（open / close / vix / cb_holdings …）
+     ▼
+causual_assets/{ashare,gold}/pipeline.py::load_raw()   ← 本模块唯一装配点
+     │  基础列 + 派生列（features.py 纯函数）+ 股息率（装配点塞的 series）
      ▼
 causual_assets/{ashare,gold}/pipeline.py
      │  prepare()      → 特征 + 供需层
@@ -54,6 +57,7 @@ causual_assets/{ashare,gold}/pipeline.py
 causual_core/
      ├─ regime_infer.py   外推最新标签
      ├─ signal_layer.py         逐边算 z、β、贡献 → α
+```
      ├─ macro_layer.py      供需层：位置 × 边际
      └─ narrative.py      渲染卡片
      ▼
@@ -90,12 +94,12 @@ causual/output/{asset}/cards/
 
 | 文件 | 职责 |
 |---|---|
-| `common.py` | 面板组装公用件：列名映射、按 `lag_days` 推后、日频化 |
-| `ashare/panel.py` | A 股字段映射 + 派生列（ETF 分流/分歧度/国家队）；ETF 代码按**裸 6 位**归一（两侧同口径，数据层换前缀不影响匹配） |
-| `ashare/pipeline.py` | `prepare()` 算特征、供需层、分红率 |
-| `ashare/config.py` | 10 条边的定义（机制、方向、估计器、是否进 α） |
-| `ashare/label.py` | 状态标签命名与极值状态 |
-| `gold/*` | 同结构，黄金侧 |
+| `ashare/pipeline.py` | **唯一装配点**：`load_raw()` 从耦合层拿基础列 + 拼派生列；`_derived(df, base)` 是四列 ETF 派生量的唯一接缝（测试打桩它）；`prepare()` 算特征、供需层 |
+| `ashare/config.py` | 边的定义（机制、方向、估计器、是否进 α）+ `NOT_CONNECTED`（已知没数据的列） |
+| `gold/*` | 同结构；`_derived` 装配央行购金 / ETF 流量的两条流量列 |
+
+> `panel.py` 已于 2026-11-15 删除：字段映射搬进各资产的 `pipeline.BASE_COLS`，
+> ETF 代码归一与分组在 `shared.adapter`，派生列算法在 `shared.utils.features`。
 
 ### 4.3 产物目录
 
@@ -146,7 +150,7 @@ causual/output/{asset}/cards/*.md  卡片
 ```
 python -m causual.causual_core.daily --asset ashare
   │
-  ├─ pipeline.load_raw()        → panel.panel()        # 从 datahub 拼日频宽表
+  ├─ pipeline.load_raw()        → get_data() + features   # 耦合层基础列 + 派生列
   ├─ pipeline.prepare()         → 特征 + 供需层
   ├─ pipeline.load_spec()       → 状态模型参数
   ├─ regime_infer.extend()      → 最新标签（含外推）
@@ -183,7 +187,7 @@ python -m datahub.fin.check
 | 想加什么 | 改哪里 |
 |---|---|
 | 新边 | `{asset}/config.py` 的 `EDGES` 加一条 `Edge(...)` |
-| 新节点 | `nodes.py` 定义 + `panel.py` 映射 + `config.py` 引用 |
+| 新节点 | `nodes.py` 定义 + `pipeline.BASE_COLS` 映射 + `config.py` 引用 |
 | 新资产 | 复制 `causual_assets/<name>/`，实现 `panel / pipeline / config / label` |
 | 新卡片小节 | `narrative.build_card` 里加一节；注意层号自动重排 |
 
@@ -197,7 +201,7 @@ python -m datahub.fin.check
 | `pipeline.prepare()` 既算特征又算供需层 | 职责混在一起 | 拆 `features.py` / `supply.py` |
 | 状态外推用"上次模型 + 新数据" | 模型老了会失真，卡片有"龄期"提示但不会自动重训 | 加龄期阈值告警 |
 | `CAUSUAL_DATA_SOURCE=csv` 已废弃但代码里还有残留判断 | 迷惑 | 清掉 |
-| `EQUITY_SUPPLY` 的列 2026-11-15 才接上真数据（`equity_fin_monthly`），但**边快照里还是 `n=0` 的旧模型** | 卡片上这条边一直显示"未估计"，分不清是"没数据"还是"没重估" | adapter 定稿、`panel.py` 删完之后统一重估 edges（本轮明确不做） |
+| `EQUITY_SUPPLY` 的列 2026-11-15 才接上真数据（`equity_fin_monthly`），但**边快照里还是 `n=0` 的旧模型** | 卡片上这条边一直显示"未估计"，分不清是"没数据"还是"没重估" | adapter 定稿后统一重估 edges（本轮明确不做） |
 
 ### 8.1 识别口径的坑（都是静默的）
 
@@ -205,7 +209,7 @@ python -m datahub.fin.check
 
 | 防线 | 位置 |
 |---|---|
-| 代码归一 `bare_code()`：列名与 `GROUPS` 两侧同口径 | `ashare/panel.py` |
+| 代码归一 `bare_code()`：全局只有一份 | `shared/adapter` |
 | 计数盘点：`REQUIRED_TABLES` 有数据 + 派生列新鲜 + 每条边的列都在面板里 | `tests/test_causual_panel_derived.py` |
 
 **监控清单也会静默失效**：`freshness.WATCH*` 里的表名一旦与数据层不一致，
@@ -236,7 +240,7 @@ causual 不直接对外提供服务。service 通过三样东西使用它：
 
 | 接口 | 位置 | 契约 | 谁调用 |
 |---|---|---|---|
-| `panel(ds=None)` | `causual_assets/{asset}/panel.py` | 传 `DataService`，返回日频宽表 | `pipeline` |
+| `load_raw(series=None)` | `causual_assets/{asset}/pipeline.py` | 从耦合层拼日频宽表；`_derived` 是派生列的唯一接缝（测试打桩它） | `pipeline` / 测试 |
 | `pipeline.run(asset, series, meta, asof, quiet)` | `causual_core/pipeline.py` | 出卡；**只吃数据，不取数** | `causual.port.CausalPort` |
 | `required_tables(asset)` | `causual/port.py` | 该资产要哪些表（纯声明，调用方负责读） | CLI / service 装配点 |
 | `derived_series(asset, data)` | `causual/port.py` | 数据层**现算的派生量**（股息率）→ `{"表名:列名": Series}`，直接 `series.update(...)` | CLI / service 装配点（**唯一入口**，两边别再各拼一份） |

@@ -1,30 +1,52 @@
-"""黄金插件：把 状态层 + causual_core 组装起来。"""
+"""黄金插件：把 状态层 + causual_core 组装起来。
+
+面板：基础列来自耦合层 `shared.adapter.get_data`，流量列（央行购金 / ETF 持仓变化）
+来自 `shared.utils.features`（纯函数）。**本文件是唯一装配点**（`load_raw`）。
+"""
 
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from causual.causual_core import snapshot
+from shared.adapter import Panel, get_data, tables_of
+from shared.utils import features
 from shared.utils.calendar import merge_shared_nodes
+from causual.causual_core import snapshot
 from causual.causual_core.estimators import EdgeModel, fit_all
 from causual.web.render import build_card, build_console
 from causual.causual_core.signal_layer import build_bundle
 from causual.causual_assets.gold import config as C
 
-def _required_tables() -> tuple[str, ...]:
-    """面板用到的表清单——从映射本身推导，避免手写漏表。"""
-    from causual.causual_assets.gold import panel as _p
+# 面板底层读哪些表 = 耦合层的声明（**不抄一份**）
+REQUIRED_TABLES = tables_of(Panel.CAUSUAL_GOLD)
 
-    specs = {**_p.SHARED, **_p.GOLD}.values()
-    tables = {x[0] if isinstance(x, tuple) else x for x in specs}
-    return tuple(sorted(tables | set(getattr(C, "EXTRA_TABLES", ()))))
-
-
-REQUIRED_TABLES = _required_tables()
+# 面板列 ← 耦合层语义列。键是历史大写名（本轮先保持输出不变，下一次提交才统一改名）。
+BASE_COLS: dict[str, str] = {
+    "OPEN": "open",
+    "HIGH": "high",
+    "LOW": "low",
+    "CLOSE": "close",
+    "GOLD_CNY": "close",
+    "VOLUME": "volume",
+    "XAU_USD": "xau_usd",
+    "CB_HOLDINGS": "cb_holdings",
+    "ETF_HOLDINGS": "gold_etf_holdings",
+    "OPEN_INTEREST": "gold_open_interest",
+    "COT_NET_LONG": "gold_cot_net_long",
+    "CPI_SURPRISE": "gold_cpi_surprise",
+    # 共享宏观
+    "VIX": "vix",
+    "USDCNY": "usdcny",
+    "USD_INDEX": "usd_index",
+    "FED_RATE": "fed_rate",
+    "REAL_YIELD_10Y": "real_yield_10y",
+    "GEOPOLITIC_RISK": "geopolitic_risk",
+}
 
 ROOT = Path(__file__).resolve().parents[3]
 DATA = ROOT / "causual" / "data"   # 状态模型产物由状态层写，这里只读
@@ -48,6 +70,42 @@ NOT_CONNECTED = C.NOT_CONNECTED
 SIGNAL_LAG = 1
 
 
+def _warn(msg: str) -> None:
+    print(f"[面板] {msg}", file=sys.stderr)
+
+
+def _derived(df: pd.DataFrame, base: pd.DataFrame) -> dict[str, pd.Series]:
+    """黄金的两条流量列——**唯一的装配点**。
+
+    存量（`cb_holdings` / `gold_etf_holdings`，耦合层按 `raw` 策略给：只在
+    **发布可见日**有值）→ 流量：相邻观测差分。算法在
+    `shared.utils.features`（`cb_gold_buy` / `etf_flow`），这里只负责拼。
+
+    ⚠️ 落位日是**可见日**（央行购金 +45 天、ETF 持仓 +40 天），不是数据所属日
+    ——旧实现用未推后的序列，等于提前 40~45 天就用到了数据（前视）。
+    见 CHANGES v5.45 与 DESIGN 的变更记录。
+    """
+    getattr_ok = ("cb_holdings", "gold_etf_holdings")
+    if not all(c in base.columns for c in getattr_ok):
+        _warn(f"耦合层没给 {getattr_ok}，CB_GOLD_BUY / ETF_FLOW 整列 NaN")
+        return {}
+    out = {
+        "CB_GOLD_BUY": features.cb_gold_buy(base),
+        "ETF_FLOW": features.etf_flow(base),
+    }
+    return {k: v for k, v in out.items() if v.notna().any()}
+
+
+def load_raw(series=None, meta=None) -> pd.DataFrame:
+    """面板 = 耦合层基础列 + 两条流量列。`meta` / `series` 都不再需要。"""
+    base = get_data(Panel.CAUSUAL_GOLD)
+    df = pd.DataFrame({old: base[sem] for old, sem in BASE_COLS.items()},
+                      index=base.index)
+    for col, s in _derived(df, base).items():
+        df[col] = s
+    return df
+
+
 
 def prepare(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -65,13 +123,6 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
     oi = df["OPEN_INTEREST"].replace(0, np.nan)
     df["OI_CHG_PCT"] = (oi.pct_change() * 100.0).clip(-50, 50)
     return df
-
-
-def load_raw(series, meta=None) -> pd.DataFrame:
-    """面板 = 由调用方传入的原始表拼出来的日频宽表（见 `panel.py`）。"""
-    from causual.causual_assets.gold import panel as _panel
-
-    return _panel.panel(series, meta)
 
 
 # ------------------------------------------------------------------ 状态

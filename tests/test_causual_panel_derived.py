@@ -187,8 +187,12 @@ def test_ashare_derived_columns_present_and_fresh():
 
 
 def test_bare_code_normalizes_etf_codes():
-    """数据层的代码前缀怎么变，`GROUPS` 都要能对上。"""
-    from causual.causual_assets.ashare.panel import bare_code
+    """数据层的代码前缀怎么变，ETF 分组都要能对上。
+
+    归一逻辑**只有一份**，在 `shared.adapter.bare_code`（2026-11-15 从
+    `causual_assets/ashare/panel.py` 上移；那份文件已删）。
+    """
+    from shared.adapter import bare_code
 
     for raw, want in (("sh510300", "510300"), ("sz159919", "159919"),
                       ("c510300", "510300"), ("510300", "510300"),
@@ -214,8 +218,11 @@ def test_guard_turns_red_when_derived_vanishes():
 
     没有这一条，上面几条测试只证明「今天数据是好的」——万一判定逻辑本身
     写宽了（例如只查 `col in panel` 而面板里其实全是 NaN），它会永远绿。
+
+    打桩的是 `pipeline._derived`：`panel.py` 删除后它是四列派生量的**唯一装配点**
+    （见 `ashare/pipeline.py` 那个函数的 docstring）。
     """
-    from causual.causual_assets.ashare import panel as panel_mod
+    from causual.causual_assets.ashare import pipeline as pipeline_mod
 
     ctx = _context()
     if ctx["close"].empty:
@@ -224,12 +231,12 @@ def test_guard_turns_red_when_derived_vanishes():
     # 打桩前后各体检一次：先确认现在是干净的，否则反向验证没有意义
     assert not _bad_derived(ctx["panel"], ctx["close"]), "打桩前就已经是脏的"
 
-    original = panel_mod._derived
+    original = pipeline_mod._derived
     try:
-        panel_mod._derived = lambda idx, series: {}       # type: ignore[assignment]
-        broken = panel_mod.panel(ctx["series"], ctx["meta"])
+        pipeline_mod._derived = lambda df, base: {}       # type: ignore[assignment]
+        broken = pipeline_mod.load_raw(ctx["series"], ctx["meta"])
     finally:
-        panel_mod._derived = original                    # type: ignore[assignment]
+        pipeline_mod._derived = original                  # type: ignore[assignment]
 
     # 派生列确实整体没了（= 当年那个 bug 的现象），而且**不抛异常**
     assert not [c for c in DERIVED_COLS if c in broken.columns], \
