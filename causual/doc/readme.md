@@ -135,8 +135,11 @@ output/{asset}/cards/detail_YYYY-MM-DD.md    # 模型详情（β、CI、纯度�
 data/regime/{asset}/current.json             # 状态模型快照（复现用）
 data/snapshots/{asset}/edges_*.json          # 边估计快照
 saved_models/{asset}/hmm.pkl                 # 全样本模型
-saved_models/{asset}/hmm_last.pkl            # 最后窗口模型（在线后验/标签外推）
 ```
+
+> `saved_models/{asset}/hmm_last.pkl`（最后窗口模型）是**遗留产物**：
+> 2026-11 起外推走 `state_layer` 的模型链，没人再写它，`/fit` 页也不再看它。
+> 删掉不影响出卡。
 
 **手工维护的数据**（无法自动抓取，需人工更新）：
 

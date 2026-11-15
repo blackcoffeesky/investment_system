@@ -22,7 +22,6 @@ TEMPLATES = Path(__file__).parent / "templates"
 
 ROOT = Path(__file__).resolve().parents[2]
 DATA = ROOT / "causual" / "data"
-SAVED = ROOT / "state_layer" / "engine" / "saved_models"
 FIT_LOG = ROOT / "logs" / "fit.log"
 
 FIT_LOCK = threading.Lock()
@@ -123,7 +122,9 @@ def _asset_state(asset: str, meta) -> dict:
         out["edges_age"] = _age_days(j.get("fit_date"))
         out["edges_sig"] = j.get("label_signature")
 
-    out["hmm_pkl"] = (SAVED / asset / "hmm_last.pkl").exists()
+    # 不再显示 "HMM 模型文件在不在"：`hmm_last.pkl` 已降级成遗留产物
+    # （重拟合后是旧货、也没人再写它），那个指示灯会永远说"在"。
+    # 模型是否可用看上面的「状态模型拟合」日期 + 龄期。
 
     # 数据覆盖：所有表 end_date 的 min / max（service 提供的端口）
     try:

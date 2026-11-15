@@ -24,10 +24,6 @@
     {{ a.edges_fit or '—' }}
     {% if a.edges_age is not none %}<span class="muted">（{{ a.edges_age }} 天前）</span>{% endif %}
   </td></tr>
-  <tr><td>HMM 模型文件</td><td>
-    {% if a.hmm_pkl %}<span class="pill done">在</span>
-    {% else %}<span class="pill error">缺失</span>{% endif %}
-  </td></tr>
   <tr><td>签名</td><td class="muted">{{ a.signature or '—' }}</td></tr>
   <tr><td>数据覆盖</td><td class="muted">{{ a.data_min_end or '—' }} ~ {{ a.data_max_end or '—' }}</td></tr>
 </table>

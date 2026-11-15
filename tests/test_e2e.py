@@ -182,6 +182,10 @@ def test_fit_page_renders():
     r = TestClient(app).get("/fit")
     assert r.status_code == 200
     assert "状态模型拟合" in r.text and "重估边" in r.text
+    # `hmm_last.pkl` 已降级成遗留产物（重拟合后是旧货、也没人再写它），
+    # 那个"在/缺失"指示灯会永远说"在"——已删，别让它回流。
+    assert "HMM 模型文件" not in r.text
+    assert "hmm_last" not in r.text
 
 
 def test_modules_have_web_package():
