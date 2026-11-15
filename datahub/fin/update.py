@@ -28,6 +28,7 @@ from datahub.core.schema import DATA_DDL, migrate_data_tables, migrate_metadata
 from datahub.fin.read import (LONG_SCHEMAS, STATIC_SCHEMAS,
                               _long_columns, _static_columns)
 from datahub.fin.sources import SOURCES, Source
+from datahub.fin.sources.ashare import QuotaExhausted
 
 MISSING_DIR = ROOT / "data" / "missing"
 
@@ -368,18 +369,31 @@ def backfill(table: str, *, chunk_calls: int = 10, **kw) -> dict:
         print(f"  落库第 {chunks[0]} 批：累计 {written[0]} 行")
 
     try:
-        rest = src.func(table=table, on_chunk=flush, chunk_calls=chunk_calls,
-                        **src.params, **kw)
-        flush(rest)                      # 收尾：最后不足一批的行
+        try:
+            rest = src.func(table=table, on_chunk=flush, chunk_calls=chunk_calls,
+                            **src.params, **kw)
+            flush(rest)                      # 收尾：最后不足一批的行
+        except QuotaExhausted as exc:
+            # 额度用完是确定性的：不再重试、也不让异常冒出去，
+            # 把已经落库的部分留下，明天续跑（续跑只看"库里缺哪些 code"）。
+            print(f"  {table}：{exc}")
+            print(f"  {table}：今日额度用完，本次已落库 {written[0]} 行；明天续跑")
         if not written[0]:
-            print(f"  {table}：这次没有可抓的（库里已齐或上游无数据）")
+            print(f"  {table}：这次没有可抓的（库里已齐 / 上游无数据 / 额度用完）")
             return {"table": table, "rows": 0, "chunks": 0}
-        _mark_synced(con, table)
         _apply_note(con, src, [table])
-        _ensure_meta(con)
-        refresh_metadata(con)
         return {"table": table, "rows": written[0], "chunks": chunks[0]}
     finally:
+        # 收尾必须无条件做：数据可能已经变了（部分落库后被打断/额度用完），
+        # 而 `metadata.n_rows` 和 `sync_log.last_at` 留在旧值就是"看起来有、其实是旧的"
+        # （2026-11-15：/data 页显示 84 行，实际库里 900 行）。
+        try:
+            _ensure_meta(con)
+            refresh_metadata(con)
+            if written[0]:
+                _mark_synced(con, table)
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [warn] 收尾刷新失败：{type(exc).__name__}: {exc}")
         con.close()
 
 

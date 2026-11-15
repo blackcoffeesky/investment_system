@@ -85,6 +85,35 @@ def api_get(path: str, *, gap: float | None = None, **params) -> dict:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 
+class QuotaExhausted(RuntimeError):
+    """当日 heavy quota 用完。**确定性失败，重试没有意义**，直接停、明天续跑。"""
+
+
+def quota_left(endpoint: str) -> int | None:
+    """该端点的当日剩余额度；端点没有独立额度时返回 None。"""
+    u = api_get("/usage")
+    hq = (u or {}).get("heavy_quotas") or {}
+    entry = hq.get(endpoint)
+    if not entry:
+        return None
+    try:
+        return int(entry.get("left"))
+    except (TypeError, ValueError):
+        return None
+
+
+def is_quota_error(res: dict) -> bool:
+    """响应是不是"额度用完"（区别于"上游临时降级"）。
+
+    额度类：`http=402`，或正文里出现 quota / 额度。
+    限流类（`temporarily_unavailable` + `retry_after_s`）**不算**——那个重试一次有意义。
+    """
+    if res.get("http") == 402:
+        return True
+    text = " ".join(str(res.get(k) or "") for k in ("reason", "error", "raw")).lower()
+    return "quota" in text or "额度" in text
+
+
 def api_rows(res: dict) -> list[dict]:
     """取行数组形态的 data（行数组 / 表列表 / 嵌套 data 都兼容）。"""
     data = res.get("data")
@@ -215,6 +244,17 @@ def ashare_financials(start: str = "", end: str = "", table: str = "",
     if not todo:
         print("  financials：库里已有全部 code 的财报，跳过")
         return pd.DataFrame()
+
+    # 额度先看再决定次数：left=0 是**确定性**失败，一次请求都不该打
+    left = quota_left("finance-batch")
+    if left is not None:
+        if left <= 0:
+            print("  financials：finance-batch 今日额度已用完（left=0），明天续跑")
+            return pd.DataFrame()
+        if left < max_calls:
+            print(f"  financials：今日额度只剩 {left} 次，本轮按 {left} 次跑")
+            max_calls = left
+
     calls = min(max_calls, -(-len(todo) // batch))
     todo = todo[:calls * batch]
     print(f"  financials：{calls} 次批量调用、{len(todo)} 只"
@@ -225,14 +265,23 @@ def ashare_financials(start: str = "", end: str = "", table: str = "",
     for k, i in enumerate(range(0, len(todo), batch), 1):
         chunk = todo[i:i + batch]
         res: dict = {}
-        for attempt in range(3):
+        # 只重试 **1** 次：上游降级是概率性的，重试一次够表达；连试 3 次、每次等 60 秒
+        # 在已经降级的上游面前基本是空转（2026-11-15 实测：一天 100 次调用只写成 204 只）
+        for attempt in range(2):
             res = api_get("/finance-batch", codes=",".join(chunk),
                           periods=periods, gap=gap)
+            # 额度类失败是确定性的：重试没有意义，直接抛出去让 backfill 收尾
+            if is_quota_error(res) or quota_left("finance-batch") == 0:
+                raise QuotaExhausted(
+                    f"finance-batch 额度用完（{res.get('reason') or res.get('error') or res.get('http')}）")
             if res.get("ok") and res.get("reason") != "temporarily_unavailable":
                 break
-            wait = min(int(res.get("retry_after_s") or 60), 60)
-            print(f"    上游降级（{res.get('reason')}），等 {wait}s 重试 {attempt + 1}/3")
-            time.sleep(wait)
+            if attempt == 0:
+                wait = min(int(res.get("retry_after_s") or 60), 60)
+                print(f"    上游降级（{res.get('reason')}），等 {wait}s 重试一次")
+                time.sleep(wait)
+            else:
+                print(f"    上游降级（{res.get('reason')}），本批放弃（下轮续跑）")
         got = {str(e.get("code")): e for e in api_rows(res) if isinstance(e, dict)}
         for code in chunk:
             d = (got.get(code) or {}).get("data") or {}
