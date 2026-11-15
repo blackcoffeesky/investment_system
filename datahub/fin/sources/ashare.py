@@ -287,27 +287,11 @@ def ashare_financials(start: str = "", end: str = "", table: str = "",
             d = (got.get(code) or {}).get("data") or {}
             inner = d.get("data") or {}
             inc, bal = inner.get("income"), inner.get("balance")
-            if not isinstance(inc, list) or not isinstance(bal, list):
+            got_rows = _financial_rows(code, inc, bal)
+            if not got_rows:
                 failed.append(code)          # 降级可能只回一部分表：宁缺勿假
                 continue
-            bal_by_end = {r.get("EndDate"): r for r in bal}
-            for r in inc:
-                end_date = r.get("EndDate")
-                if not end_date:
-                    continue
-                b = bal_by_end.get(end_date, {})
-                net = _num(r.get("NPParentCompanyOwners"))
-                eq = _num(b.get("TotalShareholderEquity"))
-                rows.append({
-                    "code": code,
-                    "date": _iso_date(end_date),
-                    "publ_date": _iso_date(r.get("InfoPublDate")),
-                    "revenue": _num(r.get("OperatingRevenue")),
-                    "net_profit": net,
-                    "equity": eq,
-                    "eps": _num(r.get("EPS")),
-                    "roe": (net / eq) if (net and eq) else None,
-                })
+            rows.extend(got_rows)
         if k % 20 == 0 or k == calls:
             print(f"    ... {min(i + batch, len(todo))}/{len(todo)} 只"
                   f"（失败 {len(failed)}）")
@@ -320,6 +304,133 @@ def ashare_financials(start: str = "", end: str = "", table: str = "",
               f"下次运行会重试；例：{failed[:5]}")
     print(f"  financials：完成 {len(todo)} 只，本次返回剩余 {len(rows)} 行"
           f"（已落库的由 on_chunk 负责）")
+    return pd.DataFrame(rows)
+
+
+def _financial_rows(code: str, inc, bal) -> list[dict]:
+    """把一张财报响应（income 行 + balance 行）整理成 `financials` 的行。
+
+    **缺表即视为失败**：上游降级时会出现 `ok:true` 但只有 balance（或只有 income），
+    这时宁缺勿假——返回空列表，调用方记为失败、不写半条。
+    """
+    if not isinstance(inc, list) or not isinstance(bal, list) or not inc:
+        return []
+    bal_by_end = {r.get("EndDate"): r for r in bal}
+    out: list[dict] = []
+    for r in inc:
+        end_date = r.get("EndDate")
+        if not end_date:
+            continue
+        b = bal_by_end.get(end_date, {})
+        net = _num(r.get("NPParentCompanyOwners"))
+        eq = _num(b.get("TotalShareholderEquity"))
+        out.append({
+            "code": code,
+            "date": _iso_date(end_date),
+            "publ_date": _iso_date(r.get("InfoPublDate")),
+            "revenue": _num(r.get("OperatingRevenue")),
+            "net_profit": net,
+            "equity": eq,
+            "eps": _num(r.get("EPS")),
+            "roe": (net / eq) if (net and eq) else None,
+        })
+    return out
+
+
+def _fmt_eta(minutes: float) -> str:
+    if minutes != minutes or minutes <= 0:      # NaN / 0
+        return "—"
+    h, m = divmod(int(minutes), 60)
+    return f"{h}h{m:02d}m" if h else f"{m}m"
+
+
+def ashare_financials_single(*, table: str = "", periods: int = 4,
+                             max_codes: int = 0, gap: float = 0.3,
+                             backoffs: tuple[int, ...] = (20, 60, 180),
+                             max_consecutive_fail: int = 5,
+                             chunk_codes: int = 50,
+                             on_chunk: Callable[[pd.DataFrame], None] | None = None,
+                             **_) -> pd.DataFrame:
+    """**单只** `/v1/finance` 回填：不消耗 `finance-batch` 的日额度（只有 per_min=300）。
+
+    为什么单开一条路（2026-11-15 实测）：
+    - `finance-batch`：100 次/日，当天 100 次只写成 204 只（**76% 批次降级**）→ 27 天
+    - 单只：停手后秒级恢复，实测 **10~20 只/分** → 5562 只约 5~9 小时（估算，取决于降级频率）
+    - 降级是**累计型**：连打三轮 29 → 18 → 15 只。慢一点撑不住（`gap=2.0` 那组反而 0/10），
+      只能"打到就等"
+
+    退避（对**同一只**）：第 1 次失败等 20s、第 2 次 60s、第 3 次 180s，仍失败就跳过
+    （下轮自然续跑）。**连续 `max_consecutive_fail` 只都失败**就整体停——宁可明天续跑，
+    也别把 key 标记得更重。
+    """
+    todo = [c for c in _all_codes() if c not in _codes_with("financials")]
+    total_gap = len(todo)
+    if not todo:
+        print("  financials：库里已有全部 code 的财报，跳过")
+        return pd.DataFrame()
+    if max_codes:
+        todo = todo[:max_codes]
+    print(f"  financials(单只)：本轮 {len(todo)} 只（总缺口 {total_gap}，"
+          f"退避 {list(backoffs)}s，每 {chunk_codes} 只落库）")
+
+    rows: list[dict] = []
+    failed: list[str] = []
+    ok_n = fail_n = consec = since_flush = 0
+    t0 = time.time()
+    last_reason = ""
+
+    for idx, code in enumerate(todo, 1):
+        got: list[dict] = []
+        for attempt in range(len(backoffs) + 1):
+            if attempt:
+                wait = backoffs[attempt - 1]
+                print(f"    {code} 降级（{last_reason}），等 {wait}s "
+                      f"重试 {attempt}/{len(backoffs)}")
+                time.sleep(wait)
+            res = api_get("/finance", code=code, num=periods, gap=gap)
+            if is_quota_error(res) or quota_left("finance") == 0:
+                raise QuotaExhausted(
+                    f"/finance 额度用完（{res.get('reason') or res.get('error') or res.get('http')}）")
+            data = res.get("data")
+            inc = data[0] if isinstance(data, list) and len(data) > 0 else None
+            bal = data[1] if isinstance(data, list) and len(data) > 1 else None
+            got = _financial_rows(code, inc, bal)
+            if res.get("ok") and got:
+                break
+            last_reason = str(res.get("reason") or res.get("error") or "空数据")
+
+        if got:
+            ok_n += 1
+            consec = 0
+            rows.extend(got)
+            since_flush += 1
+        else:
+            fail_n += 1
+            consec += 1
+            failed.append(code)
+            print(f"    {code} 放弃（{last_reason}）")
+            if consec >= max_consecutive_fail:
+                print(f"  financials(单只)：连续 {consec} 只失败，上游持续降级——"
+                      f"本次停止（已落库的保留），稍后/明天续跑")
+                break
+
+        if on_chunk is not None and since_flush >= chunk_codes:
+            on_chunk(pd.DataFrame(rows))
+            rows = []
+            since_flush = 0
+
+        if idx % 50 == 0:
+            el = time.time() - t0
+            rate = ok_n / (el / 60) if el > 0 else 0.0
+            eta = (len(todo) - idx) / rate if rate > 0 else float("nan")
+            print(f"[financials] 已处理 {idx}/{len(todo)} | 成功 {ok_n} | 失败 {fail_n} | "
+                  f"速率 {rate:.0f}/分 | 预计还需 {_fmt_eta(eta)}")
+
+    if failed:
+        print(f"  financials(单只)：{len(failed)} 只失败（降级/无数据），下轮续跑；"
+              f"例：{failed[:5]}")
+    print(f"  financials(单只)：完成 {ok_n + fail_n} 只（成功 {ok_n}），"
+          f"本次返回剩余 {len(rows)} 行（已落库的由 on_chunk 负责）")
     return pd.DataFrame(rows)
 
 
