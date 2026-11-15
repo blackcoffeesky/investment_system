@@ -25,28 +25,16 @@ from causual.causual_assets.gold import config as C
 # 面板底层读哪些表 = 耦合层的声明（**不抄一份**）
 REQUIRED_TABLES = tables_of(Panel.CAUSUAL_GOLD)
 
-# 面板列 ← 耦合层语义列。键是历史大写名（本轮先保持输出不变，下一次提交才统一改名）。
-BASE_COLS: dict[str, str] = {
-    "OPEN": "open",
-    "HIGH": "high",
-    "LOW": "low",
-    "CLOSE": "close",
-    "GOLD_CNY": "close",
-    "VOLUME": "volume",
-    "XAU_USD": "xau_usd",
-    "CB_HOLDINGS": "cb_holdings",
-    "ETF_HOLDINGS": "gold_etf_holdings",
-    "OPEN_INTEREST": "gold_open_interest",
-    "COT_NET_LONG": "gold_cot_net_long",
-    "CPI_SURPRISE": "gold_cpi_surprise",
+# 面板列 = 耦合层的**语义列名**（2026-11-15 起；`CLOSE`/`VIX` 那套大写内部名退役）。
+PANEL_COLS: tuple[str, ...] = (
+    # 价格 / 量
+    "open", "high", "low", "close", "volume",
+    # 黄金供需（`cb_holdings` / `gold_etf_holdings` 按 raw 策略给，`_derived` 再差分）
+    "xau_usd", "cb_holdings", "gold_etf_holdings",
+    "gold_open_interest", "gold_cot_net_long", "gold_cpi_surprise",
     # 共享宏观
-    "VIX": "vix",
-    "USDCNY": "usdcny",
-    "USD_INDEX": "usd_index",
-    "FED_RATE": "fed_rate",
-    "REAL_YIELD_10Y": "real_yield_10y",
-    "GEOPOLITIC_RISK": "geopolitic_risk",
-}
+    "vix", "usdcny", "usd_index", "fed_rate", "real_yield_10y", "geopolitic_risk",
+)
 
 ROOT = Path(__file__).resolve().parents[3]
 DATA = ROOT / "causual" / "data"   # 状态模型产物由状态层写，这里只读
@@ -57,7 +45,7 @@ TITLE = C.TITLE
 TARGET = C.TARGET
 LABEL_COL = "regime_label"
 LONG_REGIME_COL = "long_regime"
-TARGET_COLS = {"close": "CLOSE", "ret": "GOLD_RET", "open": "OPEN"}
+TARGET_COLS = {"close": "close", "ret": "GOLD_RET", "open": "open"}
 # 状态标签词表由调用方注入（set_state_vocab），因果层不 import 状态层
 LABELS: tuple[str, ...] = ()
 LABEL_NAME: dict[str, str] = {}
@@ -99,8 +87,7 @@ def _derived(df: pd.DataFrame, base: pd.DataFrame) -> dict[str, pd.Series]:
 def load_raw(series=None, meta=None) -> pd.DataFrame:
     """面板 = 耦合层基础列 + 两条流量列。`meta` / `series` 都不再需要。"""
     base = get_data(Panel.CAUSUAL_GOLD)
-    df = pd.DataFrame({old: base[sem] for old, sem in BASE_COLS.items()},
-                      index=base.index)
+    df = base[list(PANEL_COLS)].copy()
     for col, s in _derived(df, base).items():
         df[col] = s
     return df
@@ -112,15 +99,15 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
     df.index = pd.DatetimeIndex(df.index)
     df = df[~df.index.duplicated(keep="last")].sort_index()
 
-    df["GOLD_RET"] = df["CLOSE"].pct_change() * 100.0
-    df["XAU_RET"] = df["XAU_USD"].pct_change() * 100.0
-    df["USDCNY_RET"] = df["USDCNY"].pct_change() * 100.0
-    df["RY_CHG_BP"] = df["REAL_YIELD_10Y"].diff() * 100.0
-    df["VIX_CHG"] = df["VIX"].diff()
-    df["USDX_CHG"] = df["USD_INDEX"].diff()
-    df["GEO_CHG"] = df["GEOPOLITIC_RISK"].diff()
-    df["FED_CHG_BP"] = df["FED_RATE"].diff() * 100.0
-    oi = df["OPEN_INTEREST"].replace(0, np.nan)
+    df["GOLD_RET"] = df["close"].pct_change() * 100.0
+    df["XAU_RET"] = df["xau_usd"].pct_change() * 100.0
+    df["USDCNY_RET"] = df["usdcny"].pct_change() * 100.0
+    df["RY_CHG_BP"] = df["real_yield_10y"].diff() * 100.0
+    df["VIX_CHG"] = df["vix"].diff()
+    df["USDX_CHG"] = df["usd_index"].diff()
+    df["GEO_CHG"] = df["geopolitic_risk"].diff()
+    df["FED_CHG_BP"] = df["fed_rate"].diff() * 100.0
+    oi = df["gold_open_interest"].replace(0, np.nan)
     df["OI_CHG_PCT"] = (oi.pct_change() * 100.0).clip(-50, 50)
     return df
 
@@ -179,7 +166,7 @@ def fit_edges(df: pd.DataFrame, spec: dict, seed: int = 42, verbose: bool = True
 
     models: dict[tuple[str, str], EdgeModel] = fit_all(
         df, EDGES, labels=list(LABELS), treatment_col=TREATMENT_COL,
-        outcome_col={C.TARGET: "CLOSE", "GOLD_RET": "GOLD_RET"},
+        outcome_col={C.TARGET: "close", "GOLD_RET": "GOLD_RET"},
         target=C.TARGET, label_col=LABEL_COL, return_col="GOLD_RET",
         train=train, seed=seed,
     )
@@ -221,8 +208,8 @@ def supply_items(df: pd.DataFrame) -> list[dict]:
 
     return [
         pair_view(df, group="央行需求", label="央行总持仓", direction="+",
-                  freq="QE", pos_col="CB_HOLDINGS", pos_basis="level",
-                  mom_col="CB_HOLDINGS", mom_basis="yoy", roll_n=4,
+                  freq="QE", pos_col="cb_holdings", pos_basis="level",
+                  mom_col="cb_holdings", mom_basis="yoy", roll_n=4,
                   note="87 国篮子，季频"),
         pair_view(df, group="央行需求", label="央行净购金（持仓差分）", direction="+",
                   freq="QE", pos_col="CB_GOLD_BUY", pos_basis="roll3",

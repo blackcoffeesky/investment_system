@@ -2,6 +2,71 @@
 
 ---
 
+# v5.46（2026-11-15）：面板列名统一为耦合层语义名（两套列名退场）
+
+## 一、改了什么
+
+`CLOSE` / `VIX` / `M1_LEVEL` 那套大写内部名退役，面板列直接用耦合层的语义名
+（`close` / `vix` / `m1_level`）。**只保留一套**——留两套就是下一次静默事故。
+
+| 位置 | 改了几处 | 说明 |
+|---|---|---|
+| `config.py`（两个资产） | **42 个列名引用**（ashare 14 / gold 28） | `TREATMENT_COL` / `SOURCE_COL` 的值；`confounders` 从 `N.XXX` 改成列名字符串 |
+| `pipeline.py`（两个资产） | **59 处字符串替换** = 29 处 `df["X"]` 读 + 30 处供需层 `pos_col`/`mom_col` | `prepare()` / `supply_items()` |
+| `TARGET_COLS` / `outcome_col` | 4 处 | 改成指向语义名 |
+
+`confounders` 现在写**列名**（`("fed_rate", "vix")`），不再是节点名：
+`estimators` 里它是 `df[c]` 直接取列，而 `SOURCE_COL` 的**键**才是节点名。
+同一个常量两种身份——这个歧义本身就该消掉。
+
+## 二、三对旧列被合并（列数变少，不是丢数据）
+
+| 资产 | 合并对 | 列数 |
+|---|---|---|
+| ashare | `CLOSE` + `CSI_ALL` → `close`；`EQUITY_SUPPLY` + `EQUITY_FIN_MONTHLY` → `equity_fin_monthly` | raw 38 → **35**、prep 59 → **56** |
+| gold | `CLOSE` + `GOLD_CNY` → `close` | raw 20 → **19**、prep 29 → **28** |
+
+合并前用 `Series.equals` 验过三对**逐位同值**，所以是去冗余副本。
+`SOCIAL_FINANCING` 桩列随之删掉（已无读者）。
+
+## 三、逐列比对（parquet 基线）
+
+| 资产 | 面板 | 结果 |
+|---|---|---|
+| ashare | raw 35 列 / prep 56 列 | **全部与旧列逐位相同，0 格差异** |
+| gold | raw 19 列 / prep 28 列 | 同上；仅 `CB_GOLD_BUY`/`ETF_FLOW` 与 v5.45 之前不同（那是 v5.45 的前视修复，不是这次） |
+
+签名未变（`8f57add043eb` / `ea7c12316ab3`）——签名只哈希标签值，所以它同时证明了
+"列名换了、值没动"。
+
+## 四、逐位比对抓到一个静默降级（机械替换的漏网）
+
+```python
+sup = df["equity_fin_monthly"] if "EQUITY_SUPPLY" in df.columns else pd.Series(nan)
+```
+
+机械替换只改了 `df["EQUITY_SUPPLY"]`，**没改条件里的字符串** → 条件永远假 →
+`SUPPLY_Z` 整列 NaN。它不会报错，卡片上那条边只是"未估计"。
+
+是**逐位比对**抓到的（1582 格全变 NaN），不是测试。已改成直接取列
+（`PANEL_COLS` 保证存在；缺列会在 `base[list(PANEL_COLS)]` 处 KeyError）。
+
+## 五、新增三条测试
+
+| 测试 | 抓什么 |
+|---|---|
+| `test_edge_columns_come_from_adapter_or_pipeline` | 边的每列必须**有出处**（耦合层语义列 / 本管线产出），且不是退役名 |
+| `test_no_legacy_uppercase_columns` | 退役的大写名不许回流（`LEGACY_COLS` 只增不改） |
+| `test_ashare_panel_column_count` | 列数钉死 35/56、19/28；多了少了都说明漏搬或重复加 |
+
+## 六、卡片可见变化
+
+详情卡「数据新鲜度」表的行名从 `FED_RATE` 变成 `fed_rate`（那列用的是列名）。
+按"宁可朴素、不过誉"的口径接受：`vix_chg` 不加中文名——`Node.desc` 描述的是
+**水平**（"VIX 波动率指数"），写在一列**变化**上就是文案说数据不支持的事。
+
+---
+
 # v5.45（2026-11-15）：删掉两个 `panel.py`，装配点收进 `pipeline.load_raw`
 
 `shared/adapter` 定稿后，`causual_assets/{ashare,gold}/panel.py` 的活全被搬走了：

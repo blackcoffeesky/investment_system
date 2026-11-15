@@ -175,8 +175,11 @@ regime（状态） / signal（边） / narrative（卡片）
 `load_raw()` 返回日频宽表：
 
 - index = 该资产主价格表的交易日（A 股 `csi_all`，黄金 `gold_cny`）
-- 基础列来自耦合层，映射写在各自 `pipeline.BASE_COLS`（本轮仍输出历史大写名
-  `CLOSE` / `VIX` / `M1_LEVEL`…，下一次提交统一改成语义名）
+- 基础列 = 耦合层的**语义列名**（`open` / `close` / `vix` / `cb_holdings` …），
+  `prepare()` 与 `config.py` 只认这一套；退役的大写名（`CLOSE`/`VIX`…）由
+  `tests/test_causual_dead_columns.py` 的 `LEGACY_COLS` 拦住，不许回流
+- 派生列（`prepare()` 产出、ETF 四列、股量两条流量列）仍用大写名，
+  与"来自数据层的列"区分开
 - 月频/季频变量按 `metadata.lag_days` **推后**再对齐；是 ffill 到每交易日
   还是只落在观测日，由耦合层**逐列声明**（`daily` / `raw` 两种策略）
 
@@ -540,4 +543,4 @@ python -m causual.causual_core.cli audit  --asset ashare   # 方向一致性审�
 
 ## 12. 版本
 
-当前 v5.44（2026-11-15）。逐版变更见 [`CHANGES.md`](CHANGES.md)。
+当前 v5.46（2026-11-15）。逐版变更见 [`CHANGES.md`](CHANGES.md)。

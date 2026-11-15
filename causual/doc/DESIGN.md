@@ -209,8 +209,8 @@ python -m datahub.fin.check
 
 | 防线 | 位置 |
 |---|---|
-| 代码归一 `bare_code()`：全局只有一份 | `shared/adapter` |
-| 计数盘点：`REQUIRED_TABLES` 有数据 + 派生列新鲜 + 每条边的列都在面板里 | `tests/test_causual_panel_derived.py` |
+| **只有一套列名**：面板列 = 耦合层语义名（`close`/`vix`），退役的大写名由 `LEGACY_COLS` 拦住 | `pipeline.PANEL_COLS` + `tests/test_causual_dead_columns.py` |
+| 计数盘点：`REQUIRED_TABLES` 有数据 + 派生列新鲜 + 每条边的列都在面板里 + 列数钉死 | `tests/test_causual_panel_derived.py` / `test_causual_dead_columns.py` |
 
 **监控清单也会静默失效**：`freshness.WATCH*` 里的表名一旦与数据层不一致，
 `check()` 就 `continue`，于是"没有过期表"这个结论永远成立。所以：

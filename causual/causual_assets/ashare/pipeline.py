@@ -26,45 +26,21 @@ from causual.causual_assets.ashare import config as C
 # 面板底层读哪些表 = 耦合层的声明（**不抄一份**，抄了就是两份真相）
 REQUIRED_TABLES = tables_of(Panel.CAUSUAL_ASHARE)
 
-# 面板列 ← 耦合层语义列。键是历史大写名（本轮先保持输出不变，下一次提交才统一改名）。
-BASE_COLS: dict[str, str] = {
-    "OPEN": "open",
-    "HIGH": "high",
-    "LOW": "low",
-    "CLOSE": "close",
-    "VOLUME": "volume",
-    "CSI_ALL": "close",
-    "CSI300": "csi300",
-    "CSI1000": "csi1000",
-    "SHIBOR3M": "shibor3m",
-    "MARGIN_BALANCE": "margin_balance",
-    "PMI": "pmi",
-    "INSIDER_NET": "insider_net",
-    "RETAIL_SALES": "retail_sales",
-    "RETAIL_SALES_MOM": "retail_sales_mom",
-    "CPI_YOY": "cpi_yoy",
-    "PPI_YOY": "ppi_yoy",
-    "INDUSTRIAL_YOY": "industrial_yoy",
-    "EXPORTS_YOY": "exports_yoy",
-    "M1_YOY": "m1_yoy",
-    "M2_YOY": "m2_yoy",
-    "M1_LEVEL": "m1_level",
-    "M2_LEVEL": "m2_level",
-    "TOTAL_SHARES": "total_shares",
-    "TOTAL_MKTCAP": "total_mktcap",
-    "EQUITY_FIN_MONTHLY": "equity_fin_monthly",
-    "EQUITY_SUPPLY": "equity_fin_monthly",
+# 面板列 = 耦合层的**语义列名**（2026-11-15 起；`CLOSE`/`VIX` 那套大写内部名退役）。
+# 不另写映射表：`base[PANEL_COLS]` 少一列就 KeyError，比"悄悄缺列"好。
+PANEL_COLS: tuple[str, ...] = (
+    # 价格 / 量
+    "open", "high", "low", "close", "volume",
+    # 指数 / 资金
+    "csi300", "csi1000", "shibor3m", "margin_balance",
+    # A 股宏观 / 供给
+    "pmi", "insider_net", "retail_sales", "retail_sales_mom",
+    "cpi_yoy", "ppi_yoy", "industrial_yoy", "exports_yoy",
+    "m1_yoy", "m2_yoy", "m1_level", "m2_level",
+    "total_shares", "total_mktcap", "equity_fin_monthly",
     # 共享宏观
-    "VIX": "vix",
-    "USDCNY": "usdcny",
-    "USD_INDEX": "usd_index",
-    "FED_RATE": "fed_rate",
-    "REAL_YIELD_10Y": "real_yield_10y",
-    "GEOPOLITIC_RISK": "geopolitic_risk",
-}
-
-# 恒 NaN 的桩列（数据层确实没有）。当前只剩这一个，且已无读者——下次提交删掉。
-STUB_COLS = ("SOCIAL_FINANCING",)
+    "vix", "usdcny", "usd_index", "fed_rate", "real_yield_10y", "geopolitic_risk",
+)
 
 # 股息率（年度，百分数）：datahub **现算的派生量**，由装配点塞进 series。
 DIVIDEND_YIELD_KEY = "dividend_yield:yield_mcap_weighted"
@@ -78,7 +54,7 @@ TITLE = C.TITLE
 TARGET = C.TARGET
 LABEL_COL = "regime_label"
 LONG_REGIME_COL = "long_regime"
-TARGET_COLS = {"close": "CLOSE", "ret": "RET", "open": "OPEN"}
+TARGET_COLS = {"close": "close", "ret": "RET", "open": "open"}
 # 状态标签词表由调用方注入（set_state_vocab），因果层不 import 状态层
 LABELS: tuple[str, ...] = ()
 LABEL_NAME: dict[str, str] = {}
@@ -147,14 +123,10 @@ def load_raw(series=None, meta=None) -> pd.DataFrame:
     `series` 只用于股息率（`CausalPort.derived_series` 装进来的那一列）。
     """
     base = get_data(Panel.CAUSUAL_ASHARE)
-    df = pd.DataFrame({old: base[sem] for old, sem in BASE_COLS.items()},
-                      index=base.index)
+    df = base[list(PANEL_COLS)].copy()
     for col, s in _derived(df, base).items():
         df[col] = s
     df["DIVIDEND_YIELD"] = _dividend_yield(df.index, series)
-    for col in STUB_COLS:
-        if col not in df.columns:
-            df[col] = float("nan")
     return df
 
 
@@ -164,26 +136,25 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
     df.index = pd.DatetimeIndex(df.index)
     df = df[~df.index.duplicated(keep="last")].sort_index()
 
-    df["RET"] = df["CLOSE"].pct_change() * 100.0
-    df["RET_OC"] = (df["CLOSE"] / df["OPEN"] - 1.0) * 100.0
-    df["RY_CHG_BP"] = df["REAL_YIELD_10Y"].diff() * 100.0
-    df["USDX_CHG"] = df["USD_INDEX"].diff()
-    df["VIX_CHG"] = df["VIX"].diff()
-    df["USDCNY_RET"] = df["USDCNY"].pct_change() * 100.0
-    df["FED_CHG_BP"] = df["FED_RATE"].diff() * 100.0
-    df["SHIBOR_CHG_BP"] = df["SHIBOR3M"].diff() * 100.0
-    df["PMI_CHG"] = df["PMI"].diff()
-    df["MARGIN_CHG"] = df["MARGIN_BALANCE"].pct_change() * 100.0
+    df["RET"] = df["close"].pct_change() * 100.0
+    df["RET_OC"] = (df["close"] / df["open"] - 1.0) * 100.0
+    df["RY_CHG_BP"] = df["real_yield_10y"].diff() * 100.0
+    df["USDX_CHG"] = df["usd_index"].diff()
+    df["VIX_CHG"] = df["vix"].diff()
+    df["USDCNY_RET"] = df["usdcny"].pct_change() * 100.0
+    df["FED_CHG_BP"] = df["fed_rate"].diff() * 100.0
+    df["SHIBOR_CHG_BP"] = df["shibor3m"].diff() * 100.0
+    df["PMI_CHG"] = df["pmi"].diff()
+    df["MARGIN_CHG"] = df["margin_balance"].pct_change() * 100.0
     # 两融净流入（亿元/日）：余额差分。信号层用"净流入/流出方向"比余额水平更有信息
-    df["MARGIN_NET"] = df["MARGIN_BALANCE"].diff()
+    df["MARGIN_NET"] = df["margin_balance"].diff()
 
     # 股票供给：月度净融资额 → z（去趋势后再标准化）。
-    # 面板 2026-11-15 起把 `EQUITY_SUPPLY` 映射到 `equity_fin_monthly`（真数据）。
-    # 这里仍保留"列可能没有 / 全空"的守卫：这一列的来源换过三次（桩列 → 人工表 →
-    # `equity_fin_monthly`），而且 `panel.py` 正在退役——缺列时产出整列 NaN 而不是
-    # 把整张面板带崩，缺数据这件事由 `config.NOT_CONNECTED` + 测试负责卡住。
-    sup = df["EQUITY_SUPPLY"] if "EQUITY_SUPPLY" in df.columns else pd.Series(
-        np.nan, index=df.index)
+    # 列 = `equity_fin_monthly`（耦合层的语义名，`PANEL_COLS` 保证它存在；
+    # 缺列会在 `base[list(PANEL_COLS)]` 处 KeyError，不会走到这里）。
+    # 这里仍保留"全空"守卫：数据源波动时产出整列 NaN 而不是把整张面板带崩，
+    # 缺数据这件事由 `config.NOT_CONNECTED` + `test_causual_dead_columns` 卡住。
+    sup = df["equity_fin_monthly"]
     if sup.notna().any():
         sup = sup.resample("ME").last()
         sup_d = sup - sup.rolling(8, min_periods=4).mean()
@@ -194,7 +165,7 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
         df["SUPPLY_Z"] = np.nan
 
     # 放量冲击：成交量 60 日 z（成交额不可得，见 PROBLEM P21）
-    vol = df["VOLUME"]
+    vol = df["volume"]
     vmu = vol.rolling(60, min_periods=20).mean()
     vsd = vol.rolling(60, min_periods=20).std()
     df["VOLUME_Z"] = (vol - vmu) / vsd.replace(0, np.nan)
@@ -202,10 +173,10 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
 
     # 供需派生：**先在月频上算，再 ffill 回日频**。
     # 直接在日频上 diff 会得到 0（日频是 ffill 的），ΔM1 会恒等于 0。
-    m1 = df["M1_LEVEL"].resample("ME").last()
-    mk = df["TOTAL_MKTCAP"].resample("ME").last()
-    fin = df["EQUITY_FIN_MONTHLY"].resample("ME").last()
-    ins = df["INSIDER_NET"].resample("ME").last()
+    m1 = df["m1_level"].resample("ME").last()
+    mk = df["total_mktcap"].resample("ME").last()
+    fin = df["equity_fin_monthly"].resample("ME").last()
+    ins = df["insider_net"].resample("ME").last()
 
     net = fin - ins                       # 融资是新增筹码，大股东增持减少筹码
     dm1 = m1.diff()
@@ -222,7 +193,7 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
     # 增量比：分子分母可能异号，三个数都单独展示，比值仅作参考
     df["SUPPLY_RATIO"] = df["DM1_3M"] / df["NET_SUPPLY_3M"].replace(0, np.nan)
     # 资金活化：M1 同比 − M2 同比（正值 = 活期化改善）
-    df["M1M2_GAP"] = df["M1_YOY"] - df["M2_YOY"]
+    df["M1M2_GAP"] = df["m1_yoy"] - df["m2_yoy"]
     return df
 
 
@@ -276,7 +247,7 @@ def fit_edges(df: pd.DataFrame, spec: dict, seed: int = 42, verbose: bool = True
 
     models: dict[tuple[str, str], EdgeModel] = fit_all(
         df, EDGES, labels=list(LABELS), treatment_col=TREATMENT_COL,
-        outcome_col={C.TARGET: "CLOSE"}, target=C.TARGET,
+        outcome_col={C.TARGET: "close"}, target=C.TARGET,
         label_col=LABEL_COL, return_col="RET", train=train, seed=seed,
         local_nodes=C.LOCAL_NODES,
     )
@@ -398,8 +369,8 @@ def supply_items(df: pd.DataFrame) -> list[dict]:
                   note="总市值代替流通市值"),
         # ---- 3.2 供需增量
         pair_view(df, group="供需增量", label="ΔM1", direction="+",
-                  pos_col="M1_LEVEL", pos_basis="roll3",
-                  mom_col="M1_LEVEL", mom_basis="yoy",
+                  pos_col="m1_level", pos_basis="roll3",
+                  mom_col="m1_level", mom_basis="yoy",
                   note="位置用 M1 三月滚动和，边际用同比"),
         pair_view(df, group="供需增量", label="净供给（融资−增持）", direction="-",
                   pos_col="NET_SUPPLY", pos_basis="roll3",
@@ -407,36 +378,36 @@ def supply_items(df: pd.DataFrame) -> list[dict]:
                   note="融资 +，增持 −"),
         # ---- 3.3 宏观环境
         pair_view(df, group="宏观环境", label="社零", direction="+",
-                  pos_col="RETAIL_SALES_MOM", pos_basis="level",
-                  mom_col="RETAIL_SALES_MOM", mom_basis="dma3",
+                  pos_col="retail_sales_mom", pos_basis="level",
+                  mom_col="retail_sales_mom", mom_basis="dma3",
                   note="当月同比"),
         pair_view(df, group="宏观环境", label="工业增加值", direction="+",
-                  pos_col="INDUSTRIAL_YOY", pos_basis="level",
-                  mom_col="INDUSTRIAL_YOY", mom_basis="dma3",
+                  pos_col="industrial_yoy", pos_basis="level",
+                  mom_col="industrial_yoy", mom_basis="dma3",
                   note="数据停在 2025-08"),
         pair_view(df, group="宏观环境", label="PMI", direction="+",
-                  pos_col="PMI", pos_basis="level",
-                  mom_col="PMI", mom_basis="mom",
+                  pos_col="pmi", pos_basis="level",
+                  mom_col="pmi", mom_basis="mom",
                   note="扩散指数，50 为中枢"),
         pair_view(df, group="宏观环境", label="M1−M2", direction="+",
                   pos_col="M1M2_GAP", pos_basis="level",
                   mom_col="M1M2_GAP", mom_basis="yoy",
                   note="正=资金活化"),
         pair_view(df, group="宏观环境", label="CPI", direction="0",
-                  pos_col="CPI_YOY", pos_basis="level",
-                  mom_col="CPI_YOY", mom_basis="dma3",
+                  pos_col="cpi_yoy", pos_basis="level",
+                  mom_col="cpi_yoy", mom_basis="dma3",
                   note="方向不定：低通胀偏正、高通胀偏负"),
         pair_view(df, group="宏观环境", label="PPI", direction="+",
-                  pos_col="PPI_YOY", pos_basis="level",
-                  mom_col="PPI_YOY", mom_basis="dma3"),
+                  pos_col="ppi_yoy", pos_basis="level",
+                  mom_col="ppi_yoy", mom_basis="dma3"),
         pair_view(df, group="宏观环境", label="出口", direction="+",
-                  pos_col="EXPORTS_YOY", pos_basis="level",
-                  mom_col="EXPORTS_YOY", mom_basis="dma3",
+                  pos_col="exports_yoy", pos_basis="level",
+                  mom_col="exports_yoy", mom_basis="dma3",
                   note="数据停在 2025-08"),
         # ---- 3.4 增长转化
         pair_view(df, group="增长转化", label="大股东净增持", direction="+",
-                  pos_col="INSIDER_NET", pos_basis="roll3",
-                  mom_col="INSIDER_NET", mom_basis="level"),
+                  pos_col="insider_net", pos_basis="roll3",
+                  mom_col="insider_net", mom_basis="level"),
         # ---- 3.5 股东回报 / 估值
         # 年度口径，只有 11 个点：**只给位置，不判边际**（11 个年度点算不出可信 yoy，
         # 硬算出来的"同比分位"是伪量化）。freq="YE" 让分位在**年度序列**上算，
@@ -454,21 +425,21 @@ def supply_detail_items(df: pd.DataFrame) -> list[dict]:
 
     return supply_items(df) + [
         pair_view(df, group="原始", label="总股本", direction="-",
-                  pos_col="TOTAL_SHARES", pos_basis="level",
-                  mom_col="TOTAL_SHARES", mom_basis="yoy", note="仅参考"),
+                  pos_col="total_shares", pos_basis="level",
+                  mom_col="total_shares", mom_basis="yoy", note="仅参考"),
         pair_view(df, group="原始", label="总市值", direction="+",
-                  pos_col="TOTAL_MKTCAP", pos_basis="level",
-                  mom_col="TOTAL_MKTCAP", mom_basis="yoy", note="含估值，仅参考"),
+                  pos_col="total_mktcap", pos_basis="level",
+                  mom_col="total_mktcap", mom_basis="yoy", note="含估值，仅参考"),
         pair_view(df, group="原始", label="股票融资", direction="-",
-                  pos_col="EQUITY_FIN_MONTHLY", pos_basis="roll3",
-                  mom_col="EQUITY_FIN_MONTHLY", mom_basis="level"),
+                  pos_col="equity_fin_monthly", pos_basis="roll3",
+                  mom_col="equity_fin_monthly", mom_basis="level"),
         pair_view(df, group="原始", label="M1 同比", direction="+",
-                  pos_col="M1_YOY", pos_basis="level", mom_col="M1_YOY", mom_basis="dma3"),
+                  pos_col="m1_yoy", pos_basis="level", mom_col="m1_yoy", mom_basis="dma3"),
         pair_view(df, group="原始", label="M2 同比", direction="+",
-                  pos_col="M2_YOY", pos_basis="level", mom_col="M2_YOY", mom_basis="dma3"),
+                  pos_col="m2_yoy", pos_basis="level", mom_col="m2_yoy", mom_basis="dma3"),
         pair_view(df, group="原始", label="社零累计同比", direction="+",
-                  pos_col="RETAIL_SALES", pos_basis="level",
-                  mom_col="RETAIL_SALES", mom_basis="dma3", note="旧口径，带季节性"),
+                  pos_col="retail_sales", pos_basis="level",
+                  mom_col="retail_sales", mom_basis="dma3", note="旧口径，带季节性"),
     ]
 
 
