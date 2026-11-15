@@ -34,7 +34,7 @@ from typing import Any, Mapping
 
 import pandas as pd
 
-from shared.utils import panel_align as P
+from shared.utils import time_align as T
 
 
 class Panel(Enum):
@@ -245,7 +245,7 @@ def _etf_group_shares(series: Mapping[str, pd.Series], meta: pd.DataFrame,
         return {c: pd.Series(index=idx, dtype=float) for c in _ETF_COLS}
 
     wide = pd.DataFrame({bare_code(k.split(":", 1)[1]): series[k] for k in keys})
-    lag = P.lag_of("etf_shares", meta)
+    lag = T.lag_of("etf_shares", meta)
     out: dict[str, pd.Series] = {}
     for group, codes in _ETF_GROUPS.items():
         cols = [c for c in codes if c in wide.columns]
@@ -254,13 +254,13 @@ def _etf_group_shares(series: Mapping[str, pd.Series], meta: pd.DataFrame,
             _warn(f"ETF 组 {group} 一个代码都没匹配上（代码格式又变了？）")
             out[name] = pd.Series(index=idx, dtype=float)
         else:
-            out[name] = P.to_daily(wide[cols].sum(axis=1), idx, lag, ffill=False)
+            out[name] = T.to_daily(wide[cols].sum(axis=1), idx, lag, ffill=False)
     return out
 
 
 def _build_ashare_base(series: Mapping[str, pd.Series],
                        meta: pd.DataFrame) -> pd.DataFrame:
-    df = P.build(_ASHARE_BASE, "csi_all", series, meta,
+    df = T.build(_ASHARE_BASE, "csi_all", series, meta,
                  policy=_ASHARE_BASE_POLICY)
     for col, s in _etf_group_shares(series, meta, df.index).items():
         df[col] = s
@@ -270,7 +270,7 @@ def _build_ashare_base(series: Mapping[str, pd.Series],
 def _plain(builder: str):
     """普通 builder：一张主轴表 + 一份列映射 + 一份策略。"""
     def build(series: Mapping[str, pd.Series], meta: pd.DataFrame) -> pd.DataFrame:
-        return P.build(_SPECS[builder], _INDEX[builder], series, meta,
+        return T.build(_SPECS[builder], _INDEX[builder], series, meta,
                        policy=_POLICY[builder])
     return build
 
