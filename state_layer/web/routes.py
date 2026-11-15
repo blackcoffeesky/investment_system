@@ -11,6 +11,8 @@ from pathlib import Path
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
+from shared.adapter import get_data
+
 from state_layer import store
 from state_layer.analysis import observations
 from state_layer.port import get_port
@@ -128,16 +130,13 @@ def index(request: Request, asset: str = "ashare", days: int = 250):
     except FileNotFoundError:
         cur = {}          # 还没拟合过模型：页面照常打开，只是没有状态信息
 
-    # 市场状态区块：特征由状态层自己的资产包算，不经过因果层
+    # 市场状态区块：特征由状态层自己的资产包算，面板数据走耦合层
     feats = None
     try:
         from state_layer import state_assets
 
-        # 数据只从 datahub 服务端口取（web 也不能自己连库）
-        data = request.app.state.services["datahub"]
         pkg = state_assets.load(asset)
-        series_raw = data.series_map(list(pkg.REQUIRED_TABLES))
-        feats = pkg.features.build(pkg.panel(series_raw, data.metadata()))
+        feats = pkg.features.build(get_data(state_assets.panel_of(asset)))
         cur = port.current_state(asset, feats)
     except Exception as e:  # noqa: BLE001
         print(f"[state] 现算后验失败：{type(e).__name__}: {e}")

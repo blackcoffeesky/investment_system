@@ -15,6 +15,10 @@
 # 拟合状态模型（改特征/改 K 之后跑；会换 label_signature）
 python -m state_layer.cli regime --asset ashare
 
+# 临时试其他状态数 / 种子（不写回 config，只影响这一次拟合）
+python -m state_layer.cli regime --asset ashare --k 2
+python -m state_layer.cli regime --asset ashare --k auto     # 让模型按 BIC 自己选
+
 # 之后必须重估边快照，否则卡片会被拒
 python -m causual.causual_core.cli edges --asset ashare
 ```
@@ -27,7 +31,7 @@ python -m causual.causual_core.cli edges --asset ashare
 
 ```
 state_layer/
-├── state_assets/<asset>/   每个资产：config(K/特征/标签) + panel(要哪些表) + features
+├── state_assets/<asset>/   每个资产：config(K/特征/标签/要哪些表) + features
 ├── model/                  模型链
 │   ├── base.py             Model 协议（fit 返回未认领日期）
 │   ├── hmm/                GaussianHMM（内部选 K）

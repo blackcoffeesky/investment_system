@@ -1,4 +1,13 @@
-"""黄金特征构造（P1 为 causual 侧 `build_features` 的副本）。"""
+"""黄金特征构造。
+
+输入是**面板**，输出是 `config.FEATURES` 顺序的特征矩阵。
+
+面板有两个来源、列名大小写不同（生产走 `shared.adapter.get_data(Panel.STATE_GOLD)`
+是小写语义名，因果层面板是大写），在 `build()` 入口统一收口一次；
+内部公式一律用大写列名。
+
+注意：这里不读数据、不做滞后处理——面板怎么来是调用方的事。
+"""
 
 from __future__ import annotations
 
@@ -6,6 +15,14 @@ import numpy as np
 import pandas as pd
 
 from state_layer.state_assets.gold import config as C
+
+
+def _upper(df: pd.DataFrame) -> pd.DataFrame:
+    """列名统一成大写（状态层内部的列约定）；本来就全大写时原样返回。"""
+    cols = [c for c in df.columns if isinstance(c, str)]
+    if all(c.isupper() for c in cols):
+        return df
+    return df.rename(columns=lambda c: c.upper() if isinstance(c, str) else c)
 
 
 def _derive(df: pd.DataFrame) -> pd.DataFrame:
@@ -29,7 +46,7 @@ def _derive(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build(df: pd.DataFrame) -> pd.DataFrame:
-    df = _derive(df)
+    df = _derive(_upper(df))
     """状态识别用的 9 维特征（与 A 股完全不同，所以各自实现）。"""
     out = pd.DataFrame(index=df.index)
     ret = df["CLOSE"].pct_change()

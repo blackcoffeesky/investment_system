@@ -15,6 +15,8 @@ from typing import cast
 import numpy as np
 import pandas as pd
 
+from shared.adapter import get_data
+
 from state_layer import state_assets
 from state_layer import store
 from state_layer.analysis import observations, stats
@@ -206,9 +208,13 @@ class StatePort:
 
         因果层不知道状态层的存在，只消费这个 dict：
         `{labels, label_name, labels_order, version, line}`。
+
+        `series` / `meta` 保留只为**兼容既有调用点**（装配点仍会顺手传进来）：
+        面板现在直接走耦合层 `get_data`，这两个参数已经不用了。删参数要同步
+        service 2 处 + causual cli + 1 条测试，改动面远大于留一个无用参数。
         """
         pkg = state_assets.load(asset)
-        panel = pkg.panel(series, meta)
+        panel = get_data(state_assets.panel_of(asset))
         feats = pkg.features.build(panel)
 
         labels = self.extend(asset, feats)

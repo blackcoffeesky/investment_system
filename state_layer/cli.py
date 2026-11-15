@@ -1,37 +1,38 @@
 """state_layer 命令行：拟合状态模型。
 
-    python -m state_layer.cli regime --asset ashare [--k 3] [--seed 42]
+    python -m state_layer.cli regime --asset ashare [--k 3|auto] [--seed 42]
 
 **这是状态层唯一的写入入口**。产物写到 `state_layer/saved_models/{asset}/`。
 
-数据由状态层自己声明、自己取：`state_assets.<asset>.REQUIRED_TABLES`，
-不再借用因果层的面板函数。
+数据由耦合层统一提供（`get_data(Panel.STATE_<asset>)`）：状态层不再自己拼面板，
+`config.REQUIRED_TABLES` 只用于 `port.required_tables()` 的装配清单。
 """
 
 from __future__ import annotations
 
 import argparse
 
+from shared.adapter import get_data
+
 from state_layer import state_assets
 from state_layer import fit as fit_mod
 
 
-def load_series(asset: str) -> tuple[dict, object]:
-    """按资产包声明的表清单，从数据层读成 {表名: Series}。"""
-    from datahub.port import get_port
-
-    port = get_port()
-    pkg = state_assets.load(asset)
-    return port.series_map(list(pkg.REQUIRED_TABLES)), port.metadata()
-
-
 def cmd_regime(args) -> int:
     pkg = state_assets.load(args.asset)
-    series, meta = load_series(args.asset)
-    panel = pkg.panel(series, meta)
+    panel = get_data(state_assets.panel_of(args.asset))
+
+    # 只覆盖用户**显式**给的参数，没给就沿用 config.MODEL_PARAMS。
+    # `--k auto` 已在 main() 里转成 None —— hmm 的 k=None 分支才是"让模型按 BIC 选"。
+    over: dict[str, object] = {}
+    if args.k is not None:
+        over["k"] = args.k
+    if args.seed is not None:
+        over["seed"] = args.seed
 
     res = fit_mod.fit_pipeline(args.asset, panel,
-                               labeler=pkg.config.name_states, verbose=True)
+                               labeler=pkg.config.name_states, verbose=True,
+                               params={"hmm": over} if over else None)
     p = fit_mod.save(args.asset, res)
 
     spec = res["spec"]
@@ -54,14 +55,15 @@ def main(argv: list[str] | None = None) -> int:
     r = sub.add_parser("regime", help="拟合状态模型（HMM + 极端规则）")
     r.add_argument("--asset", required=True)
     r.add_argument("--k", default=None,
-                   help="状态数；默认用配置里的 K，传 auto 让数据自己选")
-    r.add_argument("--seed", type=int, default=42)
+                   help="状态数；不给用配置里的 K，传 auto 让模型按 BIC 自己选")
+    r.add_argument("--seed", type=int, default=None,
+                   help="HMM 随机种子；不给用配置/默认值 42")
     r.set_defaults(func=cmd_regime)
 
     a = ap.parse_args(argv)
-    if getattr(a, "k", None) == "auto":
-        a.k = "auto"
-    elif getattr(a, "k", None) is not None:
+    if a.k == "auto":
+        a.k = None          # None 才是"自己选 K"；以前这里写成了自赋值，等于没做
+    elif a.k is not None:
         a.k = int(a.k)
     return int(a.func(a))
 

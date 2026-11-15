@@ -1,4 +1,4 @@
-"""特征新鲜度回归测试：任何一列特征整体失效，必须当场红。
+"""状态层特征新鲜度 + 声明一致性回归测试。
 
 背景（2026-11-14 踩过）
 ----------------------
@@ -10,23 +10,31 @@
     → 标签停在旧日期（外推没料）→ 卡片「没有状态标签」被拒
     → 单点后验为空 → 页面 transition 没有 stay_prob → 模板报错
 
-所以这条测试盯的是「每列最后一次有值是哪天」，而不是「有没有抛异常」。
+所以第一条盯的是「每列最后一次有值是哪天」，而不是「有没有抛异常」。
+
+背景（2026-11-15，panel.py 退役）
+--------------------------------
+"这个资产要哪些表"从 `panel.py` 搬进了 `config.REQUIRED_TABLES`。它**不参与取数**
+（`get_data` 按 adapter 自己的声明取），所以两份声明可能各自漂——第二条用
+`tables_of()` 把它们钉死。
 """
 
 from __future__ import annotations
+
+from shared.adapter import Panel, bare_code, get_data, tables_of
 
 # 允许落后 csi_all 的交易日数：宏观 / ETF 表本身有 lag_days，
 # 但「整列 NaN」或「停在几个月前」不能容忍。
 MAX_LAG_TRADING_DAYS = 5
 
+# 资产 → 耦合层面板（状态层用哪一组）
+PANELS = {"ashare": Panel.STATE_ASHARE, "gold": Panel.STATE_GOLD}
+
 
 def test_feature_columns_reach_latest_trading_day():
     from state_layer import state_assets
-    from state_layer.cli import load_series
 
-    # ---- ① 代码归一：数据层前缀怎么变，都要能对上 GROUPS
-    from state_layer.state_assets.ashare.panel import bare_code
-
+    # ---- ① 代码归一：数据层前缀怎么变，都要能对上（归一逻辑现在在 adapter 里）
     for raw, want in (("sh510300", "510300"), ("sz159919", "159919"),
                       ("c510300", "510300"), ("510300", "510300"),
                       ("510300.SH", "510300")):
@@ -35,10 +43,9 @@ def test_feature_columns_reach_latest_trading_day():
     # ---- ② 每列特征的最后有效日期
     asset = "ashare"
     pkg = state_assets.load(asset)
-    series, meta = load_series(asset)
-    panel = pkg.panel(series, meta)
+    panel = get_data(PANELS[asset])
 
-    close = panel["CLOSE"].dropna()
+    close = panel["close"].dropna()      # adapter 给的是小写语义列名
     if close.empty:
         return                      # 空库（新环境）不判，与其它测试一致
 
@@ -61,3 +68,21 @@ def test_feature_columns_reach_latest_trading_day():
 
     assert not bad, (f"{asset} 有特征列失效（csi_all 最近交易日 "
                      f"{anchor.date()}）：{bad}")
+
+
+def test_required_tables_match_adapter():
+    """`config.REQUIRED_TABLES` 必须与 adapter 实际读的表**完全相等**。
+
+    `get_data` 自己按 adapter 的 `_SPECS`/`_EXTRA_TABLES` 取数，config 那份只是
+    `port.required_tables()` 的装配清单（service / causual cli 拿它做并集）。
+    两份漂了不会报错，只会让下游悄悄少取表——所以在这里钉死。
+    """
+    from state_layer import state_assets
+
+    for asset, panel in PANELS.items():
+        declared = set(state_assets.load(asset).config.REQUIRED_TABLES)
+        actual = set(tables_of(panel))
+        assert declared == actual, (
+            f"{asset} 的 REQUIRED_TABLES 与 adapter 声明不一致："
+            f"config 多出 {sorted(declared - actual)}、"
+            f"adapter 多出 {sorted(actual - declared)}")

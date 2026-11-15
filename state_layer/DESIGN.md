@@ -1,6 +1,6 @@
 # state_layer 设计文档
 
-> **更新日期：2026-11-14**　｜　使用说明见 [`README.md`](README.md)
+> **更新日期：2026-11-15**　｜　使用说明见 [`README.md`](README.md)
 > 给模块代理看的规格。改动前先读这一页，改完回来补表格。
 
 ---
@@ -24,10 +24,10 @@
 
 ```
 市场数据（datahub）
-      │  series_map / read
+      │  shared.adapter.get_data(Panel.STATE_<asset>)   ← 耦合层统一拼面板
       ▼
-state_assets/<asset>/     每个资产声明要哪些表、怎么拼面板、怎么算特征
-      │  panel() → features()
+state_assets/<asset>/     每个资产只声明：要哪些表、怎么算特征
+      │  features()
       ▼
 model/                    模型链：按 MODEL_CHAIN 依次认领日期
       │  fit / infer
@@ -47,9 +47,9 @@ saved_models/<asset>/     current.json / labels.csv / chain.pkl / hmm_last.pkl
 
 | 文件/目录 | 职责 | 谁调用 |
 |---|---|---|
-| `state_assets/<asset>/config.py` | K / 特征清单 / 极端阈值 / 标签词表 / `MODEL_CHAIN` / `METRICS` | fit / port |
-| `state_assets/<asset>/panel.py` | 声明 `REQUIRED_TABLES` + 拼日频宽表；ETF 代码按**裸 6 位**归一（数据层换前缀不影响匹配） | cli / web / fit |
-| `state_assets/<asset>/features.py` | 面板 → 特征矩阵（纯函数） | fit |
+| `state_assets/<asset>/config.py` | K / 特征清单 / 极端阈值 / 标签词表 / `MODEL_CHAIN` / `METRICS` / **`REQUIRED_TABLES`**（该资产要哪些表） | fit / port |
+| `state_assets/<asset>/features.py` | 面板 → 特征矩阵（纯函数）；入口把列名大小写收口一次，派生列走 `shared.utils.features` | fit |
+| —（`panel.py` 已于 2026-11-15 退役） | 面板改由 `shared.adapter.get_data(Panel.STATE_<asset>)` 统一提供 | cli / web / port |
 | `model/base.py` | `Model` 协议：fit / infer / state_params / to_dict | 所有模型 |
 | `model/hmm/` | GaussianHMM + 拟合 + 选 K + 序列化 | 链 |
 | `model/extreme/` | 极端行情规则模型（认领极端日） | 链 |
@@ -63,6 +63,13 @@ saved_models/<asset>/     current.json / labels.csv / chain.pkl / hmm_last.pkl
 | `port.py` | 对外能力 | 其他模块 |
 | `cli.py` | `python -m state_layer.cli regime` | 人 |
 | `web/` | `/state` 页面 | service |
+
+**数据从哪来**：面板统一由 `shared.adapter.get_data(Panel.STATE_<asset>)` 提供
+（index=交易日，列是语义名：`close` / `csi300` / `etf_sse50`…）。状态层不再自己拼面板，
+也就不再随数据层改表名 / 改代码格式而漂。
+`config.REQUIRED_TABLES` **不参与取数**，它是 `port.required_tables()` 的装配清单
+（service / causual cli 拿它做并集）；`tests/test_state_features_fresh.py::test_required_tables_match_adapter`
+把它与 `tables_of(Panel)` 钉成相等，两份声明不可能各自漂。
 
 **新文件必须先补这张表。** 表里没有的文件 = 漂了。
 

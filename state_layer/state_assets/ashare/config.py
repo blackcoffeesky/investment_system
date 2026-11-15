@@ -63,9 +63,17 @@ LABEL_NAME = {
     "extreme_vol": "极端波动",
 }
 
-# 面板构造函数（点号路径，运行时动态导入）。
-# 状态层只声明"我需要一个面板"，具体怎么把原始表拼成面板是资产包的事。
-PANEL_PROVIDER = "causual.causual_assets.ashare.pipeline:load_raw"
+# 本资产要哪些表（**不**描述面板怎么拼——面板由 `shared.adapter` 统一提供）。
+# `get_data` 自己按 adapter 的声明取数；这份是给 `port.required_tables()` 用的装配
+# 清单，`tests/test_state_features_fresh.py` 钉住它 == `tables_of(Panel.STATE_ASHARE)`。
+REQUIRED_TABLES = (
+    "csi_all",          # OHLCV 主价格
+    "csi300",
+    "csi1000",
+    "margin_balance",   # 两融余额 → MARGIN_CHG
+    "shibor3m",         # → SHIBOR_CHG_BP
+    "etf_shares",       # → ETF 分组份额 → etf_dispersion
+)
 
 
 # ======================================================================

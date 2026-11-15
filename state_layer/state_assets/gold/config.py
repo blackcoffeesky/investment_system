@@ -55,9 +55,13 @@ LABEL_NAME = {
     "extreme_vol": "极端波动",
 }
 
-# 面板构造函数（点号路径，运行时动态导入）。
-# 状态层只声明"我需要一个面板"，具体怎么把原始表拼成面板是资产包的事。
-PANEL_PROVIDER = "causual.causual_assets.gold.pipeline:load_raw"
+# 本资产要哪些表（**不**描述面板怎么拼——面板由 `shared.adapter` 统一提供）。
+# `tests/test_state_features_fresh.py` 钉住它 == `tables_of(Panel.STATE_GOLD)`。
+REQUIRED_TABLES = (
+    "gold_cny",     # OHLCV 主价格
+    "usdcny",       # → usdcny_vol_5d
+    "vix",          # → vix_level
+)
 
 
 # ======================================================================

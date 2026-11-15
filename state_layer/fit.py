@@ -64,14 +64,25 @@ def fit_pipeline(
     *,
     labeler=None,
     verbose: bool = True,
+    params: dict[str, dict] | None = None,
 ) -> dict[str, Any]:
-    """在面板上依次跑模型链，返回 {spec, labels, models, chain}（不落盘）。"""
+    """在面板上依次跑模型链，返回 {spec, labels, models, chain}（不落盘）。
+
+    `params` 按**模型名**覆盖 `config.MODEL_PARAMS` 里的参数（CLI 的 `--k/--seed`
+    走这里）；没给的键沿用配置。只影响本次拟合，不写回配置。
+
+    ⚠️ `_fit_id` 的公式**不要动**：`port.extend` 靠
+    `hmm_last.pkl.fit_id == spec.data.fit_id` 决定要不要外推，一改就对不上、
+    标签停止外推、卡片被拒。
+    """
     pkg = state_assets.load(asset)
     c = pkg.config
     feats = pkg.features.build(panel)[list(c.FEATURES)]
 
     chain = tuple(getattr(c, "MODEL_CHAIN", ("hmm",)))
-    params = dict(getattr(c, "MODEL_PARAMS", {}))
+    cfg_params = dict(getattr(c, "MODEL_PARAMS", {}))
+    for _name, _over in (params or {}).items():
+        cfg_params[_name] = {**cfg_params.get(_name, {}), **_over}
 
     if labeler is None:
         raise ValueError(f"{asset} 的 fit_pipeline 需要 labeler（把状态编号翻译成标签）")
@@ -84,7 +95,7 @@ def fit_pipeline(
     models: list[Any] = []
 
     for name in chain:
-        model = MODELS[name](params.get(name))
+        model = MODELS[name](cfg_params.get(name))
         handleable = handleable.union(model.valid_index(feats))
         unclaimed = model.fit(feats, claim=remaining,
                               labeler=labeler if model.kind == "hmm" else None)
