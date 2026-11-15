@@ -28,23 +28,25 @@ EXTREME = "extreme"
 # ---------------------------------------------------------------- 数据
 def load_features(asset: str = "ashare",
                   drop: tuple[str, ...] = ()) -> tuple[pd.DataFrame, pd.Series]:
-    """按生产同一条路径取特征：datahub 端口 → 资产包面板 → 特征。
+    """按生产同一条路径取特征：耦合层 → 资产包特征。
 
     同时返回收盘价——画分割图时用真实价格，比累计收益直观。
+
+    2026-11-15：`panel.py` 已删，面板改由 `shared.adapter.get_data` 直出
+    （`state_assets.panel_of(asset)` 是"资产 → Panel"的唯一映射处），
+    列名因此从大写 `CLOSE` 变成语义名 `close`。
     """
-    from datahub.port import get_port as data_port
+    from shared.adapter import get_data
     from state_layer import state_assets
 
     pkg = state_assets.load(asset)
-    port = data_port()
-    series = port.series_map(list(pkg.REQUIRED_TABLES))
-    panel = pkg.panel(series, port.metadata())
+    panel = get_data(state_assets.panel_of(asset))
     all_feats = pkg.features.build(panel)
     # 只取 config 里声明的特征，再按需去掉几列
     # （不这么做的话，未使用但含 NaN 的列会把样本一起削掉）
     cols = [c for c in pkg.config.FEATURES if c not in drop]
     feats = all_feats[cols].dropna()
-    close = panel["CLOSE"].reindex(feats.index)
+    close = panel["close"].reindex(feats.index)
     return feats, close
 
 
