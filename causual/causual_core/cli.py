@@ -34,8 +34,18 @@ def cmd_regime(args) -> int:
 
 
 def cmd_edges(args) -> int:
+    """重估边模型。
+
+    `build_panel` 需要状态层的 spec（标签口径），所以这里和 `cmd_daily` 一样
+    先把状态视图装配好——CLI 是允许跨模块取数的唯一地点。
+    """
+    from state_layer.port import get_port as state_port
+
     pkg = load_asset(args.asset)
-    df, spec = pkg.build_panel(args.asof)
+    sp = state_port()
+    series, meta = _load_series(args.asset, state=sp)
+    view = sp.state_view(args.asset, series, meta)
+    df, spec = pkg.build_panel(args.asof, series, meta, state=view)
     pkg.fit_edges(df, spec, seed=args.seed, verbose=True)
     return 0
 
