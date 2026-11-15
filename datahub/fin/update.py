@@ -383,29 +383,6 @@ def backfill(table: str, *, chunk_calls: int = 10, **kw) -> dict:
         con.close()
 
 
-if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--start", default="2000-01-01", help="起始日期")
-    ap.add_argument("--end", default=None, help="截止日期（默认今天）")
-    ap.add_argument("--only", default=None, help="只更新这些表，逗号分隔")
-    ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--force", action="store_true", help="忽略频率判断，强制更新")
-    ap.add_argument("--backfill", default=None,
-                    help="逐批落库地回填这张表（如 financials）；配合 --max-calls")
-    ap.add_argument("--max-calls", type=int, default=100,
-                    help="--backfill 时本轮最多打几次接口（默认 100 = 专业版日额度）")
-    ap.add_argument("--chunk-calls", type=int, default=10,
-                    help="--backfill 时每几次接口落一次库（默认 10）")
-    a = ap.parse_args()
-    if a.backfill:
-        print(backfill(a.backfill, chunk_calls=a.chunk_calls, max_calls=a.max_calls))
-        raise SystemExit(0)
-    df = run(start=a.start, end=a.end,
-             only=[x.strip() for x in a.only.split(",")] if a.only else None,
-             dry_run=a.dry_run, force=a.force)
-    print("\n汇总：")
-    print(df.groupby("status").size().to_string())
-
 # ======================================================================
 # 写库：long / static。表结构（列名+类型）在 read.py，那里是唯一出处。
 # ======================================================================
@@ -452,3 +429,33 @@ def write_static(con: sqlite3.Connection, table: str, df: pd.DataFrame) -> int:
     con.executemany(sql, frame.itertuples(index=False, name=None))
     con.commit()
     return len(frame)
+
+
+# ======================================================================
+# 命令行。**必须放在文件最后**：`python -m datahub.fin.update` 会在这里
+# 立刻执行 `backfill()`，而 `backfill` 的 `flush` 要用上面定义的 `write_long`
+# ——主块放在定义之前会 NameError（2026-11-15 踩过：`--backfill` 100 次调用
+# 全白跑，因为 `write_long` 还"不存在"）。
+# ======================================================================
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--start", default="2000-01-01", help="起始日期")
+    ap.add_argument("--end", default=None, help="截止日期（默认今天）")
+    ap.add_argument("--only", default=None, help="只更新这些表，逗号分隔")
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--force", action="store_true", help="忽略频率判断，强制更新")
+    ap.add_argument("--backfill", default=None,
+                    help="逐批落库地回填这张表（如 financials）；配合 --max-calls")
+    ap.add_argument("--max-calls", type=int, default=100,
+                    help="--backfill 时本轮最多打几次接口（默认 100 = 专业版日额度）")
+    ap.add_argument("--chunk-calls", type=int, default=10,
+                    help="--backfill 时每几次接口落一次库（默认 10）")
+    a = ap.parse_args()
+    if a.backfill:
+        print(backfill(a.backfill, chunk_calls=a.chunk_calls, max_calls=a.max_calls))
+        raise SystemExit(0)
+    df = run(start=a.start, end=a.end,
+             only=[x.strip() for x in a.only.split(",")] if a.only else None,
+             dry_run=a.dry_run, force=a.force)
+    print("\n汇总：")
+    print(df.groupby("status").size().to_string())
