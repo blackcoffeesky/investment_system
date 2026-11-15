@@ -35,7 +35,7 @@ model/                    模型链：按 MODEL_CHAIN 依次认领日期
 fit.py                    编排：跑链 → 算指标 → 组 spec
       │
       ▼
-saved_models/<asset>/     current.json / labels.csv / chain.pkl / hmm_last.pkl
+saved_models/<asset>/     current.json / labels.csv / chain.pkl
       │
       ├──► analysis/      状态画像、观测矩阵（只读，给页面用）
       └──► port.py        对外：标签、单点状态、外推、黏性
@@ -154,15 +154,19 @@ saved_models/<asset>/
 ├── current.json   spec（model / data / metrics 三段）
 ├── labels.csv     逐日标签
 ├── chain.pkl      整条模型链（**含每个模型的 last_window**，离线后验的唯一真相）
-└── hmm_last.pkl   **遗留**：旧格式的最后窗口，新拟合不再写它
+└── hmm.pkl        旧格式单模型参数（遗留；没有 chain.pkl 时 load_chain 才回退用）
 ```
 
 **最后窗口以 `chain.pkl` 为唯一真相**：`fit.save` 把 spec 与链一次落盘，链里每个统计模型
 自带 `last_window`（含 `state_labels` / `transmat` / 训练时的 `features` 列名）。
-`port._models()` 只在**链里没有窗口**（旧格式链 / 没有 chain.pkl）时才回退到 `hmm_last.pkl`，
-且回退时核对 `fit_id`——那份文件是独立老化的，可能不是这次拟合的。
-2026-11-15 踩过：无条件用 `hmm_last.pkl` 覆盖链内窗口 → 链是新的、窗口是 10 月的旧货
-→ `extend` 的 fit_id 校验永远失败 → 标签停止外推 → 卡片「没有状态标签」被拒。
+链里没有窗口（旧格式链 / 没有 chain.pkl）**就直接不可用**，不回退到任何遗留文件
+——`port._models()` 会打印一条明确告警，`extend` / `transition` 返回空或 None。
+
+2026-11-15 的两段教训：
+- 曾经**无条件**用 `hmm_last.pkl` 覆盖链内窗口 → 链是新的、窗口是 10 月的旧货
+  → `extend` 的 fit_id 校验永远失败 → 标签停止外推 → 卡片「没有状态标签」被拒；
+- 那个文件**从来没有人写**（全库只有读），是上一代拟合的遗留物。改成"链优先 + 缺失告警"后
+  彻底删掉了它和它的回退分支。
 
 **不进 git**（`.gitignore` 有 `saved_models/`）。部署要单独搬，删目录时注意别连带删掉。
 
@@ -193,5 +197,5 @@ saved_models/<asset>/
 - **K 不是瓶颈，特征才是**：`experiment/k_study.py` 实测 K=3 会切出一个 2.7%、
   `stay_prob≈0` 的退化状态；K=2 更干净但切的是波动率不是趋势
 - **退市股缺失**：`stock_daily` 只有当前在市股票，历史回测有幸存者偏差
-- **链已进生产**（2026-11-15 重拟合生成 `chain.pkl`）；`hmm_last.pkl` 是 10 月的遗留文件，
-  只在链里没有窗口时回退，见 §6
+- **链已进生产**（2026-11-15 重拟合生成 `chain.pkl`）；离线后验只认链里的 `last_window`，
+  没有就明确告警、不外推（见 §6）

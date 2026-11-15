@@ -71,9 +71,9 @@ def fit_pipeline(
     `params` 按**模型名**覆盖 `config.MODEL_PARAMS` 里的参数（CLI 的 `--k/--seed`
     走这里）；没给的键沿用配置。只影响本次拟合，不写回配置。
 
-    ⚠️ `_fit_id` 的公式**不要动**：`port.extend` 靠
-    `hmm_last.pkl.fit_id == spec.data.fit_id` 决定要不要外推，一改就对不上、
-    标签停止外推、卡片被拒。
+    ⚠️ `_fit_id` 的公式**不要动**：它进了 `spec.data.fit_id` 与 `model.version`，
+    是"这次拟合"的指纹。改公式会让新旧产物的指纹失去可比性（排查时要靠 version
+    对不上才能发现混用了两次拟合的产物）。真要改就同时重拟合。
     """
     pkg = state_assets.load(asset)
     c = pkg.config

@@ -97,7 +97,7 @@ class StatePort:
 
         最后窗口以 **chain.pkl 为唯一真相**：它由 `fit.save` 和 spec 一起落盘，
         每个模型自带 `last_window`（含 `state_labels` / `transmat`）。
-        `hmm_last.pkl` 是 2026-10 遗留的独立文件，只有链里没带窗口时才回退用它。
+        链里没带窗口就**不可用**，不回退到任何遗留文件（2026-11-15 起只认链）。
         """
         pkg = state_assets.load(asset)
         chain_names = list(getattr(pkg.config, "MODEL_CHAIN", ("hmm",)))
@@ -114,13 +114,10 @@ class StatePort:
             m = (MODELS[name].from_dict(data) if data
                  else MODELS[name](params.get(name)))
             if m.kind != "extreme" and m.last_window is None:
-                # 只在链里**没有**窗口时回退（旧格式 chain / 压根没有 chain.pkl）。
-                # 以前这里是无条件覆盖 —— 链是新的、窗口却是旧文件，等于用两次拟合
-                # 拼出一个模型，`extend` 的 fit_id 校验随即永远失败（2026-11-15 踩过）。
-                try:
-                    m.last_window = store.load_model(asset, "hmm_last.pkl")
-                except FileNotFoundError:
-                    pass
+                # 链里没带最后窗口（旧格式链 / 压根没有 chain.pkl）。
+                # 不回退：留 None，让在线后验与外推明确报缺，而不是拿一份过期窗口凑。
+                print(f"[state] {asset} 的 {name} 没有最后窗口（last_window），"
+                      f"离线后验与外推不可用")
             out.append(m)
         return out
 
@@ -155,15 +152,15 @@ class StatePort:
                labels: pd.Series | None = None) -> pd.Series:
         """把标签外推到断档期：最后窗口的模型 + 极端规则覆盖。
 
-        最后窗口取自**模型链**（`chain.pkl`，和 spec 同一次 `fit.save` 落盘）。
-        它不带 `fit_id`——同源产物不需要核对；只有回退到遗留 `hmm_last.pkl`
-        的路径才可能过期，那份文件自带 `fit_id`，有就比一下。
+        最后窗口只来自**模型链**（`chain.pkl`，与 spec 同一次 `fit.save` 落盘）；
+        链里没有窗口就不外推，不回退到任何遗留文件。
+        同源产物不需要比对 `fit_id`：以前那个遗留窗口文件是**独立老化**的、可能不是
+        这次拟合的，才需要核对；它已于 2026-11-15 删除。
         """
         lab = cast(pd.Series, store.load_labels(asset) if labels is None else labels)
         if lab.empty or features is None or features.empty:
             return lab
 
-        spec = store.load_spec(asset)
         filled = cast(pd.Series, lab[lab.astype(str) != ""])
         if filled.empty:
             return lab
@@ -179,15 +176,6 @@ class StatePort:
         if not lw:
             print(f"[state] {asset} 的模型链里没有最后窗口，标签不外推")
             return lab
-        lw_fit_id = lw.get("fit_id")
-        spec_fit_id = spec.get("data", {}).get("fit_id")
-        if lw_fit_id:
-            if lw_fit_id != spec_fit_id:
-                print(f"[state] 最后窗口与 spec 的 fit_id 不一致"
-                      f"（{lw_fit_id} != {spec_fit_id}），不外推")
-                return lab
-            print(f"[state] 用遗留 hmm_last.pkl 的最后窗口外推"
-                  f"（fit_id {lw_fit_id} 与 spec 一致）")
 
         sub = features.loc[features.index <= gap.max()]
         raw = cast(pd.Series, run_infer(models, sub)["states"])
