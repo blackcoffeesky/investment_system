@@ -1,6 +1,10 @@
-"""A 股面板：从 datahub 拼出因果/状态层要用的日频宽表。
+"""A 股面板：基础列来自耦合层，派生列在这里现算。
 
 调用方（`pipeline.load_raw`）只需要 `panel()`；其余是内部映射与派生。
+
+**基础列（价格 + 宏观 + 供给）走 `shared.adapter.get_data`**：数据层内部怎么变
+（表名、宽表拆解、代码格式）都不用改这里。派生列（ETF 份额、股息率）本轮仍从
+`series` 取——它们下一步才搬进 `shared/utils/features.py`。
 """
 
 from __future__ import annotations
@@ -10,7 +14,9 @@ import sys
 import numpy as np
 import pandas as pd
 
-from shared import panel_align as common
+from shared.adapter import Panel, column_of, get_data
+from shared.adapter import bare_code as _bare_code
+from shared.utils import panel_align as common
 
 # 共享宏观：两个资产都用同一份
 SHARED = {
@@ -58,26 +64,12 @@ STUB_COLS = ["SOCIAL_FINANCING", "EQUITY_SUPPLY", "AFRE_STOCK", "EQUITY_FIN_STOC
 # 和 `etf_shares` 那几列同一个套路——面板只负责对齐，不负责取数。
 DIVIDEND_YIELD_KEY = "dividend_yield:yield_mcap_weighted"
 
-# 分组用于派生：按宽基规模排序（裸 6 位码；比对时两侧都归一化）
-GROUPS = {
-    "SSE50": ["510050", "510710", "510100", "510190"],
-    "CSI300": ["510300", "510310", "510330"],
-    "CSI1000": ["512100", "560010", "510580", "510510"],
-}
+# 耦合层给的 ETF **分组份额**列（组名/成员见 `shared/adapter` 的 _ETF_GROUPS）。
+# 派生列从这里算，不再自己剥代码前缀、也不再自己维护 GROUPS 清单。
+ETF_GROUP_COLS = ("etf_sse50", "etf_csi300", "etf_csi1000")
 
-
-def bare_code(name: object) -> str:
-    """把各种写法的 ETF 代码归一成裸 6 位数字。
-
-    数据层 2026-11 起给代码加了市场前缀（`etf_shares:sh510300`），之前是
-    `c510300` / `510300` 之类的写法。统一取**最后 6 位数字**：
-    `sh510300` / `sz159919` / `c510300` / `510300` / `510300.SH` → `510300`。
-
-    不认得的形状原样返回（不足 6 位数字）——匹配不上就自然跳过，
-    但「派生列整体消失」会被 `tests/test_causual_panel_derived.py` 抓住。
-    """
-    digits = "".join(ch for ch in str(name) if ch.isdigit())
-    return digits[-6:] if len(digits) >= 6 else str(name)
+# 转出口：外部脚本 / 测试还在 `from ...panel import bare_code`（归一逻辑已上移到 adapter）
+bare_code = _bare_code
 
 
 def _warn(msg: str) -> None:
@@ -95,58 +87,39 @@ def _finite(s: pd.Series) -> pd.Series:
     return s.replace([np.inf, -np.inf], np.nan)
 
 
-def _multi(table: str, series: dict) -> pd.DataFrame:
-    """把 series 里 "表名:列名" 的若干列拼回宽表。"""
-    cols = {k.split(":", 1)[1]: v for k, v in series.items()
-            if k.startswith(f"{table}:")}
-    return pd.DataFrame(cols)
+def _derived(idx: pd.DatetimeIndex, base: pd.DataFrame) -> dict[str, pd.Series]:
+    """宽基 ETF 的派生列，输入是耦合层给的**分组份额**（不读 series）。
 
+    2026-11 的坑：数据层把 ETF 代码从裸码改成带前缀（`sh510300`），消费方各自
+    按裸码匹配 → 四个派生列**整体消失**，`sum([])` 抛的异常又被吞，全程无报错。
+    现在代码归一与分组都在 `shared/adapter` 里做，这里只吃 `etf_sse50/csi300/csi1000`
+    三列——**数据层的代码格式再变也伤不到这里**。
 
-def _derived(idx: pd.DatetimeIndex, series) -> dict[str, pd.Series]:
-    """由 `etf_shares` **现算**的派生列（数据层不存派生量）。
-
-    2026-11 的坑：数据层把 ETF 代码从裸码改成带前缀（`sh510300`），这里还按
-    裸码和 `GROUPS` 比对，一个都匹配不上 → 四个派生列**整体消失**，
-    而且 `sum([])` 抛的 `AttributeError` 被外层 except 吞掉，全程无报错。
-    所以现在：① 列名与 `GROUPS` 两侧都过 `bare_code`；② 降级时打印原因。
+    分组份额是「原生观测日有值、其余 NaN」，所以先在 `.dropna()` 上算变化率，
+    再把结果 ffill 回交易日（与派生口径一致）。
     """
     out: dict[str, pd.Series] = {}
+    groups = {c: base[c].dropna() for c in ETF_GROUP_COLS
+              if c in base.columns and base[c].notna().any()}
+    if len(groups) < 2:
+        _warn(f"ETF 分组份额只有 {len(groups)} 组可用（耦合层没给全？），"
+              "SIZE_FLOW / ETF_DISPERSION / NATIONAL_ETF 全部缺席")
+        return out
     try:
-        raw = _multi("etf_shares", series)
-        if not isinstance(raw, pd.DataFrame) or raw.shape[1] < 3:
-            n = raw.shape[1] if isinstance(raw, pd.DataFrame) else 0
-            _warn(f"etf_shares 可用列只有 {n} 个，"
-                  "SIZE_FLOW / ETF_DISPERSION / NATIONAL_ETF 全部缺席")
-            return out
-
-        # 代码前缀怎么变都不怕：两侧统一按裸 6 位比
-        norm: dict[str, pd.Series] = {}
-        for c in raw.columns:
-            b = bare_code(c)
-            if b in norm:
-                _warn(f"etf_shares 归一后代码重复：{b}（多列），只保留最后一列")
-            norm[b] = raw[c]
-        w = pd.DataFrame(norm)
-
-        def group(g: str):
-            cols = [c for c in GROUPS.get(g, []) if c in w.columns]
-            return w[cols].sum(axis=1) if cols else None
-
-        small, large = group("CSI1000"), group("CSI300")
+        small, large = groups.get("etf_csi1000"), groups.get("etf_csi300")
         if small is not None and large is not None:
             out["SIZE_FLOW"] = _finite(
                 (small.pct_change() - large.pct_change()).reindex(
                     idx, method="ffill"))
 
-        parts = [g.pct_change() for g in
-                 (group("SSE50"), group("CSI300"), group("CSI1000")) if g is not None]
+        parts = [groups[c].pct_change() for c in ETF_GROUP_COLS if c in groups]
         if len(parts) >= 2:
             out["ETF_DISPERSION"] = _finite(
                 pd.concat(parts, axis=1).std(axis=1).reindex(idx, method="ffill"))
 
-        wide = [g for g in (group("SSE50"), group("CSI300")) if g is not None]
+        wide = [groups[c] for c in ("etf_sse50", "etf_csi300") if c in groups]
         if not wide:
-            _warn("SSE50 / CSI300 一个都没匹配上，NATIONAL_ETF 缺席")
+            _warn("etf_sse50 / etf_csi300 一个都没匹配上，NATIONAL_ETF 缺席")
             return out
         nat = sum(wide).diff()
         out["NATIONAL_ETF"] = _finite(nat.reindex(idx, method="ffill"))
@@ -178,12 +151,22 @@ def _dividend_yield(idx: pd.DatetimeIndex, series) -> pd.Series:
     return common.to_daily(s, idx, 0)
 
 
-def panel(series, meta=None) -> pd.DataFrame:
-    df = common.build({**SHARED, **ASHARE}, index_table="csi_all",
-                  series=series, meta=meta)
-    for col, s in _derived(df.index, series).items():
+def panel(series=None, meta=None) -> pd.DataFrame:
+    """基础列 + ETF 派生列来自耦合层；`series` 只用于**股息率**（第二批就搬走）。
+
+    `meta` 已不需要——对齐要的 `lag_days` 由耦合层从 datahub 取。
+    `series` 为 None 时**必须出声**：否则 `DIVIDEND_YIELD` 会静默整列 NaN，
+    正是这两天在杀的那类 bug（列还在、只是没值）。
+    """
+    base = get_data(Panel.CAUSUAL_ASHARE)
+    df = pd.DataFrame({out: base[column_of(spec)]
+                       for out, spec in {**SHARED, **ASHARE}.items()},
+                      index=base.index)
+    for col, s in _derived(df.index, base).items():
         df[col] = s
-    df["DIVIDEND_YIELD"] = _dividend_yield(df.index, series)
+    if series is None:
+        _warn("panel() 没收到 series：DIVIDEND_YIELD 会整列 NaN（过渡期必须由装配点传）")
+    df["DIVIDEND_YIELD"] = _dividend_yield(df.index, series or {})
     for col in STUB_COLS:
         if col not in df.columns:
             df[col] = float("nan")
