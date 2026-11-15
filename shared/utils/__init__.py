@@ -14,6 +14,6 @@
 - `features`       纯派生列（输入 DataFrame → 输出 Series）：ETF 离散度、国家队等
 """
 
-from shared.utils import calendar, data_processing, panel_align, time_align
+from shared.utils import calendar, data_processing, time_align
 
-__all__ = ["calendar", "data_processing", "panel_align", "time_align"]
+__all__ = ["calendar", "data_processing", "time_align"]

@@ -66,7 +66,7 @@ def split_extreme(feats: pd.DataFrame, asset: str = "ashare",
 def fit_k(regular: pd.DataFrame, k: int, seed: int = 42) -> dict:
     """全样本拟合一个 K 状态的 HMM（研究用：不做 walk-forward，快）。"""
     from state_layer import metrics
-    from shared.data_processing import prep_features
+    from shared.utils.data_processing import prep_features
     from state_layer.model.hmm import _ops as H
 
     lo, hi = H.fit_window_bounds(regular)

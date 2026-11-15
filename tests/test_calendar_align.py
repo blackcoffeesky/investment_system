@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from shared.calendar import align_to_trading_calendar
+from shared.utils.calendar import align_to_trading_calendar
 
 CAL = pd.bdate_range("2024-01-01", periods=6)
 

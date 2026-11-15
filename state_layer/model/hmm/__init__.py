@@ -83,7 +83,7 @@ class GaussianHMM(Model):
             raise RuntimeError("模型还没 fit / 没有 last_window")
         allowed = resolve_claim(self, features, claim)
 
-        from shared.data_processing import prep_features
+        from shared.utils.data_processing import prep_features
 
         cols = list(self.last_window["features"])
         sub = features.reindex(columns=cols).loc[allowed].dropna()

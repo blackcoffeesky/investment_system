@@ -13,7 +13,7 @@ import pandas as pd
 
 from causual.causual_core.edge import Edge
 from causual.causual_core.estimators import EdgeModel
-
+from shared.utils.data_processing import edge_z, periodic_z
 MONTH_DAYS = 21.0
 
 # 方向纯度的显著性门槛。0.5 ≈ 单边 75% 置信（双侧 p≈0.50）0.70 ≈ 单边 86.5%（p≈0.26）；0.90 ≈ 单边 95%（p≈0.10）。改这一个常数即可。
@@ -52,7 +52,6 @@ def dl_aggregate(df: pd.DataFrame, edge: Edge, tcol: str, model: EdgeModel,
     - ``agg_lagged``  = Σ_{k≥1} β_k · z_{t−k} —— 滞后，仅作参考展示
     z 由 `zscore.periodic_z` 给出——和估计层**同一个函数、同一个窗口**。
     """
-    from shared.data_processing import periodic_z
 
     freq = freq or (model.freq_used or edge.resolved_freq())
     s = df[tcol].resample(freq).last()
@@ -87,15 +86,11 @@ def edge_z_daily(df: pd.DataFrame, edge: Edge, tcol: str,
     `freq` 优先用估计时实际使用的频率（EdgeModel.freq_used）：
     配置改了但快照没重估时，也不会按新配置算 z 去配旧 β。
     """
-    from shared.data_processing import edge_z
-
     return edge_z(df, tcol, freq=freq or edge.resolved_freq())
 
 
 def rolling_z(s: pd.Series, window: int = 252) -> pd.Series:
     """日频滚动 z（保留给非边场景使用；边一律走 `edge_z_daily`）。"""
-    from shared.data_processing import periodic_z
-
     return periodic_z(s, "D", window=window, min_periods=60)
 
 

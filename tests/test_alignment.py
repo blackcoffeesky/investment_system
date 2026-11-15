@@ -9,7 +9,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from shared.calendar import align_to_trading_calendar, merge_shared_nodes
+from shared.utils.calendar import align_to_trading_calendar, merge_shared_nodes
 
 
 # 上金所：含 2026 春节休市（2026-02-16 ~ 02-20）
