@@ -1,22 +1,23 @@
-"""A 股面板：基础列来自耦合层，派生列在这里现算。
+"""A 股面板：基础列来自耦合层，派生列走 `shared.utils.features`。
 
-调用方（`pipeline.load_raw`）只需要 `panel()`；其余是内部映射与派生。
+调用方（`pipeline.load_raw`）只需要 `panel()`；其余是内部映射。
 
 **基础列（价格 + 宏观 + 供给）走 `shared.adapter.get_data`**：数据层内部怎么变
-（表名、宽表拆解、代码格式）都不用改这里。派生列（ETF 份额、股息率）本轮仍从
-`series` 取——它们下一步才搬进 `shared/utils/features.py`。
+（表名、宽表拆解、代码格式）都不用改这里。ETF 派生列是纯函数，放在
+`shared/utils/features.py`；只剩股息率还从 `series` 取（它依赖 datahub 的派生量，
+第二批做成通用聚合后再收编）。
 """
 
 from __future__ import annotations
 
 import sys
 
-import numpy as np
 import pandas as pd
 
 from shared.adapter import Panel, column_of, get_data
 from shared.adapter import bare_code as _bare_code
-from shared.utils import panel_align as common
+from shared.utils import features
+from shared.utils import time_align
 
 # 共享宏观：两个资产都用同一份
 SHARED = {
@@ -54,19 +55,19 @@ ASHARE = {
     "TOTAL_SHARES": "total_shares",
     "TOTAL_MKTCAP": "total_mktcap",
     "EQUITY_FIN_MONTHLY": "equity_fin_monthly",
+    # 2026-11-15 接真数据：Edge 读的是 EQUITY_SUPPLY，之前只有个恒 NaN 的桩，
+    # 那条边 n=0 从未估计过。月度净融资额就是 equity_fin_monthly（同一列，两个名字）。
+    "EQUITY_SUPPLY": "equity_fin_monthly",
 }
 
-# 旧面板有、数据层没有的列：补空列，避免下游 KeyError
-STUB_COLS = ["SOCIAL_FINANCING", "EQUITY_SUPPLY", "AFRE_STOCK", "EQUITY_FIN_STOCK"]
+# 旧面板有、数据层**确实没有**的列：补空列，避免下游 KeyError。
+# 2026-11-15 删掉 AFRE_STOCK / EQUITY_FIN_STOCK（从未有过数据、也没人读）；
+# EQUITY_SUPPLY 已接真数据，不再是桩。SOCIAL_FINANCING 暂留（归 causual 侧处理）。
+STUB_COLS = ["SOCIAL_FINANCING"]
 
 # 股息率（年度，百分数）：datahub **现算的派生量**，不落表。
-# 由装配点（`causual_core.cli._load_series`）按 "表名:列名" 塞进 series，
-# 和 `etf_shares` 那几列同一个套路——面板只负责对齐，不负责取数。
+# 由装配点（`causual_core.cli._load_series`）按 "表名:列名" 塞进 series。
 DIVIDEND_YIELD_KEY = "dividend_yield:yield_mcap_weighted"
-
-# 耦合层给的 ETF **分组份额**列（组名/成员见 `shared/adapter` 的 _ETF_GROUPS）。
-# 派生列从这里算，不再自己剥代码前缀、也不再自己维护 GROUPS 清单。
-ETF_GROUP_COLS = ("etf_sse50", "etf_csi300", "etf_csi1000")
 
 # 转出口：外部脚本 / 测试还在 `from ...panel import bare_code`（归一逻辑已上移到 adapter）
 bare_code = _bare_code
@@ -77,59 +78,28 @@ def _warn(msg: str) -> None:
     print(f"[面板] {msg}", file=sys.stderr)
 
 
-def _finite(s: pd.Series) -> pd.Series:
-    """±inf → NaN。
-
-    ETF 在**上市前份额是 0**，`pct_change()` 会给出 `inf`（首日 0 → 正数）。
-    实测 `SIZE_FLOW` 有 42 个 inf，全在 2016 年初。inf 本身不报错，但一旦进
-    z-score / 分位 / 相关系数就会把整列污染成 inf 或 nan——所以在这里掐掉。
-    """
-    return s.replace([np.inf, -np.inf], np.nan)
-
-
 def _derived(idx: pd.DatetimeIndex, base: pd.DataFrame) -> dict[str, pd.Series]:
     """宽基 ETF 的派生列，输入是耦合层给的**分组份额**（不读 series）。
 
     2026-11 的坑：数据层把 ETF 代码从裸码改成带前缀（`sh510300`），消费方各自
     按裸码匹配 → 四个派生列**整体消失**，`sum([])` 抛的异常又被吞，全程无报错。
-    现在代码归一与分组都在 `shared/adapter` 里做，这里只吃 `etf_sse50/csi300/csi1000`
-    三列——**数据层的代码格式再变也伤不到这里**。
-
-    分组份额是「原生观测日有值、其余 NaN」，所以先在 `.dropna()` 上算变化率，
-    再把结果 ffill 回交易日（与派生口径一致）。
+    现在代码归一与分组都在 `shared/adapter` 里做，算法本体在
+    `shared/utils/features.py`，这里只负责把四个派生列拼进面板。
     """
     out: dict[str, pd.Series] = {}
-    groups = {c: base[c].dropna() for c in ETF_GROUP_COLS
-              if c in base.columns and base[c].notna().any()}
-    if len(groups) < 2:
-        _warn(f"ETF 分组份额只有 {len(groups)} 组可用（耦合层没给全？），"
-              "SIZE_FLOW / ETF_DISPERSION / NATIONAL_ETF 全部缺席")
-        return out
     try:
-        small, large = groups.get("etf_csi1000"), groups.get("etf_csi300")
-        if small is not None and large is not None:
-            out["SIZE_FLOW"] = _finite(
-                (small.pct_change() - large.pct_change()).reindex(
-                    idx, method="ffill"))
-
-        parts = [groups[c].pct_change() for c in ETF_GROUP_COLS if c in groups]
-        if len(parts) >= 2:
-            out["ETF_DISPERSION"] = _finite(
-                pd.concat(parts, axis=1).std(axis=1).reindex(idx, method="ffill"))
-
-        wide = [groups[c] for c in ("etf_sse50", "etf_csi300") if c in groups]
-        if not wide:
-            _warn("etf_sse50 / etf_csi300 一个都没匹配上，NATIONAL_ETF 缺席")
-            return out
-        nat = sum(wide).diff()
-        out["NATIONAL_ETF"] = _finite(nat.reindex(idx, method="ffill"))
-        q95 = nat.rolling(60, min_periods=40).quantile(0.95)
-        out["NATIONAL_ETF_EVENT"] = (nat > q95).astype(float).reindex(
-            idx, method="ffill").fillna(0)
+        for col, fn in (("SIZE_FLOW", features.size_flow),
+                        ("ETF_DISPERSION", features.etf_dispersion),
+                        ("NATIONAL_ETF", features.national_etf),
+                        ("NATIONAL_ETF_EVENT", features.national_etf_event)):
+            s = fn(base)
+            if s.notna().any():
+                out[col] = s
+            else:
+                _warn(f"{col} 算不出来（ETF 分组份额缺失？），本列不入面板")
     except Exception as exc:  # noqa: BLE001
         _warn(f"派生列计算失败（{type(exc).__name__}: {exc}），本次只保留已算出的 "
               f"{sorted(out)}")
-        return out
     return out
 
 
@@ -148,7 +118,8 @@ def _dividend_yield(idx: pd.DatetimeIndex, series) -> pd.Series:
         _warn(f"series 里没有 {DIVIDEND_YIELD_KEY!r}（datahub 的派生量没装配上？）"
               "，DIVIDEND_YIELD 置 NaN")
         return pd.Series(index=idx, dtype=float)
-    return common.to_daily(s, idx, 0)
+    # 这里**要日频**（下游按日看），显式传 ffill=True——to_daily 的默认已改成 False
+    return time_align.to_daily(s, idx, 0, ffill=True)
 
 
 def panel(series=None, meta=None) -> pd.DataFrame:

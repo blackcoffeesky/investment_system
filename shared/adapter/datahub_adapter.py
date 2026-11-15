@@ -58,6 +58,9 @@ _ASHARE_BASE: dict[str, Any] = {
     "low": ("csi_all", "low"),
     "close": ("csi_all", "close"),
     "volume": ("csi_all", "volume"),
+    # 2026-11-15 补：展示层（observations.panel）要成交额/换手，csi_all 本来就有
+    "amount": ("csi_all", "amount"),
+    "turnover": ("csi_all", "turnover"),
     "csi300": "csi300",
     "csi1000": "csi1000",
     "shibor3m": "shibor3m",
@@ -129,6 +132,54 @@ _ETF_GROUPS: dict[str, tuple[str, ...]] = {
     "csi1000": ("512100", "560010", "510580", "510510"),
 }
 _ETF_COLS: tuple[str, ...] = tuple(f"etf_{g}" for g in _ETF_GROUPS)
+
+# ---------------------------------------------------------------- 每列策略
+# `daily`：下游要"每天能看到的最新值"（做逐日 diff / z-score / 展示）→ ffill 到交易日
+# `raw`  ：下游要做 diff 或**按观测频率聚合** → 只在观测日有值，不铺满
+# 判据：这列的值本身是"某一天的观测"还是"每天都在变的状态"。
+_DAILY, _RAW = "daily", "raw"
+
+# 注意：**adapter 是唯一的声明处**，所以这里必须给每一列一个结论。
+# 写法统一为"先全量给默认，再显式覆盖存量列"——漏一列会在下面的一致性断言里报错。
+# （`build()` 的默认 `raw` 是给其他调用方的安全网：忘声明 = 没对齐，不是悄悄 ffill。）
+
+_ASHARE_BASE_POLICY: dict[str, str] = {
+    **{c: _DAILY for c in _ASHARE_BASE},
+    # 份额存量：下游按观测日 pct_change，ffill 会把变化抹成 0
+    **{c: _RAW for c in _ETF_COLS},
+}
+
+_ASHARE_MACRO_POLICY: dict[str, str] = {
+    **{c: _DAILY for c in _ASHARE_MACRO},
+    # 水平/存量：下游先 `resample("ME").last()` 再聚合，**不能**先 ffill
+    "m1_level": _RAW,
+    "m2_level": _RAW,
+    "total_mktcap": _RAW,
+    "equity_fin_monthly": _RAW,
+    "insider_net": _RAW,
+}
+
+_GOLD_BASE_POLICY: dict[str, str] = {c: _DAILY for c in _GOLD_BASE}
+
+_GOLD_MACRO_POLICY: dict[str, str] = {
+    **{c: _DAILY for c in _GOLD_MACRO},
+    # 持仓存量：按季/月观测，"每天都能看到"是假的；要流入就按观测日差分
+    "cb_holdings": _RAW,
+    "gold_etf_holdings": _RAW,
+}
+
+_POLICY: dict[str, Mapping[str, str]] = {
+    "ashare_base": _ASHARE_BASE_POLICY,
+    "ashare_macro": _ASHARE_MACRO_POLICY,
+    "gold_base": _GOLD_BASE_POLICY,
+    "gold_macro": _GOLD_MACRO_POLICY,
+}
+
+# 一致性：每个 spec 列都必须有策略（少一列就报，别等到运行时 KeyError）
+for _name, _spec in _SPECS.items():
+    _missing = set(_spec) - set(_POLICY[_name])
+    if _missing:
+        raise RuntimeError(f"{_name} 的列没有声明策略：{sorted(_missing)}")
 
 # builder 额外需要的表 / 额外产出的列（不来自 `_SPECS` 的单表/多表映射）
 _EXTRA_TABLES: dict[str, tuple[str, ...]] = {"ashare_base": ("etf_shares",)}
@@ -209,16 +260,18 @@ def _etf_group_shares(series: Mapping[str, pd.Series], meta: pd.DataFrame,
 
 def _build_ashare_base(series: Mapping[str, pd.Series],
                        meta: pd.DataFrame) -> pd.DataFrame:
-    df = P.build(_ASHARE_BASE, "csi_all", series, meta)
+    df = P.build(_ASHARE_BASE, "csi_all", series, meta,
+                 policy=_ASHARE_BASE_POLICY)
     for col, s in _etf_group_shares(series, meta, df.index).items():
         df[col] = s
     return df
 
 
 def _plain(builder: str):
-    """普通 builder：一张主轴表 + 一张声明映射。"""
+    """普通 builder：一张主轴表 + 一份列映射 + 一份策略。"""
     def build(series: Mapping[str, pd.Series], meta: pd.DataFrame) -> pd.DataFrame:
-        return P.build(_SPECS[builder], _INDEX[builder], series, meta)
+        return P.build(_SPECS[builder], _INDEX[builder], series, meta,
+                       policy=_POLICY[builder])
     return build
 
 
@@ -230,17 +283,34 @@ _BUILDERS = {
 }
 
 
-def columns_of(panel: Panel) -> tuple[str, ...]:
-    """该 Panel 声明的列（顺序 = 先 base 后 macro，组内按声明顺序）。"""
-    out: list[str] = []
+def columns_of(panel: Panel) -> dict[str, str]:
+    """该 Panel 声明的列 → 策略（顺序 = 先 base 后 macro）。"""
+    out: dict[str, str] = {}
     for name in _BUILD[panel]:
-        out.extend(column_of(spec) for spec in _SPECS[name].values())
-        out.extend(_EXTRA_COLS.get(name, ()))
-    return tuple(out)
+        for col in _SPECS[name]:
+            out[col] = _POLICY[name][col]
+        for col in _EXTRA_COLS.get(name, ()):    # ETF 分组份额：raw
+            out[col] = _RAW
+    return out
 
 
-#: 契约：`get_data(p)` 的列集合必须**恰好**等于 `COLUMNS[p]`（顺序也按声明）。
-COLUMNS: dict[Panel, tuple[str, ...]] = {p: columns_of(p) for p in _BUILD}
+def tables_of(panel: Panel) -> tuple[str, ...]:
+    """这个面板底层读了哪些表（给 module 的 `REQUIRED_TABLES` 做等式校验用）。
+
+    和 `columns_of` 是兄弟：一个说"读了哪些表"，一个说"给了哪些列"。
+    资产包把 `REQUIRED_TABLES` 搬进 `config.py` 后，用
+    `set(config.REQUIRED_TABLES) == set(tables_of(Panel.X))` 钉死，防止声明与实现
+    漂成两份真相。
+    """
+    names = _BUILD[panel]
+    tables = {_table_of(spec) for name in names for spec in _SPECS[name].values()}
+    tables |= {t for name in names for t in _EXTRA_TABLES.get(name, ())}
+    return tuple(sorted(tables))
+
+
+#: 契约：`get_data(p)` 的列**顺序与集合**必须等于 `COLUMNS[p]` 的键，
+#: 且每列的对齐语义由值（`daily` / `raw`）声明。
+COLUMNS: dict[Panel, dict[str, str]] = {p: columns_of(p) for p in _BUILD}
 
 
 def get_data(panel: Panel, *, start: str | None = None,

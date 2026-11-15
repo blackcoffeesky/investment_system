@@ -1,10 +1,14 @@
-"""兼容 shim：实现已移到 `shared.utils.panel_align`。
+"""兼容 shim：本模块已改名 `shared.utils.time_align`（2026-11-15）。
 
-2026-11-14 起 `shared/` 拆成 `utils/`（纯工具）+ `adapter/`（取数耦合层）。
-这里保留旧路径转发，**四个 panel.py 与 experiment/ 的现有 import 都不用改**；
-新代码请用 `from shared.utils.panel_align import ...`。
+职责只有"纯时间操作"（lag 推后、日频对齐、低频聚合），不再有"面板"含义。
+旧路径继续转发；新代码请用 `from shared.utils.time_align import ...`。
+
+⚠️ **默认值变了**：`to_daily` 的 `ffill` 默认 False、`build` 的 `policy` 默认 "raw"。
+旧调用要日频填充必须显式写 `ffill=True` / `policy={...: "daily"}`。
 """
 
-from shared.utils.panel_align import (build, daily_index, get, lag_of, to_daily)
+from shared.utils.time_align import (POLICIES, build, daily_index, get, lag_of,
+                                     raw, to_daily, to_low_freq)
 
-__all__ = ["get", "lag_of", "to_daily", "daily_index", "build"]
+__all__ = ["get", "lag_of", "raw", "to_daily", "to_low_freq", "daily_index",
+           "build", "POLICIES"]

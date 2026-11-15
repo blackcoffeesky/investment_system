@@ -21,7 +21,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from shared.adapter import COLUMNS, Panel, bare_code, column_of, get_data
+from shared.adapter import (COLUMNS, Panel, bare_code, column_of, get_data,
+                            tables_of)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -131,3 +132,34 @@ def test_shared_init_does_not_import_datahub():
                        capture_output=True, text=True)
     assert r.returncode == 0, (
         f"`import shared` 把 datahub 拖进来了：{r.stdout.strip()} {r.stderr.strip()}")
+
+
+def test_tables_of_matches_datahub_metadata():
+    """`tables_of` 声明的表必须都真的存在（防改名后只改了 spec、忘了表名）。"""
+    from datahub.port import get_port
+
+    known = set(get_port().metadata()["name"])
+    for p in Panel:
+        tables = tables_of(p)
+        assert tables, f"{p.name} 的 tables_of 是空的"
+        missing = set(tables) - known
+        assert not missing, f"{p.name} 声明了不存在的表：{sorted(missing)}"
+
+
+def test_raw_columns_are_not_ffilled():
+    """`raw` 列**不允许被 ffill 过**——这是本轮的核心行为改变。
+
+    如果哪天有人把策略从 raw 改回 daily（先 ffill 再算变化率），
+    `ETF_DISPERSION` 会静默换一条特征（实测近 250 日均值 -72%、66% 的日期变 0），
+    标签跟着变、边快照全部失效，而且**不报错**。所以在这里钉死。
+    """
+    for p in Panel:
+        df = _panel(p)
+        raw_cols = [c for c, how in COLUMNS[p].items() if how == "raw"]
+        if not raw_cols:
+            continue                      # STATE_GOLD 全是日频，没有 raw 列
+        for c in raw_cols:
+            assert df[c].isna().any(), (
+                f"{p.name}.{c} 是 raw 列却没有任何 NaN——被 ffill 了？")
+            assert not df[c].equals(df[c].ffill()), (
+                f"{p.name}.{c} 与 ffill 后完全相同——raw 策略失效")
