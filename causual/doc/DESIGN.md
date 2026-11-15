@@ -197,7 +197,7 @@ python -m datahub.fin.check
 | `pipeline.prepare()` 既算特征又算供需层 | 职责混在一起 | 拆 `features.py` / `supply.py` |
 | 状态外推用"上次模型 + 新数据" | 模型老了会失真，卡片有"龄期"提示但不会自动重训 | 加龄期阈值告警 |
 | `CAUSUAL_DATA_SOURCE=csv` 已废弃但代码里还有残留判断 | 迷惑 | 清掉 |
-| `STUB_COLS` 里的 `EQUITY_SUPPLY` 恒 NaN → `EQUITY_SUPPLY` 边 `n=0` | 该边在卡片里永远"未估计"，但不会报错 | 接上真实月度净融资额，或把边标成「无数据」 |
+| `EQUITY_SUPPLY` 的列 2026-11-15 才接上真数据（`equity_fin_monthly`），但**边快照里还是 `n=0` 的旧模型** | 卡片上这条边一直显示"未估计"，分不清是"没数据"还是"没重估" | adapter 定稿、`panel.py` 删完之后统一重估 edges（本轮明确不做） |
 
 ### 8.1 识别口径的坑（都是静默的）
 
@@ -218,6 +218,13 @@ python -m datahub.fin.check
 | 清单**只有一份** `MONTH_TABLES`，`pipeline._month_of()` 也读它 | 原先两处各抄一份，一起烂掉 |
 | `check()` 遇到认不出的名字要 **stderr 告警** | 别让"没报错"被当成"没问题" |
 | `scoped()` 按 `pkg.REQUIRED_TABLES` 收窄 | `metadata()` 是全局的，A 股卡不该报黄金表 |
+
+**空列也必须显式**：边用到的列要么有数据，要么写进 `config.NOT_CONNECTED`
+（`{列名: 原因}`）。没声明却整列 NaN → 测试红；声明了却已经有数据 → 也红
+（否则那张表会烂成永久豁免）。为什么必须这样：估计器对全 NaN / 零方差的控制变量
+是**静默跳过**的，配置上写着"控制了社融"、实际没控，卡片和快照都看不出来。
+
+守卫：`tests/test_causual_dead_columns.py`（有数据 / 声明有效 / 每个资产都得声明）。
 
 守卫：`tests/test_freshness_watchlist.py`（清单存在性 + freq 可判 + 行为验证 + 告警）。
 

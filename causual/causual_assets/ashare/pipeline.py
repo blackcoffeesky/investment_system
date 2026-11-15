@@ -41,6 +41,9 @@ LABEL_NAME: dict[str, str] = {}
 EDGES = C.EDGES
 TREATMENT_COL = C.TREATMENT_COL
 SOURCE_COL = C.SOURCE_COL
+# 已知没数据的列（{列名: 原因}）。放在这里是为了让它成为**资产插件契约**的一部分：
+# `causual_assets.load(asset)` 返回的就是这个模块，测试只看得见这里的东西。
+NOT_CONNECTED = C.NOT_CONNECTED
 SIGNAL_LAG = 0
 
 
@@ -59,16 +62,25 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
     df["FED_CHG_BP"] = df["FED_RATE"].diff() * 100.0
     df["SHIBOR_CHG_BP"] = df["SHIBOR3M"].diff() * 100.0
     df["PMI_CHG"] = df["PMI"].diff()
-    df["SF_YOY_CHG"] = df["SOCIAL_FINANCING"].pct_change(12) * 100.0
     df["MARGIN_CHG"] = df["MARGIN_BALANCE"].pct_change() * 100.0
     # 两融净流入（亿元/日）：余额差分。信号层用"净流入/流出方向"比余额水平更有信息
     df["MARGIN_NET"] = df["MARGIN_BALANCE"].diff()
 
-    # 股票供给：月度净融资额 → z（去趋势后再标准化）
-    sup = df["EQUITY_SUPPLY"].resample("ME").last()
-    sup_d = sup - sup.rolling(8, min_periods=4).mean()
-    sd = float(sup_d.std())
-    df["SUPPLY_Z"] = (sup_d / sd).reindex(df.index, method="ffill") if sd > 1e-12 else np.nan
+    # 股票供给：月度净融资额 → z（去趋势后再标准化）。
+    # 面板 2026-11-15 起把 `EQUITY_SUPPLY` 映射到 `equity_fin_monthly`（真数据）。
+    # 这里仍保留"列可能没有 / 全空"的守卫：这一列的来源换过三次（桩列 → 人工表 →
+    # `equity_fin_monthly`），而且 `panel.py` 正在退役——缺列时产出整列 NaN 而不是
+    # 把整张面板带崩，缺数据这件事由 `config.NOT_CONNECTED` + 测试负责卡住。
+    sup = df["EQUITY_SUPPLY"] if "EQUITY_SUPPLY" in df.columns else pd.Series(
+        np.nan, index=df.index)
+    if sup.notna().any():
+        sup = sup.resample("ME").last()
+        sup_d = sup - sup.rolling(8, min_periods=4).mean()
+        sd = float(sup_d.std())
+        df["SUPPLY_Z"] = ((sup_d / sd).reindex(df.index, method="ffill")
+                          if sd > 1e-12 else np.nan)
+    else:
+        df["SUPPLY_Z"] = np.nan
 
     # 放量冲击：成交量 60 日 z（成交额不可得，见 PROBLEM P21）
     vol = df["VOLUME"]

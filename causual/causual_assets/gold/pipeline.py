@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 
 from causual.causual_core import snapshot
-from shared.calendar import merge_shared_nodes
+from shared.utils.calendar import merge_shared_nodes
 from causual.causual_core.estimators import EdgeModel, fit_all
 from causual.web.render import build_card, build_console
 from causual.causual_core.signal_layer import build_bundle
@@ -42,6 +42,9 @@ LABEL_NAME: dict[str, str] = {}
 EDGES = C.EDGES
 TREATMENT_COL = C.TREATMENT_COL
 SOURCE_COL = C.SOURCE_COL
+# 已知没数据的列（{列名: 原因}）；黄金当前为空，但**必须显式声明**，
+# 否则这个资产里的空列没人管（口径见 ashare/pipeline.py 同一行）。
+NOT_CONNECTED = C.NOT_CONNECTED
 SIGNAL_LAG = 1
 
 

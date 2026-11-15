@@ -14,7 +14,7 @@ import pandas as pd
 import statsmodels.api as sm
 from econml.dml import CausalForestDML, LinearDML
 from sklearn.ensemble import RandomForestRegressor
-
+from shared.utils.data_processing import periodic_z,edge_z
 from causual.causual_core.edge import Edge
 
 MONTH_DAYS = 21.0
@@ -183,10 +183,7 @@ def fit_dml_edge(
         return EdgeModel(edge=edge, n_obs=len(data), notes="样本不足，跳过")
 
     # 处理变量标准化，β 才有"每 1σ"的含义。
-    # 必须用**滚动 z**（和信号层同一个函数），否则 β 的尺度和乘上去的 z 不一致，
-    # 而且全样本均值/标准差在实盘不可得。
-    from shared.data_processing import edge_z
-
+    # 必须用**滚动 z**（和信号层同一个函数），否则 β 的尺度和乘上去的 z 不一致，而且全样本均值/标准差在实盘不可得。
     z_all = edge_z(df, tcol, freq="D")
     data = data.assign(t_z=z_all.reindex(data.index))
     data = data[np.isfinite(data["t_z"].to_numpy(dtype=float))]
@@ -259,7 +256,7 @@ def fit_distributed_lag(
         x = x - x.rolling(8, min_periods=4).mean()
 
     # 与信号层同一个函数、同一个窗口：滚动 z（无前视）
-    from shared.data_processing import periodic_z
+
 
     panel["x"] = periodic_z(x, str(freq))
     if not panel["x"].notna().any():
@@ -366,8 +363,6 @@ def fit_event_study(
         n_events_total = int(events.sum())
     else:
         # 事件定义必须和信号层的 gate 用同一个 z（滚动、无前视）
-        from shared.data_processing import edge_z
-
         z = edge_z(df, tcol, freq="D")
         if edge.event_sign > 0:
             events = z >= edge.event_threshold

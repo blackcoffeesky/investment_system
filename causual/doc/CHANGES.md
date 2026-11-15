@@ -2,6 +2,71 @@
 
 ---
 
+# v5.44（2026-11-15）：信号层清空桩列（宁缺毋滥）
+
+用户的原话：「既然是信号层，相关的没用的都去掉，宁缺毋滥，信号层以后再完善，
+目前越简单越好，只要供需层不受影响」。
+
+## 一、删掉的
+
+| 删了什么 | 为什么 | 影响面 |
+|---|---|---|
+| `SOCIAL_FINANCING` 节点（`LOCAL_NODES`） | 从没做过任何边的 source，只当 `EQUITY_SUPPLY` 的 confounder，而那一列是恒 NaN 的桩 | 无（没有边引用） |
+| `EQUITY_SUPPLY` 边的 `confounders=("SOCIAL_FINANCING",)` | 见下 | 该边估计时不再"假装控制了社融" |
+| `TREATMENT_COL` / `SOURCE_COL` 里的 `SOCIAL_FINANCING` | 同上 | 同上 |
+| `prepare()` 里的 `SF_YOY_CHG` 派生 | 唯一用途是那个 confounder；源列全 NaN，等于凭空造一列空列 | 面板少一列空列（62 → 59） |
+| `TREATMENT_COL` / `SOURCE_COL` 里的 `N.CPI_SURPRISE` | **A 股面板里根本没有这一列**，也没有边用它——留着就是"配置指着一个不存在的名字" | 无 |
+
+**为什么必须删 confounder（而不是留着）**：两个估计器都**静默跳过**全 NaN /
+零方差的控制变量——`estimators.fit_dml_edge` 有 `df[c].notna().any()` 守卫，
+`fit_distributed_lag` 有 `sd 有限` 守卫。也就是说它不会崩，只会让
+**配置上写着"控制了社融"、实际没控**。卡片、快照、日志三处都看不出来，这比不写更糟。
+社融总量序列接入后再整套加回来（节点 + `SF_YOY_CHG` + confounder）。
+
+**没有凑**：`m1_level` / `m2_level` 是存款口径，不是社融总量（社融还含直接融资、
+表外融资），拿它们当代理会得到一个"看起来控制了"的假混杂——宁缺毋滥。
+
+## 二、留下的（明确理由）
+
+| 留着 | 理由 |
+|---|---|
+| `PMI` 的 `TREATMENT_COL` / `SOURCE_COL` / `LOCAL_NODES` 三条 | PMI 列**有数据**、供需层还在用它；v5.2 删 PMI 边时写明了"将来可能作混杂/效应修饰"。删掉不减少任何运行时行为，只会让"以后想加 PMI 边"的人重新查一遍口径 |
+| `EQUITY_SUPPLY` 边本身 | 面板 2026-11-15 起把该列映射到 `equity_fin_monthly`（真数据），边已经有料可估了（快照还是旧的 `n=0`，等统一重估） |
+
+## 三、新增：`config.NOT_CONNECTED` + 三条测试
+
+```python
+NOT_CONNECTED: dict[str, str] = {}     # {列名: 原因}，当前为空
+```
+
+约定：**边用到的列要么有数据，要么在这里登记原因**。`tests/test_causual_dead_columns.py`：
+
+| 测试 | 抓什么 |
+|---|---|
+| `test_edge_columns_have_data` | 边的 treatment / source / confounder 列：必须在面板里、非空行数 > 0（未声明的豁免直接红） |
+| `test_not_connected_registry_is_honest` | 声明了却已经有数据 → 红；声明了却没边在读 → 红；没写原因 → 红 |
+| `test_not_connected_is_scoped_per_asset` | 每个资产的 config 都必须**显式**声明（空也要写空 dict），否则那个资产的空列没人管 |
+
+**这条机制当场就证明了自己**：我按当时的体检结果往 `NOT_CONNECTED` 里写了两条
+（`EQUITY_SUPPLY` / `SUPPLY_Z`），十几分钟后面板把 `EQUITY_SUPPLY` 映射到了
+`equity_fin_monthly`，**反向检查立刻报"已经有数据了，把声明删掉"** —— 于是清空。
+如果没有反向检查，这两条会变成永久豁免，等于没测。
+
+`NOT_CONNECTED` 通过 `pipeline.py` 再导出（`NOT_CONNECTED = C.NOT_CONNECTED`），
+因为 `causual_assets.load(asset)` 返回的是 pipeline 模块，测试只看得见它。
+
+## 四、实测
+
+| 项 | 结果 |
+|---|---|
+| ashare 面板 | 62 → 59 列；**整列 NaN 只剩 `SOCIAL_FINANCING`**（是 `panel.py` 的 `STUB_COLS` 造的，已无任何读者，随 panel.py 一起删） |
+| gold 面板 | 29 列，无空列 |
+| 边引用的列 | 两个资产 × 全部 treatment/source/confounder：**全部有数据** |
+| 测试 | 90/90 通过 |
+| 卡片 | `daily --asset ashare` exit 0，四张产物无 `nan` |
+
+---
+
 # v5.43（2026-11-14）：装配点收口 + 月频卡按资产归档 + 卡片不再出现 nan
 
 ## 一、`CausalPort.derived_series(asset, data)`

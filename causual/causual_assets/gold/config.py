@@ -130,3 +130,8 @@ EDGES: list[Edge] = [
 
 # 只被派生列用到、不在映射里的表
 EXTRA_TABLES = ("gold_etf_holdings", "cb_holdings")
+
+# 面板里**已知没有数据**的列：{列名: 原因}（口径见 `ashare/config.py`）。
+# 黄金当前一条都没有——但**必须显式写出来**：漏写一个空 dict 不会报错，
+# 就等于这个资产的空列没人管（`tests/test_causual_dead_columns.py` 盯着）。
+NOT_CONNECTED: dict[str, str] = {}

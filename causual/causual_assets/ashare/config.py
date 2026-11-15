@@ -18,7 +18,6 @@ from causual.causual_core.nodes import Node
 # 资产专用节点的传输特性：决定估计器（slow → 分布滞后，fast → 当期 DML）
 LOCAL_NODES: dict[str, Node] = {
     "SHIBOR3M": Node("SHIBOR3M", "D", "asset", "fast", 1, "Shibor 3M"),
-    "SOCIAL_FINANCING": Node("SOCIAL_FINANCING", "M", "natural", "slow", 6, "社融存量同比"),
     "PMI": Node("PMI", "M", "natural", "slow", 3, "制造业 PMI"),
     "MARGIN_BALANCE": Node("MARGIN_BALANCE", "D", "asset", "fast", 1, "两融余额"),
     "INSIDER_NET": Node("INSIDER_NET", "M", "natural", "slow", 3, "内部人净增持"),
@@ -26,6 +25,9 @@ LOCAL_NODES: dict[str, Node] = {
     "EQUITY_SUPPLY": Node("EQUITY_SUPPLY", "M", "natural", "slow", 6, "月度净融资额"),
     "AMOUNT_SHOCK": Node("AMOUNT_SHOCK", "D", "asset", "fast", 0, "放量冲击"),
 }
+# 已删：`SOCIAL_FINANCING`（v5.44）。它没做过任何边的 source，只当
+# `EQUITY_SUPPLY` 的 confounder，而那一列是恒 NaN 的桩——见 EDGES 里那条注释。
+# 社融数据接入时，节点 + `SF_YOY_CHG` 一整套再加回来。
 
 ASSET = "ashare"
 TITLE = "中证全指因果状态卡"
@@ -51,9 +53,7 @@ TREATMENT_COL: dict[str, str] = {
     N.REAL_YIELD: "RY_CHG_BP",
     N.VIX: "VIX_CHG",
     N.USDCNY: "USDCNY_RET",
-    N.CPI_SURPRISE: "CPI_SURPRISE",
     "SHIBOR3M": "SHIBOR_CHG_BP",
-    "SOCIAL_FINANCING": "SF_YOY_CHG",
     "PMI": "PMI_CHG",
     "MARGIN_BALANCE": "MARGIN_NET",
     "INSIDER_NET": "INSIDER_NET",
@@ -68,9 +68,7 @@ SOURCE_COL: dict[str, str] = {
     N.REAL_YIELD: "RY_CHG_BP",
     N.VIX: "VIX_CHG",
     N.USDCNY: "USDCNY_RET",
-    N.CPI_SURPRISE: "CPI_SURPRISE",
     "SHIBOR3M": "SHIBOR_CHG_BP",
-    "SOCIAL_FINANCING": "SOCIAL_FINANCING",
     "PMI": "PMI",
     "MARGIN_BALANCE": "MARGIN_NET",
     "INSIDER_NET": "INSIDER_NET",
@@ -78,6 +76,13 @@ SOURCE_COL: dict[str, str] = {
     "EQUITY_SUPPLY": "EQUITY_SUPPLY",
     "AMOUNT_SHOCK": "VOLUME_Z",
 }
+# 已删的两条（v5.44，宁缺毋滥）：
+#   `N.CPI_SURPRISE` —— A 股面板里根本没有这一列，也没有任何边用它。
+#                      留着就是"配置指着一个不存在的名字"，最坏情况是有人
+#                      照着它写新边，然后在估计里静默 continue。
+#   `SOCIAL_FINANCING` —— 桩列，见 EDGES 里 EQUITY_SUPPLY 那段注释。
+# `PMI` 这两条**保留**：PMI 列有数据、供需层还在用，只是当前没有 PMI 边
+# （v5.2 删边时留的话：将来可能作混杂/效应修饰）。
 
 EDGES: list[Edge] = [
     Edge(source=N.REAL_YIELD, target=TARGET,
@@ -140,14 +145,21 @@ EDGES: list[Edge] = [
          event_from_flag=True, event_window=(-1, 5),
          confounders=(N.VIX,), layer="associative",
          falsifier="份额增加来自套利盘而非国家队，后续无支撑"),
+    # 混杂 `SOCIAL_FINANCING`（社融存量同比）**已删除**（v5.44）。
+    # 数据层没有社融总量序列，那一列是恒 NaN 的桩；而两个估计器都会**静默跳过**
+    # 全 NaN/零方差的控制变量（`estimators.fit_dml_edge` 的 `notna().any()`、
+    # `fit_distributed_lag` 的 `sd 有限`），于是配置上写着"控制了社融"、
+    # 实际根本没控——这比不写更糟，因为没人会去查。
+    # 社融数据接入后再加回来（连同 `SF_YOY_CHG` 与 `SOCIAL_FINANCING` 节点）。
     Edge(source="EQUITY_SUPPLY", target=TARGET,
          mechanism="股票供给（月度净融资额）", direction=-1, magnitude=0.50,
          latency="1-6 月", regime_valid=ALL, estimator="distributed_lag",
          reading_mode="level_z", reading_desc="IPO+定增−回购（亿元/月）",
-         confounders=("SOCIAL_FINANCING",),
+         confounders=(),
          freq="ME", max_lag=6, detrend=True, split_contemp=True,
          tier="supply", use_in_alpha=False,   # 股票供给 = 供需层，不进 α
-         falsifier="融资顺周期：牛市里融资多，同期反而正相关"),
+         falsifier="融资顺周期：牛市里融资多，同期反而正相关；"
+                   "社融总量数据未接入，本轮未控制该混杂"),
     Edge(source="AMOUNT_SHOCK", target=TARGET,
          mechanism="放量冲击（z>3）", direction=-1, magnitude=0.30,
          latency="1-5 日", regime_valid=ALL, estimator="event_study",
@@ -161,3 +173,15 @@ EDGES: list[Edge] = [
 
 # 只被派生列用到、不在映射里的表
 EXTRA_TABLES = ("etf_shares",)
+
+# 面板里**已知没有数据**的列：{列名: 原因}。
+#
+# 写在这里 = "我知道它是空的，并且打算接数据"。**没写在这里却整列 NaN，测试当场红**
+# （`tests/test_causual_dead_columns.py`）。
+# 数据接上之后**必须删掉对应条目**——测试反向检查这件事（声明了却已经有值 → 红），
+# 否则这张表会烂成"永久豁免清单"，跟没有测试一样。
+#
+# 2026-11-15：`EQUITY_SUPPLY` 接上了真数据（面板改成映射 `equity_fin_monthly`），
+# 两条声明**当场过期**，测试反向检查立刻抓到 → 已清空。
+# 这个 dict 现在是空的，但**留着机制**：下一个没接的列必须在这里登记。
+NOT_CONNECTED: dict[str, str] = {}
