@@ -138,3 +138,44 @@ def national_etf_event(panel: pd.DataFrame, window: int = 60, q: float = 0.95,
     # min_periods 用 2/3 窗口：window=60 时就是原来的 40，不能改成 20（阈值会变）
     thr = dn.rolling(window, min_periods=max(2, int(window * 2 / 3))).quantile(q)
     return (dn > thr).astype(float).reindex(panel.index, method="ffill").fillna(0.0)
+
+
+# ---------------------------------------------------------------- 存量 → 流量
+def _flow_on_observation(panel: pd.DataFrame, col: str, name: str) -> pd.Series:
+    """存量列（raw：只在观测日有值）→ 流量：相邻观测的差分，落在**后一个观测日**。
+
+    这是把"季度/月度持仓"变成"本季/本月流入"的唯一正确做法：不能在日频
+    ffill 过的列上 `diff()`（那样大多数日子是 0，真实变化被抹平）。
+
+    ⚠️ **日期口径是"可见日"，不是"观测日"**：raw 列已按 `metadata.lag_days`
+    推后（`cb_holdings` 45 天、`gold_etf_holdings` 40 天），所以流量出现在
+    "市场能知道这份持仓的那一天"，而不是持仓所属的季末/月末。
+
+    这修的是**前视**：旧实现把差分落在观测日（季末），等于用了一份 40~45 天后
+    才公布的持仓——回测里就是未来函数。代价是季度聚合会整体后移约一个季度
+    （实测 `CB_GOLD_BUY` 76%、`ETF_FLOW` 100% 的季度数值变化），这是有意的。
+
+    边界：面板起点之前的观测装不进来，所以**第一笔**流量可能缺——`gold_etf_holdings`
+    少 2008-01-09 那笔（基期观测 2007-10-31 的可见日在面板起点之前），227 笔里缺 1 笔。
+    """
+    if col not in panel.columns:
+        _warn(f"面板里没有 {col}，{name} 整列 NaN")
+        return pd.Series(index=panel.index, dtype=float)
+    h = panel[col].dropna()
+    if len(h) < 2:
+        _warn(f"{col} 只有 {len(h)} 个观测，{name} 整列 NaN")
+        return pd.Series(index=panel.index, dtype=float)
+    flow = h.diff().dropna()
+    out: pd.Series = pd.Series(index=panel.index, dtype=float)
+    out.iloc[panel.index.searchsorted(flow.index, side="left")] = flow.to_numpy()
+    return _finite(out)
+
+
+def cb_gold_buy(panel: pd.DataFrame, col: str = "cb_holdings") -> pd.Series:
+    """央行购金（季度，吨）：`cb_holdings` 的相邻差分。"""
+    return _flow_on_observation(panel, col, "cb_gold_buy")
+
+
+def etf_flow(panel: pd.DataFrame, col: str = "gold_etf_holdings") -> pd.Series:
+    """黄金 ETF 持仓变化（月度）：`gold_etf_holdings` 的相邻差分。"""
+    return _flow_on_observation(panel, col, "etf_flow")
