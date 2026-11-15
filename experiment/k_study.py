@@ -91,20 +91,34 @@ def fit_k(regular: pd.DataFrame, k: int, seed: int = 42) -> dict:
             "raw_means": raw_means, "transmat": model.transmat_}
 
 
-def profile(res: dict, regular: pd.DataFrame) -> pd.DataFrame:
-    """每个状态的画像：天数、占比、平均持续、日均收益、波动。"""
+def profile(res: dict, regular: pd.DataFrame, asset: str = "") -> pd.DataFrame:
+    """每个状态的画像：天数、占比、平均持续、日均收益、波动。
+
+    两个**额外**画像列（`ma20_slope` / `realized_vol_20`）按"资产实际有什么特征"
+    来取：黄金的特征集里没有这两列（是 `realized_vol_5d` / `range_pct` / `vol_z`
+    / `mom_20` / `gap` 那套），缺了就跳过并打印说明——**不要假设每个资产都有**，
+    也不要静默少列（少列会被误当成"画像本来就这样"）。
+    """
     st = res["states"]
     ret = regular["log_return"]
     run = (st != st.shift()).cumsum()
     dur = st.groupby(run).size()
     first = st.groupby(run).first()
 
+    extras: list[tuple[str, str]] = []
+    for col, label in (("ma20_slope", "ma20_slope"),
+                       ("realized_vol_20", "realized_vol")):
+        if col in regular.columns:
+            extras.append((col, label))
+        else:
+            print(f"[k_study] {asset or '该资产'} 没有 {col}，画像里跳过 {label} 这一列")
+
     rows = []
     for sid, name in enumerate(f"s{i}" for i in range(res["k"])):
         mask = st == sid
         n = int(mask.sum())
         r = ret[mask]
-        rows.append({
+        row = {
             "state": name,
             "days": n,
             "share": n / max(len(st), 1),
@@ -112,9 +126,10 @@ def profile(res: dict, regular: pd.DataFrame) -> pd.DataFrame:
             "mean_ret_pct": float(r.mean() * 100),
             "vol_pct": float(r.std() * 100),
             "stay_prob": float(res["transmat"][sid, sid]),
-            "ma20_slope": float(regular.loc[mask, "ma20_slope"].mean()),
-            "realized_vol": float(regular.loc[mask, "realized_vol_20"].mean()),
-        })
+        }
+        for col, label in extras:
+            row[label] = float(regular.loc[mask, col].mean())
+        rows.append(row)
     return pd.DataFrame(rows)
 
 
@@ -198,7 +213,7 @@ def run(asset: str = "ashare", ks: tuple[int, ...] = (2, 3, 4, 5, 6),
     summary = []
     for k in ks:
         res = fit_k(regular, k, seed=seed)
-        prof = profile(res, regular)
+        prof = profile(res, regular, asset)
         prof.to_csv(OUT / f"profile_{asset}_k{k}.csv", index=False, encoding="utf-8-sig")
         plot_segments(res, regular, close.reindex(regular.index),
                       OUT / f"segments_{asset}_k{k}.png",
