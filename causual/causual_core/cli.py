@@ -128,7 +128,7 @@ def cmd_daily(args) -> int:
 
     sp = state_port()
     series, meta = _load_series(args.asset, state=sp)
-    view = sp.causual_view(args.asset, series, meta)
+    view = sp.state_view(args.asset, series, meta)
     try:
         pipeline.run(args.asset, series, meta, state=view, asof=args.asof,
                      force=getattr(args, "force", False))

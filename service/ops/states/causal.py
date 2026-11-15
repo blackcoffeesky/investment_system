@@ -55,9 +55,9 @@ class GenerateMacroState(BaseState):
                 if cards.exists(asset, month, kind="macro"):
                     skipped.append(f"{asset} {month}")
                     continue
-                state_view = ctx.services["state"]
-                series = _load_series(data, cards, asset, state_view)
-                view = state_view.causual_view(asset, series, data.metadata())
+                st = ctx.services["state"]
+                series = _load_series(data, cards, asset, st)
+                view = st.state_view(asset, series, data.metadata())
                 cards.generate_macro(asset, month, series, data.metadata(),
                                      state=view)
                 made.append(f"{asset} {month}")
@@ -108,8 +108,8 @@ class GenerateCardsState(BaseState):
         made, skipped, failed = [], [], []
         for asset in ASSETS:
             try:
-                state_view = ctx.services["state"]
-                series = _load_series(data, cards, asset, state_view)
+                st = ctx.services["state"]
+                series = _load_series(data, cards, asset, st)
                 date = cards.last_data_date(asset, series)
             except Exception as e:  # noqa: BLE001
                 failed.append((asset, f"取不到最后交易日：{type(e).__name__}: {e}"))
@@ -119,7 +119,7 @@ class GenerateCardsState(BaseState):
                 if cards.exists(asset, date):
                     skipped.append(f"{asset} {date}")
                     continue
-                view = state_view.causual_view(asset, series, meta)
+                view = st.state_view(asset, series, meta)
                 cards.generate(asset, series, meta, date=date, state=view)
                 made.append(f"{asset} {date}")
             except Exception as e:  # noqa: BLE001

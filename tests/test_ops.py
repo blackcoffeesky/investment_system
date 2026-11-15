@@ -99,7 +99,7 @@ class FakeState:
     def required_tables(self, asset):
         return ("csi_all",)
 
-    def causual_view(self, asset, series, meta=None):
+    def state_view(self, asset, series, meta=None):
         import pandas as pd
 
         return {"labels": pd.Series(dtype=str), "label_name": {},

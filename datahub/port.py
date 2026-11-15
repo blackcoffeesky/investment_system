@@ -162,39 +162,6 @@ class DataPort:
 
         return _dividend_yield(year)
 
-    def catalog(self) -> pd.DataFrame:
-        """所有表 + 派生量清单（`name/kind/source/depends/freq/n_rows/start_date/end_date/note`）。
-
-        ⚠️ **描述性、不稳定、仅供展示与调度决策——不要当契约。**
-        字段名与行数都可能随数据层内部调整而变；**要取数据请用 `read` / `read_many` /
-        `series_map` / 本类上的派生量方法**，别按这里的列写死依赖。
-
-        派生量（`breadth` / `dividend_yield`）也在里面，`kind="derived"`、
-        `source="derived"`、`depends` 写明依赖，`n_rows` 留空（现算，没有行数）。
-        """
-        import datahub.fin as fin
-
-        cols = ["name", "kind", "source", "depends", "freq",
-                "n_rows", "start_date", "end_date", "note"]
-        meta = fin.metadata()
-        for c in cols:
-            if c not in meta.columns:
-                meta[c] = None
-        tables = cast(pd.DataFrame, meta[cols].copy())
-
-        derived = pd.DataFrame([
-            {"name": "breadth", "kind": "derived", "source": "derived",
-             "depends": "stock_daily,company", "freq": "D", "n_rows": None,
-             "start_date": None, "end_date": None,
-             "note": "市场宽度（fin/derive.py，现算）"},
-            {"name": "dividend_yield", "kind": "derived", "source": "derived",
-             "depends": "adj_factor,stock_daily,shares_history", "freq": "Y",
-             "n_rows": None, "start_date": None, "end_date": None,
-             "note": "年度股息率 %（fin/derive.py，现算）"},
-        ], columns=cols)
-
-        return cast(pd.DataFrame, pd.concat([tables, derived], ignore_index=True))
-
     # ---------------- 受控动作
     def run_update(self, start: str = "2000-01-01", end: str | None = None,
                    only: list[str] | None = None) -> UpdateReport:

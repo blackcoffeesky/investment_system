@@ -202,11 +202,11 @@ class StatePort:
         hmm_part = features.loc[non_extreme]
         return stat.transition(hmm_part if len(hmm_part) else None)
 
-    # ---------------- 给因果层的视图
-    def causual_view(self, asset: str, series: dict, meta=None) -> dict:
-        """因果层需要的状态数据，一次给全。
+    # ---------------- 状态的视图
+    def state_view(self, asset: str, series: dict, meta=None) -> dict:
+        """需要的状态数据，一次给全。
 
-        因果层不知道状态层的存在，只消费这个 dict：
+        消费者不知道状态层的存在，只消费这个 dict：
         `{labels, label_name, labels_order, version, line}`。
 
         `series` / `meta` 保留只为**兼容既有调用点**（装配点仍会顺手传进来）：

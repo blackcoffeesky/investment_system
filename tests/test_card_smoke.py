@@ -31,7 +31,7 @@ def _generate(asset: str) -> tuple[Path, str, list[Path]]:
 
     sp = state_port()
     series, meta = _load_series(asset, state=sp)
-    view = sp.causual_view(asset, series, meta)
+    view = sp.state_view(asset, series, meta)
     path = pipeline.run(asset, series, meta, state=view, quiet=True)
 
     d = path.stem.split("_", 1)[1]                       # 2026-11-10

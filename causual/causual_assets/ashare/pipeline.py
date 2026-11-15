@@ -208,7 +208,7 @@ def build_panel(asof: str | None = None, series=None, meta=None,
     if not state or "spec" not in state:
         raise RuntimeError(
             f"{C.ASSET} 缺少状态模型的 spec——调用方要把 state['spec'] 传进来"
-            "（state_layer.port.causual_view 会给）")
+            "（state_layer.port.state_view 会给）")
     df = prepare(load_raw(series, meta))
     spec = state["spec"]
 
