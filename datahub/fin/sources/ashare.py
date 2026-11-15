@@ -346,7 +346,7 @@ def _fmt_eta(minutes: float) -> str:
 
 def ashare_financials_single(*, table: str = "", periods: int = 4,
                              max_codes: int = 0, gap: float = 0.3,
-                             backoffs: tuple[int, ...] = (20, 60, 180),
+                             backoffs: tuple[int, ...] = (5, 20, 60),
                              max_consecutive_fail: int = 5,
                              chunk_codes: int = 50,
                              on_chunk: Callable[[pd.DataFrame], None] | None = None,
@@ -355,13 +355,16 @@ def ashare_financials_single(*, table: str = "", periods: int = 4,
 
     为什么单开一条路（2026-11-15 实测）：
     - `finance-batch`：100 次/日，当天 100 次只写成 204 只（**76% 批次降级**）→ 27 天
-    - 单只：停手后秒级恢复，实测 **10~20 只/分** → 5562 只约 5~9 小时（估算，取决于降级频率）
+    - 单只：停手后秒级恢复，实测 100 只 1020 秒 = 5.9 只/分（100% 成功、0 失败）
     - 降级是**累计型**：连打三轮 29 → 18 → 15 只。慢一点撑不住（`gap=2.0` 那组反而 0/10），
       只能"打到就等"
 
-    退避（对**同一只**）：第 1 次失败等 20s、第 2 次 60s、第 3 次 180s，仍失败就跳过
-    （下轮自然续跑）。**连续 `max_consecutive_fail` 只都失败**就整体停——宁可明天续跑，
-    也别把 key 标记得更重。
+    **退避（对同一只）**：`5s → 20s → 60s → 放弃这只`（记失败，继续下一只，下轮续跑）。
+    单只放弃是常态；**连续 `max_consecutive_fail` 只都放弃**才整体停——那说明上游真的不行了。
+
+    **自动退慢档**（防"正好撞上限流窗口时 5 秒退避变死循环"）：
+    统计近 10 分钟的降级次数，`> 20` 次就把首退从 5s 抬到 20s（`20/60/180`）并打印；
+    之后**连续 10 分钟无降级**再退回 5s。只调等待、不改成功判据。
     """
     todo = [c for c in _all_codes() if c not in _codes_with("financials")]
     total_gap = len(todo)
@@ -370,8 +373,27 @@ def ashare_financials_single(*, table: str = "", periods: int = 4,
         return pd.DataFrame()
     if max_codes:
         todo = todo[:max_codes]
+
+    fast, slow = tuple(backoffs), (20, 60, 180)
+    cur = fast
+    slow_mode = False
+    deg: list[float] = []            # 近 10 分钟的降级时刻
+    WINDOW, TRIGGER = 600.0, 20
+    last_deg = 0.0
+
+    def _tune(now: float) -> None:
+        """按近 10 分钟的降级频次在 快档/慢档 之间切换。"""
+        nonlocal cur, slow_mode
+        deg[:] = [t for t in deg if now - t <= WINDOW]
+        if not slow_mode and len(deg) > TRIGGER:
+            slow_mode, cur = True, slow
+            print(f"  [退避] 10 分钟内降级 {len(deg)} 次 → 上游持续降级，已退到慢档 {list(slow)}")
+        elif slow_mode and not deg and now - last_deg > WINDOW:
+            slow_mode, cur = False, fast
+            print(f"  [退避] 10 分钟无降级 → 退回快档 {list(fast)}")
+
     print(f"  financials(单只)：本轮 {len(todo)} 只（总缺口 {total_gap}，"
-          f"退避 {list(backoffs)}s，每 {chunk_codes} 只落库）")
+          f"退避 {list(fast)}→放弃，每 {chunk_codes} 只落库）")
 
     rows: list[dict] = []
     failed: list[str] = []
@@ -380,12 +402,13 @@ def ashare_financials_single(*, table: str = "", periods: int = 4,
     last_reason = ""
 
     for idx, code in enumerate(todo, 1):
+        _tune(time.time())
         got: list[dict] = []
-        for attempt in range(len(backoffs) + 1):
+        for attempt in range(len(cur) + 1):
             if attempt:
-                wait = backoffs[attempt - 1]
+                wait = cur[attempt - 1]
                 print(f"    {code} 降级（{last_reason}），等 {wait}s "
-                      f"重试 {attempt}/{len(backoffs)}")
+                      f"重试 {attempt}/{len(cur)}")
                 time.sleep(wait)
             res = api_get("/finance", code=code, num=periods, gap=gap)
             if is_quota_error(res) or quota_left("finance") == 0:
@@ -398,6 +421,8 @@ def ashare_financials_single(*, table: str = "", periods: int = 4,
             if res.get("ok") and got:
                 break
             last_reason = str(res.get("reason") or res.get("error") or "空数据")
+            last_deg = time.time()
+            deg.append(last_deg)
 
         if got:
             ok_n += 1
@@ -424,7 +449,7 @@ def ashare_financials_single(*, table: str = "", periods: int = 4,
             rate = ok_n / (el / 60) if el > 0 else 0.0
             eta = (len(todo) - idx) / rate if rate > 0 else float("nan")
             print(f"[financials] 已处理 {idx}/{len(todo)} | 成功 {ok_n} | 失败 {fail_n} | "
-                  f"速率 {rate:.0f}/分 | 预计还需 {_fmt_eta(eta)}")
+                  f"速率 {rate:.0f}/分 | 退避 {cur[0]}s | 预计还需 {_fmt_eta(eta)}")
 
     if failed:
         print(f"  financials(单只)：{len(failed)} 只失败（降级/无数据），下轮续跑；"
