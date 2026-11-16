@@ -1,8 +1,7 @@
 """A 股插件：中证全指 + 量价状态 + 股票供给。
 
-面板：基础列来自耦合层 `shared.adapter.get_data`，派生列来自
-`shared.utils.features`（纯函数）+ 装配点给的股息率。**本文件是唯一装配点**
-（`load_raw`），`panel.py` 已删除。
+面板**由装配点传进来**（`load_raw(panel)`）：本文件不取数、不调 `get_data`。
+派生列（ETF 四列 / 股息率）也已由耦合层算好，这里只做**装配**与特征计算。
 """
 
 from __future__ import annotations
@@ -14,8 +13,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from shared.adapter import Panel, get_data, tables_of
-from shared.utils import features, time_align
+from shared.adapter import Panel, tables_of
 
 from causual.causual_core import snapshot
 from causual.causual_core.estimators import EdgeModel, fit_all
@@ -23,11 +21,14 @@ from causual.web.render import build_card, build_console
 from causual.causual_core.signal_layer import build_bundle
 from causual.causual_assets.ashare import config as C
 
-# 面板底层读哪些表 = 耦合层的声明（**不抄一份**，抄了就是两份真相）
-REQUIRED_TABLES = tables_of(Panel.CAUSUAL_ASHARE)
+# 本资产要哪个面板（装配点按这个取数：`get_data(PANEL_KIND)`）
+PANEL_KIND = Panel.CAUSUAL_ASHARE
 
-# 面板列 = 耦合层的**语义列名**（2026-11-15 起；`CLOSE`/`VIX` 那套大写内部名退役）。
-# 不另写映射表：`base[PANEL_COLS]` 少一列就 KeyError，比"悄悄缺列"好。
+# 面板底层读哪些表 = 耦合层的声明（**不抄一份**，抄了就是两份真相）
+REQUIRED_TABLES = tables_of(PANEL_KIND)
+
+# 基础列 = 耦合层的**语义列名**（`CLOSE`/`VIX` 那套大写内部名已退役）。
+# 少一列就 KeyError，比"悄悄缺列"好。
 PANEL_COLS: tuple[str, ...] = (
     # 价格 / 量
     "open", "high", "low", "close", "volume",
@@ -42,12 +43,15 @@ PANEL_COLS: tuple[str, ...] = (
     "vix", "usdcny", "usd_index", "fed_rate", "real_yield_10y", "geopolitic_risk",
 )
 
-# 股息率（年度，百分数）：datahub **现算的派生量**，由装配点塞进 series。
-DIVIDEND_YIELD_KEY = "dividend_yield:yield_mcap_weighted"
+# 由**耦合层算好**的派生列（datahub 的 `DERIVED` 注册表 → adapter 落成面板列）。
+# 2026-11-16 起 causual 不再自己算这五列。
+DERIVED_COLS: tuple[str, ...] = (
+    "etf_dispersion", "size_flow", "national_etf", "national_etf_event",
+    "dividend_yield",
+)
 
 ROOT = Path(__file__).resolve().parents[3]
 DATA = ROOT / "causual" / "data"   # 状态模型产物由状态层写，这里只读
-PANEL = DATA / "ashare_macro.csv"
 
 ASSET = C.ASSET
 TITLE = C.TITLE
@@ -73,60 +77,33 @@ def _warn(msg: str) -> None:
 
 
 def _derived(df: pd.DataFrame, base: pd.DataFrame) -> dict[str, pd.Series]:
-    """宽基 ETF 的四列派生量——**唯一的装配点**。
+    """派生列接缝：把**耦合层算好的**那几列装配进面板。
 
-    算法本体在 `shared.utils.features`（纯函数），这里只负责：
-    - 传什么（耦合层给的 `base`：含 `etf_sse50/etf_csi300/etf_csi1000` 分组份额）
-    - 算不出来就不入面板，并**出声**（四列整体消失过，见 CHANGES v5.40）
+    2026-11-16 起这些列由 datahub 的 `DERIVED` 注册表算出、adapter 落成面板列，
+    causual **不再计算**（`shared.utils.features` 那套算法已迁走）。这里只剩装配，
+    所以是"从 `base` 取列"，不是"算"。
 
-    ⚠️ `tests/test_causual_panel_derived.py` 的反向验证**打桩本函数**：让它返回
-    空 dict，那几条"派生列必须存在且新鲜"的断言必须变红。所以要保留这个接缝，
-    别把这段逻辑内联进 `load_raw`。
+    ⚠️ 这个接缝**必须保留**：`tests/test_causual_panel_derived.py` 的反向验证打桩它
+    （让它返回空 dict），那几条"派生列必须存在且新鲜"的断言必须变红。哪怕将来它
+    退化成一个空实现，也别删——它是那几条测试唯一的着力点。
+
+    **缺列直接 `KeyError`**（不再"告警 + 整列 NaN"）：与 `PANEL_COLS` 同一套失败策略。
+    静默 NaN 比崩溃难查——卡片上只会少一行，没人会去翻 stderr。
     """
-    out: dict[str, pd.Series] = {}
-    try:
-        for col, fn in (("SIZE_FLOW", features.size_flow),
-                        ("ETF_DISPERSION", features.etf_dispersion),
-                        ("NATIONAL_ETF", features.national_etf),
-                        ("NATIONAL_ETF_EVENT", features.national_etf_event)):
-            s = fn(base)
-            if s.notna().any():
-                out[col] = s
-            else:
-                _warn(f"{col} 算不出来（ETF 分组份额缺失？），本列不入面板")
-    except Exception as exc:  # noqa: BLE001
-        _warn(f"派生列计算失败（{type(exc).__name__}: {exc}），本次只保留已算出的 "
-              f"{sorted(out)}")
-    return out
+    missing = [c for c in DERIVED_COLS if c not in base.columns]
+    if missing:
+        raise KeyError(f"{PANEL_KIND.name} 缺这些派生列：{missing}")
+    return {c: base[c] for c in DERIVED_COLS}
 
 
-def _dividend_yield(idx: pd.DatetimeIndex, series) -> pd.Series:
-    """年度股息率（全市场，市值加权，%）→ 日频。
+def load_raw(panel: pd.DataFrame) -> pd.DataFrame:
+    """面板 → 因果层宽表。**数据由装配点传入，本函数不取数。**
 
-    装配点已经把它对齐到**次年 1 月 1 日**（年 Y 的除息日都落在 Y 内，数据到
-    Y+1 才完整），所以这里只做 ffill：**Y 年看到的是 Y-1 的值，无前视**。
-
-    缺数据时给整列 NaN 并告警——它是供需层的展示项，不该拖垮整张面板。
+    `panel` = `get_data(Panel.CAUSUAL_ASHARE)` 的输出（基础列 + 派生列）。
     """
-    s = (series or {}).get(DIVIDEND_YIELD_KEY)
-    if s is None or len(s) == 0:
-        _warn(f"series 里没有 {DIVIDEND_YIELD_KEY!r}（datahub 的派生量没装配上？）"
-              "，DIVIDEND_YIELD 置 NaN")
-        return pd.Series(index=idx, dtype=float)
-    # 这里**要日频**（下游按日看），显式传 ffill=True——to_daily 的默认已改成 False
-    return time_align.to_daily(s, idx, 0, ffill=True)
-
-
-def load_raw(series=None, meta=None) -> pd.DataFrame:
-    """面板 = 耦合层基础列 + 派生列。`meta` 不再需要（对齐由耦合层负责）。
-
-    `series` 只用于股息率（`CausalPort.derived_series` 装进来的那一列）。
-    """
-    base = get_data(Panel.CAUSUAL_ASHARE)
-    df = base[list(PANEL_COLS)].copy()
-    for col, s in _derived(df, base).items():
+    df = panel[list(PANEL_COLS)].copy()
+    for col, s in _derived(df, panel).items():
         df[col] = s
-    df["DIVIDEND_YIELD"] = _dividend_yield(df.index, series)
     return df
 
 
@@ -197,11 +174,12 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def build_panel(asof: str | None = None, series=None, meta=None,
+def build_panel(asof: str | None = None, panel: pd.DataFrame | None = None,
                 state: dict | None = None) -> tuple[pd.DataFrame, dict]:
     """拼面板。
 
-    `state` 由**调用方**给出（service 从状态层端口取、CLI 直接取），
+    `panel` 由**装配点**传进来（`get_data(Panel.CAUSUAL_ASHARE)` 的输出）。
+    `state` 也由调用方给出（service 从状态层端口取、CLI 直接取），
     结构 `{"labels": Series, "label_name": dict, "version": str}`。
     因果层不 import 状态层——只消费传进来的标签。
     """
@@ -209,7 +187,9 @@ def build_panel(asof: str | None = None, series=None, meta=None,
         raise RuntimeError(
             f"{C.ASSET} 缺少状态模型的 spec——调用方要把 state['spec'] 传进来"
             "（state_layer.port.state_view 会给）")
-    df = prepare(load_raw(series, meta))
+    if panel is None:
+        raise RuntimeError(f"{C.ASSET} 的面板没有传进来（装配点负责 get_data）")
+    df = prepare(load_raw(panel))
     spec = state["spec"]
 
     set_state_vocab(state)
@@ -413,7 +393,7 @@ def supply_items(df: pd.DataFrame) -> list[dict]:
         # 硬算出来的"同比分位"是伪量化）。freq="YE" 让分位在**年度序列**上算，
         # 否则按月 resample 后窗口 60 期里其实只有 5 个不同的值。
         pair_view(df, group="股东回报 / 估值", label="股息率（市值加权）", direction="+",
-                  pos_col="DIVIDEND_YIELD", pos_basis="level",
+                  pos_col="dividend_yield", pos_basis="level",
                   freq="YE", min_periods=8,
                   note="年度，市值加权；只有位置维度"),
     ]

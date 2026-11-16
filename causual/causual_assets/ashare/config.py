@@ -57,7 +57,7 @@ TREATMENT_COL: dict[str, str] = {
     "PMI": "PMI_CHG",
     "MARGIN_BALANCE": "MARGIN_NET",
     "INSIDER_NET": "insider_net",
-    "NATIONAL_ETF": "NATIONAL_ETF_EVENT",
+    "NATIONAL_ETF": "national_etf_event",
     "EQUITY_SUPPLY": "SUPPLY_Z",
     "AMOUNT_SHOCK": "AMOUNT_SHOCK",
 }
@@ -72,7 +72,7 @@ SOURCE_COL: dict[str, str] = {
     "PMI": "pmi",
     "MARGIN_BALANCE": "MARGIN_NET",
     "INSIDER_NET": "insider_net",
-    "NATIONAL_ETF": "NATIONAL_ETF",
+    "NATIONAL_ETF": "national_etf",
     "EQUITY_SUPPLY": "equity_fin_monthly",
     "AMOUNT_SHOCK": "VOLUME_Z",
 }

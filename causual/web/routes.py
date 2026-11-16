@@ -13,6 +13,7 @@ from typing import Any
 
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
+import pandas as pd
 
 from causual.port import ASSET_NAME, get_port
 from service.registry import Module, register
@@ -58,22 +59,15 @@ def view(request: Request, asset: str, date: str, kind: str = "card"):
          "body": port.to_html(text), "asset_name": ASSET_NAME[asset]})
 
 
-def _series_for(request: Request, asset: str) -> tuple[dict, Any]:
-    """从 service 给的端口读数据，组装成 series（路由不直接 import 数据层）。"""
-    services = request.app.state.services
-    data = services["datahub"]
-    causal = get_port()
-    out: dict = {}
-    for t in causal.required_tables(asset):
-        s = data.read(t)
-        if s is None:
-            continue
-        if hasattr(s, "columns"):
-            for c in s.columns:
-                out[f"{t}:{c}"] = s[c]
-        else:
-            out[t] = s
-    return out, data.metadata()
+def _panel_for(request: Request, asset: str) -> pd.DataFrame:
+    """装配点：路由等价于该模块的 CLI，可以在这里取数（`AGENTS.md` §4'③）。
+
+    要哪个面板由资产包声明（`CausalPort.panel_kind`），核心代码只收 DataFrame。
+    用的是 `services["datahub"]` 那个同一个单例（`ports()` 里就是 `get_port`）。
+    """
+    from shared.adapter import get_data
+
+    return get_data(get_port().panel_kind(asset))
 
 
 @router.post("/card/{asset}/{date}/regenerate")
@@ -81,8 +75,9 @@ def regenerate(request: Request, asset: str, date: str):
     if asset not in ASSET_NAME:
         raise HTTPException(404, f"未知资产：{asset}")
     try:
-        series, meta = _series_for(request, asset)
-        get_port().regenerate(asset, date, series, meta)
+        panel = _panel_for(request, asset)
+        meta = request.app.state.services["datahub"].metadata()
+        get_port().regenerate(asset, date, panel, meta=meta)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(500, f"重生成失败：{type(e).__name__}: {e}") from e
     return RedirectResponse(f"/card/{asset}/{date}", status_code=303)

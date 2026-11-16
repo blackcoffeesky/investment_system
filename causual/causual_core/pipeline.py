@@ -3,9 +3,9 @@
     python -m causual.causual_core.cli daily --asset ashare
     python -m causual.causual_core.cli daily --asset gold --asof 2026-11-03
 
-数据从**外面传进来**（`series` + `meta`），这里不碰数据层：
-- service 走 `ctx.services["datahub"]` 读好再传
-- 命令行由 `cli.py` 负责装配
+数据从**外面传进来**（`panel: DataFrame`），这里不碰数据层：
+- service / CLI 在装配点 `get_data(Panel.CAUSUAL_*)` 取好再传
+- 本模块不认识 datahub，也不接受 `{表名: Series}` 的 dict
 
 拒绝条件（fail-closed）：
 1. 该资产没有状态模型 / 没有边模型快照；
@@ -34,9 +34,9 @@ class CardRejected(RuntimeError):
 
 def run(
     asset: str,
-    series: dict,
-    meta: pd.DataFrame | None = None,
+    panel: pd.DataFrame,
     *,
+    meta: pd.DataFrame | None = None,
     state: dict | None = None,
     asof: str | None = None,
     out_dir: str | Path = OUT,
@@ -44,9 +44,14 @@ def run(
     force: bool = False,
     quiet: bool = False,
 ) -> Path:
+    """出卡。`panel` 是数据；`meta`（表清单的 end_date）只用于**新鲜度提示 / 月频归档月**。
+
+    `meta` 可选：没有就退化成"不提示数据滞后、归档月用自然月"。
+    装配点（cli / service / web）手上有 `port.metadata()`，应当传进来。
+    """
     pkg = load_asset(asset)
 
-    df, spec = pkg.build_panel(asof, series=series, meta=meta, state=state)
+    df, spec = pkg.build_panel(asof, panel=panel, state=state)
     try:
         models, snap_meta = snapshot.load(asset, pkg.EDGES)
     except FileNotFoundError as e:

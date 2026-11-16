@@ -28,10 +28,10 @@ service/        服务层：统一入口 + 运维 + Web
 
 ```python
 state = {"labels", "label_name", "labels_order", "version", "spec", "line"}
-pipeline.run(asset, series, meta, state=state)
+pipeline.run(asset, panel, meta=meta, state=state)   # meta 可选，只给新鲜度/归档月用
 ```
 
-`series` 与 `meta` 也全部由调用方装好——`causual_core` 里没有取数代码。
+`panel`（DataFrame）与 `meta` 都由调用方装好——`causual_core` 里没有取数代码。
 
 卡片里的**市场状态只留一行**，画像与黏性在 `/state` 页（归状态层）。
 
@@ -43,11 +43,13 @@ pipeline.run(asset, series, meta, state=state)
 datahub.sqlite
      │
      ▼
-shared/adapter/get_data(Panel.CAUSUAL_{ASHARE,GOLD})   ← 唯一知道"表名 ↔ 语义列名"的地方
+装配点（cli.py / web/routes.py / service）：get_data(Panel.CAUSUAL_{ASHARE,GOLD})
      │  返回语义列名的日频宽表（open / close / vix / cb_holdings …）
+     │  **派生列也算好了**（etf_dispersion / size_flow / national_etf /
+     │   national_etf_event / dividend_yield / cb_gold_buy / etf_flow）
      ▼
-causual_assets/{ashare,gold}/pipeline.py::load_raw()   ← 本模块唯一装配点
-     │  基础列 + 派生列（features.py 纯函数）+ 股息率（装配点塞的 series）
+causual_assets/{ashare,gold}/pipeline.py::load_raw(panel)   ← 只装配，不取数
+     │  PANEL_COLS 选列 + _derived 把耦合层算好的派生列搬进来
      ▼
 causual_assets/{ashare,gold}/pipeline.py
      │  prepare()      → 特征 + 供需层
@@ -94,12 +96,13 @@ causual/output/{asset}/cards/
 
 | 文件 | 职责 |
 |---|---|
-| `ashare/pipeline.py` | **唯一装配点**：`load_raw()` 从耦合层拿基础列 + 拼派生列；`_derived(df, base)` 是四列 ETF 派生量的唯一接缝（测试打桩它）；`prepare()` 算特征、供需层 |
+| `ashare/pipeline.py` | `PANEL_KIND`（要哪个耦合层面板）+ `PANEL_COLS`（选哪些基础列）+ `DERIVED_COLS`（耦合层算好的派生列）；`load_raw(panel)` **只装配不取数**；`_derived(df, base)` 是派生列的唯一接缝（测试打桩它）；`prepare()` 算特征、供需层 |
 | `ashare/config.py` | 边的定义（机制、方向、估计器、是否进 α）+ `NOT_CONNECTED`（已知没数据的列） |
-| `gold/*` | 同结构；`_derived` 装配央行购金 / ETF 流量的两条流量列 |
+| `gold/*` | 同结构；`DERIVED_COLS = ("cb_gold_buy", "etf_flow")` |
 
-> `panel.py` 已于 2026-11-15 删除：字段映射搬进各资产的 `pipeline.BASE_COLS`，
-> ETF 代码归一与分组在 `shared.adapter`，派生列算法在 `shared.utils.features`。
+> `panel.py` 已于 2026-11-15 删除；2026-11-16 起**连派生列也不再由 causual 算**：
+> 六列（ETF 四列 + 股息率 + 黄金两条流量）都在 datahub 的 `DERIVED` 注册表里，
+> adapter 落成面板列。字段映射在 `pipeline.PANEL_COLS`，代码归一在 `shared.adapter`。
 
 ### 4.3 产物目录
 
@@ -150,7 +153,7 @@ causual/output/{asset}/cards/*.md  卡片
 ```
 python -m causual.causual_core.daily --asset ashare
   │
-  ├─ pipeline.load_raw()        → get_data() + features   # 耦合层基础列 + 派生列
+  ├─ pipeline.load_raw()        → 读面板列（派生列已由耦合层算好）   # 不取数
   ├─ pipeline.prepare()         → 特征 + 供需层
   ├─ pipeline.load_spec()       → 状态模型参数
   ├─ regime_infer.extend()      → 最新标签（含外推）
@@ -238,6 +241,7 @@ python -m datahub.fin.check
 |---|---|---|
 | v5.45 | 黄金 `CB_GOLD_BUY` / `ETF_FLOW` 的落位日改成**发布可见日**（央行购金 +45 天、ETF 持仓 +40 天）；旧实现用数据所属日 = **前视** | 季度聚合显著变化：`CB_GOLD_BUY` 32/42 个季度变（例 `2026-03-31` 2.32 → 120.26）、`ETF_FLOW` 76/76 变（例 `2026-09-30` 211.17 → −69.05）。**黄金卡片供需段与季度分位会跟着变，不是回归**。完整对照表见 `CHANGES.md` v5.45 |
 | v5.46 | 面板列名改成语义名（`CLOSE`→`close`），三对同值列合并 | 面板列数变少（ashare 38→35/59→56，gold 20→19/29→28），**数值逐位不变**；详情卡「数据新鲜度」行名变 `fed_rate` 这种小写名 |
+| v5.48 | 六列派生量沉进耦合层（ETF 四列 + 股息率 + 黄金两条流量），causual **不再计算、只装配**；股息率缺列改 `KeyError`（不再"告警 + 整列 NaN"） | 列名变 `etf_dispersion` / `size_flow` / `national_etf` / `national_etf_event` / `dividend_yield` / `cb_gold_buy` / `etf_flow`；**列数与数值都不变**（逐位比对过）。`series: dict` 通道彻底删除，`load_raw` / `build_panel` / `run` / `port.generate` 全部收 `DataFrame` |
 
 ---
 
@@ -247,13 +251,17 @@ causual 不直接对外提供服务。service 通过三样东西使用它：
 
 | 接口 | 位置 | 契约 | 谁调用 |
 |---|---|---|---|
-| `load_raw(series=None)` | `causual_assets/{asset}/pipeline.py` | 从耦合层拼日频宽表；`_derived` 是派生列的唯一接缝（测试打桩它） | `pipeline` / 测试 |
-| `pipeline.run(asset, series, meta, asof, quiet)` | `causual_core/pipeline.py` | 出卡；**只吃数据，不取数** | `causual.port.CausalPort` |
-| `required_tables(asset)` | `causual/port.py` | 该资产要哪些表（纯声明，调用方负责读） | CLI / service 装配点 |
-| `derived_series(asset, data)` | `causual/port.py` | 数据层**现算的派生量**（股息率）→ `{"表名:列名": Series}`，直接 `series.update(...)` | CLI / service 装配点（**唯一入口**，两边别再各拼一份） |
+| `load_raw(panel)` | `causual_assets/{asset}/pipeline.py` | **只装配不取数**：按 `PANEL_COLS` 选列，`_derived` 把耦合层算好的派生列搬进来（缺列 `KeyError`） | `pipeline` / 测试 |
+| `pipeline.run(asset, panel, *, meta, state, asof, quiet)` | `causual_core/pipeline.py` | 出卡；**只吃数据，不取数**。`meta` 可选，只给新鲜度提示与月频归档月 | `causual.port.CausalPort` |
+| `required_tables(asset)` | `causual/port.py` | 该资产要哪些表（纯声明，= `tables_of(PANEL_KIND)`） | CLI / service 装配点 |
+| `panel_kind(asset)` | `causual/port.py` | 该资产要哪个耦合层面板（纯查表，**不取数**）；装配点拿它 `get_data(...)` | CLI / service / web |
 | `macro_month(meta, *, asset=None)` | `causual/port.py` | 月频卡该覆盖的月份；`asset` 是**关键字参数**（传了就按该资产的表收窄） | service（`exists` 之前） |
+| `generate / generate_macro(asset, panel, *, month, date, state, meta)` | `causual/port.py` | 出卡；`panel` 由装配点取好 | service |
 | `list_cards / get_card / to_html` | `causual/port.py` | 卡片检索与 Markdown→HTML | `causual/web/routes.py` |
 | `register_module()` | `web/routes.py` | 返回 `Module`（router + templates + nav + port） | `service.registry.load()` |
+
+> `derived_series(asset, data)` 已于 2026-11-16 **退役**：股息率是面板列，
+> 装配点直接 `get_data(...)["dividend_yield"]`，不再需要"装配派生量"这一步。
 
 `CardService.generate()` 幂等：目标日期已有卡片就直接返回路径。
 

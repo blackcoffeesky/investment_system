@@ -25,14 +25,17 @@ def _generate(asset: str) -> tuple[Path, str, list[Path]]:
     （这正是黄金被 A 股的表拖到 10 月那个 bug 的检查点）。
     """
     from causual.causual_core import pipeline
-    from causual.causual_core.cli import _load_series
+    from causual.causual_core.cli import _load_panel
     from causual.port import get_port as causal_port
+    from datahub.port import get_port as data_port
     from state_layer.port import get_port as state_port
 
     sp = state_port()
-    series, meta = _load_series(asset, state=sp)
-    view = sp.state_view(asset, series, meta)
-    path = pipeline.run(asset, series, meta, state=view, quiet=True)
+    # 装配点取一次面板，喂给状态层和因果层（2026-11-16 起两边都只收 DataFrame）
+    panel = _load_panel(asset)
+    view = sp.state_view(asset, panel)
+    meta = data_port().metadata()
+    path = pipeline.run(asset, panel, meta=meta, state=view, quiet=True)
 
     d = path.stem.split("_", 1)[1]                       # 2026-11-10
     month = causal_port().macro_month(meta, asset=asset)
@@ -94,11 +97,10 @@ def test_state_features_match_prepare():
     和因果层 prepare() 里的公式是两份实现——这条测试防止漂移。
     """
     from causual.causual_assets.ashare import pipeline as P
-    from causual.causual_core.cli import _load_series
+    from causual.causual_core.cli import _load_panel
     from state_layer import state_assets
 
-    series, meta = _load_series("ashare")
-    raw = P.load_raw(series, meta)
+    raw = P.load_raw(_load_panel("ashare"))
     prep = P.prepare(raw)
 
     pkg = state_assets.load("ashare")

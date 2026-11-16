@@ -138,36 +138,23 @@ class CausalPort:
 
         return tuple(load_asset(asset).REQUIRED_TABLES)
 
-    def last_data_date(self, asset: str, series: dict) -> str:
+    def last_data_date(self, asset: str, panel: pd.DataFrame) -> str:
         """面板最后一天（真实交易日，不是外推日）。
 
-        价格表可能是多列表（`csi_all` 有 close/high/low…），series 里存的是
-        `csi_all:close` 这种键——所以不能直接 `series.get("csi_all")`。
+        `panel` = `get_data(Panel.CAUSUAL_*)` 的输出，价格列叫 `close`。
         """
-        table = "csi_all" if asset == "ashare" else "gold_cny"
-        s = series.get(table)
-        if s is None:
-            s = series.get(f"{table}:close")
-        if s is None:
-            s = next((v for k, v in sorted(series.items())
-                      if k.startswith(f"{table}:")), None)
-        if s is None or not len(s):
-            raise RuntimeError(f"{asset} 没有价格数据（{table} 为空）")
-        return str(s.index[-1].date())
+        if panel is None or "close" not in panel.columns or not len(panel):
+            raise RuntimeError(f"{asset} 的面板没有 close 列（装配点传错了？）")
+        return str(pd.DatetimeIndex(panel.index)[-1].date())
 
-    def derived_series(self, asset: str, data) -> dict[str, pd.Series]:
-        """面板需要的**派生量**（数据层现算、不落表的那种）。
+    def panel_kind(self, asset: str):
+        """这个资产要哪个耦合层面板（`shared.adapter.Panel` 的枚举值）。
 
-        目前只有 A 股的股息率（走数据层的 `series_map`，派生量登记在
-        `DERIVED` 注册表里，形态与表同构）。CLI 与 service 共用
-        这一个装配点——两边各自拼一份，必然漂移（一边有股息率、一边没有）。
-
-        `data` 是 `DataPort`（由调用方传入）。返回的 Series 已按 `"表名:列名"`
-        命名，直接 `series.update(...)` 即可。
+        **纯查表，不取数**：装配点（cli / service / web）拿它去 `get_data(...)`。
         """
-        from causual.causual_core.cli import derived_series
+        from causual.causual_assets import load as load_asset
 
-        return derived_series(asset, data)
+        return load_asset(asset).PANEL_KIND
 
     def macro_month(self, meta=None, *, asset: str | None = None) -> str:
         """月频卡该覆盖的月份（宏观表 end_date 的最大值所在月）。
@@ -187,34 +174,37 @@ class CausalPort:
     def exists(self, asset: str, date: str, kind: str = "card") -> bool:
         return card_path(asset, date, kind).exists()
 
-    def generate(self, asset: str, series: dict, meta=None,
+    def generate(self, asset: str, panel: pd.DataFrame,
                  date: str | None = None,
-                 state: dict | None = None) -> Path:
+                 state: dict | None = None,
+                 meta: pd.DataFrame | None = None) -> Path:
         if date is None:
-            date = self.last_data_date(asset, series)
+            date = self.last_data_date(asset, panel)
         path = card_path(asset, date)
         if path.exists():
             return path
         from causual.causual_core import pipeline
 
-        return pipeline.run(asset, series, meta, state=state, asof=date, quiet=True)
+        return pipeline.run(asset, panel, meta=meta, state=state, asof=date, quiet=True)
 
-    def generate_macro(self, asset: str, month: str, series: dict,
-                       meta=None, state: dict | None = None) -> Path:
+    def generate_macro(self, asset: str, month: str, panel: pd.DataFrame,
+                       state: dict | None = None,
+                       meta: pd.DataFrame | None = None) -> Path:
         path = card_path(asset, month, "macro")
         if path.exists():
             return path
         from causual.causual_core import pipeline
 
-        pipeline.run(asset, series, meta, state=state, quiet=True)
+        pipeline.run(asset, panel, meta=meta, state=state, quiet=True)
         return card_path(asset, month, "macro")
 
-    def regenerate(self, asset: str, date: str, series: dict, meta=None,
-                   state: dict | None = None) -> Path:
+    def regenerate(self, asset: str, date: str, panel: pd.DataFrame,
+                   state: dict | None = None,
+                   meta: pd.DataFrame | None = None) -> Path:
         path = card_path(asset, date)
         if path.exists():
             path.unlink()
-        return self.generate(asset, series, meta, date=date, state=state)
+        return self.generate(asset, panel, date=date, state=state, meta=meta)
 
 
 _INSTANCE: CausalPort | None = None

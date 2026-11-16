@@ -1,7 +1,7 @@
 """黄金插件：把 状态层 + causual_core 组装起来。
 
-面板：基础列来自耦合层 `shared.adapter.get_data`，流量列（央行购金 / ETF 持仓变化）
-来自 `shared.utils.features`（纯函数）。**本文件是唯一装配点**（`load_raw`）。
+面板**由装配点传进来**（`load_raw(panel)`）：本文件不取数、不调 `get_data`。
+两条流量列（央行购金 / ETF 持仓变化）也已由耦合层算好，这里只做装配。
 """
 
 from __future__ import annotations
@@ -13,8 +13,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from shared.adapter import Panel, get_data, tables_of
-from shared.utils import features
+from shared.adapter import Panel, tables_of
 from shared.utils.calendar import merge_shared_nodes
 from causual.causual_core import snapshot
 from causual.causual_core.estimators import EdgeModel, fit_all
@@ -22,23 +21,28 @@ from causual.web.render import build_card, build_console
 from causual.causual_core.signal_layer import build_bundle
 from causual.causual_assets.gold import config as C
 
-# 面板底层读哪些表 = 耦合层的声明（**不抄一份**）
-REQUIRED_TABLES = tables_of(Panel.CAUSUAL_GOLD)
+# 本资产要哪个面板（装配点按这个取数：`get_data(PANEL_KIND)`）
+PANEL_KIND = Panel.CAUSUAL_GOLD
 
-# 面板列 = 耦合层的**语义列名**（2026-11-15 起；`CLOSE`/`VIX` 那套大写内部名退役）。
+# 面板底层读哪些表 = 耦合层的声明（**不抄一份**）
+REQUIRED_TABLES = tables_of(PANEL_KIND)
+
+# 基础列 = 耦合层的**语义列名**（`CLOSE`/`VIX` 那套大写内部名已退役）。
 PANEL_COLS: tuple[str, ...] = (
     # 价格 / 量
     "open", "high", "low", "close", "volume",
-    # 黄金供需（`cb_holdings` / `gold_etf_holdings` 按 raw 策略给，`_derived` 再差分）
+    # 黄金供需（存量：`cb_holdings` / `gold_etf_holdings` 按 raw 策略给）
     "xau_usd", "cb_holdings", "gold_etf_holdings",
     "gold_open_interest", "gold_cot_net_long", "gold_cpi_surprise",
     # 共享宏观
     "vix", "usdcny", "usd_index", "fed_rate", "real_yield_10y", "geopolitic_risk",
 )
 
+# 由**耦合层算好**的派生列（存量 → 流量的差分，落在发布**可见日**）。
+DERIVED_COLS: tuple[str, ...] = ("cb_gold_buy", "etf_flow")
+
 ROOT = Path(__file__).resolve().parents[3]
 DATA = ROOT / "causual" / "data"   # 状态模型产物由状态层写，这里只读
-PANEL = DATA / "gold_macro.csv"
 
 ASSET = C.ASSET
 TITLE = C.TITLE
@@ -63,32 +67,28 @@ def _warn(msg: str) -> None:
 
 
 def _derived(df: pd.DataFrame, base: pd.DataFrame) -> dict[str, pd.Series]:
-    """黄金的两条流量列——**唯一的装配点**。
+    """派生列接缝：把**耦合层算好的**两条流量列装配进面板。
 
-    存量（`cb_holdings` / `gold_etf_holdings`，耦合层按 `raw` 策略给：只在
-    **发布可见日**有值）→ 流量：相邻观测差分。算法在
-    `shared.utils.features`（`cb_gold_buy` / `etf_flow`），这里只负责拼。
-
-    ⚠️ 落位日是**可见日**（央行购金 +45 天、ETF 持仓 +40 天），不是数据所属日
-    ——旧实现用未推后的序列，等于提前 40~45 天就用到了数据（前视）。
+    存量（`cb_holdings` / `gold_etf_holdings`）→ 流量的差分现在由 datahub 的
+    `DERIVED` 注册表算（`shared.utils.features.cb_gold_buy` / `etf_flow` 已迁走），
+    落位日是**发布可见日**（央行购金 +45 天、ETF 持仓 +40 天），不是数据所属日
+    ——旧实现在 causual 里按观测日差分，等于提前 40~45 天用到数据（前视）。
     见 CHANGES v5.45（含季度聚合变化的对照表）。
+
+    ⚠️ 接缝**必须保留**：测试的反向验证打桩它（返回空 dict → 派生列消失 → 断言变红）。
+
+    **缺列直接 `KeyError`**：与 `PANEL_COLS` 同一套失败策略（静默 NaN 比崩溃难查）。
     """
-    getattr_ok = ("cb_holdings", "gold_etf_holdings")
-    if not all(c in base.columns for c in getattr_ok):
-        _warn(f"耦合层没给 {getattr_ok}，CB_GOLD_BUY / ETF_FLOW 整列 NaN")
-        return {}
-    out = {
-        "CB_GOLD_BUY": features.cb_gold_buy(base),
-        "ETF_FLOW": features.etf_flow(base),
-    }
-    return {k: v for k, v in out.items() if v.notna().any()}
+    missing = [c for c in DERIVED_COLS if c not in base.columns]
+    if missing:
+        raise KeyError(f"{PANEL_KIND.name} 缺这些派生列：{missing}")
+    return {c: base[c] for c in DERIVED_COLS}
 
 
-def load_raw(series=None, meta=None) -> pd.DataFrame:
-    """面板 = 耦合层基础列 + 两条流量列。`meta` / `series` 都不再需要。"""
-    base = get_data(Panel.CAUSUAL_GOLD)
-    df = base[list(PANEL_COLS)].copy()
-    for col, s in _derived(df, base).items():
+def load_raw(panel: pd.DataFrame) -> pd.DataFrame:
+    """面板 → 因果层宽表。**数据由装配点传入，本函数不取数。**"""
+    df = panel[list(PANEL_COLS)].copy()
+    for col, s in _derived(df, panel).items():
         df[col] = s
     return df
 
@@ -116,11 +116,12 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
 
 
 
-def build_panel(asof: str | None = None, series=None, meta=None,
+def build_panel(asof: str | None = None, panel: pd.DataFrame | None = None,
                 state: dict | None = None) -> tuple[pd.DataFrame, dict]:
     """拼面板。
 
-    `state` 由**调用方**给出（service 从状态层端口取、CLI 直接取），
+    `panel` 由**装配点**传进来（`get_data(Panel.CAUSUAL_GOLD)` 的输出）。
+    `state` 也由调用方给出（service 从状态层端口取、CLI 直接取），
     结构 `{"labels": Series, "label_name": dict, "version": str}`。
     因果层不 import 状态层——只消费传进来的标签。
     """
@@ -128,7 +129,9 @@ def build_panel(asof: str | None = None, series=None, meta=None,
         raise RuntimeError(
             f"{C.ASSET} 缺少状态模型的 spec——调用方要把 state['spec'] 传进来"
             "（state_layer.port.state_view 会给）")
-    df = prepare(load_raw(series, meta))
+    if panel is None:
+        raise RuntimeError(f"{C.ASSET} 的面板没有传进来（装配点负责 get_data）")
+    df = prepare(load_raw(panel))
     spec = state["spec"]
 
     set_state_vocab(state)

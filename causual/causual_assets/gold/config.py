@@ -34,8 +34,8 @@ TREATMENT_COL: dict[str, str] = {
     "VIX": "vix",
     "USDCNY": "USDCNY_RET",
     "GEOPOLITIC_RISK": "geopolitic_risk",
-    "CB_GOLD_BUY": "CB_GOLD_BUY",
-    "ETF_FLOW": "ETF_FLOW",
+    "CB_GOLD_BUY": "cb_gold_buy",
+    "ETF_FLOW": "etf_flow",
     "OPEN_INTEREST": "OI_CHG_PCT",
     "COT_NET_LONG": "gold_cot_net_long",
 }
@@ -48,8 +48,8 @@ SOURCE_COL: dict[str, str] = {
     "VIX": "vix",
     "USDCNY": "usdcny",
     "GEOPOLITIC_RISK": "geopolitic_risk",
-    "CB_GOLD_BUY": "CB_GOLD_BUY",
-    "ETF_FLOW": "ETF_FLOW",
+    "CB_GOLD_BUY": "cb_gold_buy",
+    "ETF_FLOW": "etf_flow",
     "OPEN_INTEREST": "gold_open_interest",
     "COT_NET_LONG": "gold_cot_net_long",
 }

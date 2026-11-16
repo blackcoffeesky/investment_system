@@ -8,7 +8,7 @@
 于是配置上写着"控制了社融"、实际根本没控——卡片、快照、日志里都看不出来。
 
 这类东西的判据不是"会不会抛异常"（不会），而是**"这一列有没有值、有没有人说过它没值"**。
-所以检查两条：
+所以检查三条：
 
 1. 每条边的 `treatment` / `source` / `confounder` 列，必须在面板里且非空行数 > 0
 2. 例外只能来自 `config.NOT_CONNECTED`（显式声明"未接入 + 原因"）
@@ -19,7 +19,7 @@
 
 from __future__ import annotations
 
-# 每个资产只拼一次面板（panel 要走耦合层，比较慢）
+# 每个资产只拼一次面板（走耦合层取数，比较慢）
 _PANELS: dict[str, tuple] = {}
 
 
@@ -27,11 +27,10 @@ def _panel(asset: str):
     """(pkg, 面板) —— 面板已经过 prepare()，就是信号层实际吃到的那张。"""
     if asset not in _PANELS:
         from causual.causual_assets import load
-        from causual.causual_core.cli import _load_series
+        from causual.causual_core.cli import _load_panel
 
         pkg = load(asset)
-        series, meta = _load_series(asset)
-        _PANELS[asset] = (pkg, pkg.prepare(pkg.load_raw(series, meta)))
+        _PANELS[asset] = (pkg, pkg.prepare(pkg.load_raw(_load_panel(asset))))
     return _PANELS[asset]
 
 
@@ -51,6 +50,23 @@ def _refs(pkg) -> dict[str, str]:
 
 
 ASSETS = ("ashare", "gold")
+
+# 已退役的大写面板列名。**只增不改**：
+# 往这里加名字 = 宣告"这个名字永久退役"，以后谁再写它就红。
+# 2026-11-16 追加：六个特征列沉进耦合层，名字改成语义小写。
+LEGACY_COLS = frozenset({
+    "OPEN", "HIGH", "LOW", "CLOSE", "VOLUME", "CSI_ALL", "CSI300", "CSI1000",
+    "SHIBOR3M", "MARGIN_BALANCE", "PMI", "INSIDER_NET", "RETAIL_SALES",
+    "RETAIL_SALES_MOM", "CPI_YOY", "PPI_YOY", "INDUSTRIAL_YOY", "EXPORTS_YOY",
+    "M1_YOY", "M2_YOY", "M1_LEVEL", "M2_LEVEL", "TOTAL_SHARES",
+    "TOTAL_MKTCAP", "EQUITY_FIN_MONTHLY", "EQUITY_SUPPLY", "VIX", "USDCNY",
+    "USD_INDEX", "FED_RATE", "REAL_YIELD_10Y", "GEOPOLITIC_RISK", "XAU_USD",
+    "CB_HOLDINGS", "ETF_HOLDINGS", "OPEN_INTEREST", "COT_NET_LONG",
+    "CPI_SURPRISE", "GOLD_CNY",
+    # v5.48：六个特征列改成耦合层的语义名
+    "SIZE_FLOW", "ETF_DISPERSION", "NATIONAL_ETF", "NATIONAL_ETF_EVENT",
+    "CB_GOLD_BUY", "ETF_FLOW", "DIVIDEND_YIELD",
+})
 
 
 def test_edge_columns_have_data():
@@ -105,20 +121,6 @@ def test_not_connected_registry_is_honest():
     assert not problems, f"NOT_CONNECTED 里有过期/无意义的条目：{problems}"
 
 
-# 已退役的大写面板列名（2026-11-15 改语义名）。**只增不改**：
-# 往这里加名字 = 宣告"这个名字永久退役"，以后谁再写它就红。
-LEGACY_COLS = frozenset({
-    "OPEN", "HIGH", "LOW", "CLOSE", "VOLUME", "CSI_ALL", "CSI300", "CSI1000",
-    "SHIBOR3M", "MARGIN_BALANCE", "PMI", "INSIDER_NET", "RETAIL_SALES",
-    "RETAIL_SALES_MOM", "CPI_YOY", "PPI_YOY", "INDUSTRIAL_YOY", "EXPORTS_YOY",
-    "M1_YOY", "M2_YOY", "M1_LEVEL", "M2_LEVEL", "TOTAL_SHARES",
-    "TOTAL_MKTCAP", "EQUITY_FIN_MONTHLY", "EQUITY_SUPPLY", "VIX", "USDCNY",
-    "USD_INDEX", "FED_RATE", "REAL_YIELD_10Y", "GEOPOLITIC_RISK", "XAU_USD",
-    "CB_HOLDINGS", "ETF_HOLDINGS", "OPEN_INTEREST", "COT_NET_LONG",
-    "CPI_SURPRISE", "GOLD_CNY",
-})
-
-
 def test_edge_columns_come_from_adapter_or_pipeline():
     """边的每一列必须**有出处**：耦合层给的语义列，或本管线自己算的派生列。
 
@@ -133,15 +135,10 @@ def test_edge_columns_come_from_adapter_or_pipeline():
     problems: dict[str, dict[str, str]] = {}
     for asset, panel in (("ashare", Panel.CAUSUAL_ASHARE),
                          ("gold", Panel.CAUSUAL_GOLD)):
-        pkg, _ = _panel(asset)
-        from causual.causual_core.cli import _load_series
-
-        series, meta = _load_series(asset)
-        raw = pkg.load_raw(series, meta)
-        prepared = pkg.prepare(raw)
+        pkg, prepared = _panel(asset)
         # `COLUMNS[panel]` 就是 `columns_of(panel)`（adapter 只在包里导出前者）
-        # 允许的出处 = 耦合层语义列 ∪ 本管线产出的列（features / prepare）
-        allowed = set(COLUMNS[panel]) | set(raw.columns) | set(prepared.columns)
+        # 允许的出处 = 耦合层语义列 ∪ 本管线产出的列（prepare 的派生列）
+        allowed = set(COLUMNS[panel]) | set(prepared.columns)
         bad = {col: who for col, who in _refs(pkg).items()
                if col not in allowed or col in LEGACY_COLS}
         if bad:
@@ -156,31 +153,28 @@ def test_no_legacy_uppercase_columns():
 
     "两套列名"正是这一轮要拿掉的东西：留着一套就迟早两边漂移。
     """
-    for asset in ASSETS:
-        pkg, panel = _panel(asset)
-        from causual.causual_core.cli import _load_series
+    from causual.causual_core.cli import _load_panel
 
-        series, meta = _load_series(asset)
-        raw = pkg.load_raw(series, meta)
+    for asset in ASSETS:
+        pkg = _panel(asset)[0]
+        raw = pkg.load_raw(_load_panel(asset))
         stale = sorted(set(raw.columns) & LEGACY_COLS)
         assert not stale, f"{asset} 面板里还有退役的大写列名：{stale}"
 
 
 def test_ashare_panel_column_count():
-    """面板列数钉死：列合并（同语义名）之后不该多也不该少。
+    """面板列数钉死：列合并与派生列搬迁之后不该多也不该少。
 
-    2026-11-15 改语义列名时并掉的三对（每对各少一列）：
-    `CLOSE`+`CSI_ALL`、`EQUITY_SUPPLY`+`EQUITY_FIN_MONTHLY`（ashare）、
-    `CLOSE`+`GOLD_CNY`（gold）。数字对不上说明有列被漏搬或重复加。
+    2026-11-15 改语义列名并掉三对（`CLOSE`+`CSI_ALL`、`EQUITY_SUPPLY`+
+    `EQUITY_FIN_MONTHLY`、`CLOSE`+`GOLD_CNY`）；2026-11-16 六列派生量改名
+    （数目不变，只是大小写）。数字对不上说明有列被漏搬或重复加。
     """
     expect = {"ashare": (35, 56), "gold": (19, 28)}
     for asset, (want_raw, want_prep) in expect.items():
-        pkg, _ = _panel(asset)
-        from causual.causual_core.cli import _load_series
+        pkg, prep = _panel(asset)
+        from causual.causual_core.cli import _load_panel
 
-        series, meta = _load_series(asset)
-        raw = pkg.load_raw(series, meta)
-        prep = pkg.prepare(raw)
+        raw = pkg.load_raw(_load_panel(asset))
         assert raw.shape[1] == want_raw, (
             f"{asset} 面板 raw 列数 {raw.shape[1]}，期望 {want_raw}：{sorted(raw.columns)}")
         assert prep.shape[1] == want_prep, (

@@ -43,9 +43,9 @@ def cmd_edges(args) -> int:
 
     pkg = load_asset(args.asset)
     sp = state_port()
-    series, meta = _load_series(args.asset, state=sp)
-    view = sp.state_view(args.asset, series, meta)
-    df, spec = pkg.build_panel(args.asof, series, meta, state=view)
+    panel = _load_panel(args.asset)
+    view = sp.state_view(args.asset, panel)
+    df, spec = pkg.build_panel(args.asof, panel, state=view)
     pkg.fit_edges(df, spec, seed=args.seed, verbose=True)
     return 0
 
@@ -67,82 +67,35 @@ def cmd_audit(args) -> int:
     return 0
 
 
-def derived_series(asset: str, port) -> dict[str, pd.Series]:
-    """数据层**现算的派生量** → 按 `"表名:列名"` 塞进 series。
+def _load_panel(asset: str) -> pd.DataFrame:
+    """命令行入口负责装配数据：**数据只在这里进来**（`AGENTS.md` §4'③）。
 
-    走统一入口 `series_map(["dividend_yield"])`——数据层把派生量登记进
-    `DERIVED` 注册表后，它和普通表**形态完全同构**（都是 `{名:列: Series}`），
-    所以这里不需要知道"这是算出来的"。（专用方法 `DataPort.dividend_yield()`
-    已随这次改动删掉：它的存在本身就暴露了那层区别。）
-
-    目前只有 A 股的股息率（年度，百分数）。两件事必须记住：
-    1. **一次拿全表**：底层要扫一遍 `stock_daily`，约 3.7 秒——**不要按年循环**。
-    2. **年度值对齐到"次年 1 月 1 日"**：年 Y 的除息日全落在 Y 内，数据到 Y+1 才完整，
-       所以 Y 年只能看到 Y-1 的值（防前视）。面板那边只做 ffill。
-
-    取不到就返回空 dict 并**打印原因**——面板会把该列置 NaN，卡片上那一行显示
-    「无数据」，不会静默变成"这一行不存在"。
+    资产包声明自己要哪个面板（`pkg.PANEL_KIND`），causual 的核心代码只收 DataFrame。
     """
-    if asset != "ashare":
-        return {}
+    from shared.adapter import get_data
 
-    from causual.causual_assets.ashare.pipeline import DIVIDEND_YIELD_KEY
-
-    try:
-        got = port.series_map(["dividend_yield"])
-    except Exception as exc:  # noqa: BLE001
-        print(f"[causual] 股息率派生量取不到（{type(exc).__name__}: {exc}）；"
-              "DIVIDEND_YIELD 会是整列 NaN", file=sys.stderr)
-        return {}
-
-    s = (got or {}).get(DIVIDEND_YIELD_KEY)
-    if s is None or len(s) == 0:
-        print(f"[causual] series_map 里没有 {DIVIDEND_YIELD_KEY!r}"
-              f"（拿到 {sorted(got or {})}）；DIVIDEND_YIELD 会是整列 NaN",
-              file=sys.stderr)
-        return {}
-
-    s = pd.to_numeric(s, errors="coerce").dropna()
-    if s.empty:
-        print("[causual] 股息率全为空；DIVIDEND_YIELD 会是整列 NaN", file=sys.stderr)
-        return {}
-    # 年度索引（int）→ "次年 1 月 1 日"，见上面第 2 条
-    s.index = pd.DatetimeIndex([
-        pd.Timestamp(year=int(y) + 1, month=1, day=1) for y in s.index])
-    return {DIVIDEND_YIELD_KEY: s.astype(float)}
+    return get_data(load_asset(asset).PANEL_KIND)
 
 
-def _load_series(asset: str, state=None):
-    """命令行入口负责装配数据：causual 库代码不碰数据层，入口文件可以。
-
-    传了 `state` 端口就把状态层要的表一起读了（两边共用一份快照）。
-    派生量走 `derived_series()`——**service 侧走同一个函数**
-    （`CausalPort.derived_series`），不要再各拼一份。
-    """
+def _metadata():
+    """表的 end_date 清单——只给"新鲜度提示 / 月频归档月"用，不是面板数据。"""
     from datahub.port import get_port
 
-    pkg = load_asset(asset)
-    port = get_port()
-    tables = list(pkg.REQUIRED_TABLES)
-    if state is not None:
-        tables += [t for t in state.required_tables(asset) if t not in tables]
-    series = port.series_map(tables)
-    series.update(derived_series(asset, port))
-    return series, port.metadata()
+    return get_port().metadata()
 
 
 def cmd_daily(args) -> int:
     from causual.causual_core import pipeline
 
-    # CLI 是允许直接取数的：这里把状态视图一起装配好传下去
+    # CLI 是允许直接取数的：这里把面板和状态视图一起装配好传下去
     from state_layer.port import get_port as state_port
 
     sp = state_port()
-    series, meta = _load_series(args.asset, state=sp)
-    view = sp.state_view(args.asset, series, meta)
+    panel = _load_panel(args.asset)
+    view = sp.state_view(args.asset, panel)
     try:
-        pipeline.run(args.asset, series, meta, state=view, asof=args.asof,
-                     force=getattr(args, "force", False))
+        pipeline.run(args.asset, panel, meta=_metadata(), state=view,
+                     asof=args.asof, force=getattr(args, "force", False))
     except pipeline.CardRejected as e:
         print(f"[拒绝] {e}")
         return 1

@@ -2,6 +2,62 @@
 
 ---
 
+# v5.48（2026-11-16）：派生列沉进耦合层，`series: dict` 通道彻底删除
+
+## 一、六列派生量不再由 causual 算
+
+datahub 把 6 个通用业务特征迁进 `DERIVED` 注册表（`e0c0cb7`），adapter 落成**面板列**：
+
+| 旧（causual 算） | 新（面板列，耦合层算） |
+|---|---|
+| `SIZE_FLOW` | `size_flow` |
+| `ETF_DISPERSION` | `etf_dispersion` |
+| `NATIONAL_ETF` | `national_etf` |
+| `NATIONAL_ETF_EVENT` | `national_etf_event` |
+| `CB_GOLD_BUY` | `cb_gold_buy` |
+| `ETF_FLOW` | `etf_flow` |
+| `DIVIDEND_YIELD`（含"次年 1/1"对齐） | `dividend_yield`（对齐由 adapter 按 `period="Y"` 做） |
+
+名字按 v5.46 的约定改成语义小写（**来自耦合层的列一律小写**；`prepare()` 自产的
+`VIX_CHG` / `SUPPLY_Z` / `MARGIN_NET` 等保持大写不动）。卡片文字不变（那是 `label`）。
+
+## 二、`series: dict` 通道删除，一律传 `DataFrame`
+
+`AGENTS.md` §4'③ 定的：跨模块传 `get_data` 的输出（DataFrame），不传 `{表名: Series}`。
+6 处签名一次改完：
+
+| # | 位置 | 改动 |
+|---|---|---|
+| 1 | `ashare::load_raw` | `(series=None, meta=None)` → `(panel)` |
+| 2 | `ashare::build_panel` | `(asof, series, meta, state)` → `(asof, panel, state)` |
+| 3 | `gold::load_raw` / `build_panel` | 同上（gold 的 `get_data` 一并删掉） |
+| 4 | `causual_core::pipeline.run` | `(asset, series, meta, *, state…)` → `(asset, panel, *, meta=None, state…)` |
+| 5 | `cli` | `_load_series`（拉 27 表 + 拼 dict）→ `_load_panel`（`get_data(PANEL_KIND)`） |
+| 6 | `port::generate` / `generate_macro` / `regenerate` / `last_data_date` | 收 `panel`；`derived_series` **退役** |
+
+`meta`（表清单的 end_date）仍作为**可选关键字**传给 `run`：它只给"数据滞后"提示和
+月频归档月用，不是面板数据。装配点手上有 `port.metadata()`，应当传。
+
+`_derived(df, base)` **接缝保留**：现在只是"把耦合层算好的列搬进来"，
+但 `tests/test_causual_panel_derived.py` 的反向验证靠打桩它——打桩后六列消失、断言必须变红。
+
+## 三、缺列从"告警 + 整列 NaN"改成 `KeyError`
+
+`PANEL_COLS` 少一列本来就 `KeyError`；股息率那列却只 `_warn` 然后给全 NaN——同一张面板
+两套失败策略没道理。现在 `_derived` 也直接 `raise KeyError`。
+**理由：静默 NaN 比崩溃难查**（卡片上只是少一行，没人会去翻 stderr）。
+
+## 四、验证
+
+| 项 | 结果 |
+|---|---|
+| 面板列数与值 | ashare raw 35 / prep 56、gold 19 / 28（与 v5.46 一致）；签名 `ce378e8af201` / `c461745fadc5` 未变 |
+| 卡片那一行 | 「股息率（市值加权）」`pos_value=2.1258` / `60%` / 9 期窗口 / `asof=2026-11-13` —— 与改前逐位一致 |
+| 测试 | 14 条"`load_raw` 返回 None"的连锁红全绿；`test_missing_panel_column_raises` 新增（钉死 KeyError） |
+| 出卡 | `daily --asset ashare / gold` 都 exit 0 |
+
+---
+
 # v5.47（2026-11-16）：股息率改走 `series_map` 统一入口
 
 数据层把派生量统一登记进 `DERIVED` 注册表（`c595ed7` 之后），派生量的形态与普通表

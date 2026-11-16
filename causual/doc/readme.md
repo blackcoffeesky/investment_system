@@ -76,18 +76,19 @@ causual 不直接对外提供服务，而是暴露三样东西让 service 挂载
 
 | 接口 | 位置 | 契约 |
 |---|---|---|
-| `load_raw(series=None)` | `causual_assets/{asset}/pipeline.py` | 从耦合层拼日频宽表（`_derived` 是派生列唯一接缝） |
-| `pipeline.run(asset, series, meta, asof=None, quiet=...)` | `causual_core/pipeline.py` | 出卡：**只吃数据，不取数** |
-| `required_tables(asset)` / `derived_series(asset, data)` | `port.py` | 装配用：要哪些表 + 现算的派生量（股息率）；**CLI 与 service 共用这一个入口** |
+| `load_raw(panel)` | `causual_assets/{asset}/pipeline.py` | **只装配不取数**：按 `PANEL_COLS` 选列 + `_derived` 搬派生列（缺列 `KeyError`） |
+| `pipeline.run(asset, panel, *, meta, state, asof=None, quiet=...)` | `causual_core/pipeline.py` | 出卡：**只吃数据，不取数**；`meta` 可选（新鲜度提示 / 月频归档月） |
+| `required_tables(asset)` / `panel_kind(asset)` | `port.py` | 装配用：要哪些表 / 要哪个耦合层面板（**都是纯声明，不取数**） |
+| `generate(asset, panel, ...)` / `generate_macro(asset, month, panel, ...)` | `port.py` | 出卡（`panel` 由装配点取好） |
 | `macro_month(meta, *, asset=None)` | `port.py` | 月频卡该覆盖的月份（`asset` 关键字参数，传了按该资产收窄） |
 | `list_cards(asset, start, end)` / `get_card(asset, date, kind)` / `to_html(md)` | `causual_cards.py` | 卡片检索与渲染 |
 | `register_module()` | `web.py` | 返回 `service.registry.Module`（路由 + 模板目录 + 导航） |
 
 service 侧的 `CausalPort` 只调 `pipeline.run`，不碰 causual 内部。
-**装配点有两个**（CLI 与 service），所以表清单与派生量都走 port 的方法，
-不要各自 `series_map` + 手拼——两边各拼一份必然漂移。
+**装配点在三个地方**（`cli.py` / `web/routes.py` / service）：它们各自 `get_data(...)`
+取一份面板，然后只传 DataFrame 下去——**没有"两边各拼一份"的问题了**。
 
-**约束**：`causual_core` 不 import service；`DataService` 由调用方注入。
+**约束**：`causual_core` 不 import service，也不调 `get_data`；数据一律由参数进来。
 
 ---
 
@@ -162,49 +163,55 @@ saved_models/{asset}/hmm.pkl                 # 全样本模型
 
 ```
 datahub/datahub.sqlite
-   ↓  shared/adapter.get_data(Panel.CAUSUAL_*)   列名映射 + 公布滞后 + 对齐策略
-causual_assets/{ashare,gold}/pipeline.py::load_raw()
-   ↓  基础列 + 派生列（shared.utils.features）+ 股息率（装配点塞的 series）
+   ↓  装配点（cli / web 路由 / service）：shared.adapter.get_data(Panel.CAUSUAL_*)
+       列名映射 + 公布滞后 + 对齐策略 + **派生列也算好**
+causual_assets/{ashare,gold}/pipeline.py::load_raw(panel)
+   ↓  只装配：按 PANEL_COLS 选列，_derived 搬派生列
 causual_assets/{ashare,gold}/pipeline.py   prepare() 算特征与供需层
    ↓
 regime（状态） / signal（边） / narrative（卡片）
 ```
 
 `shared/adapter` 是唯一知道"数据层表名 ↔ 语义列名"的地方；`causual_core` **不含任何取数代码**。
-`load_raw()` 是本模块唯一的装配点，`_derived(df, base)` 是派生列的唯一接缝。
+`load_raw(panel)` 只装配、不取数；`_derived(df, base)` 是派生列的唯一接缝（测试打桩它）。
 
 ### 4.2 面板契约
 
-`load_raw()` 返回日频宽表：
+`load_raw(panel)` 的输入/输出都是日频宽表：
 
 - index = 该资产主价格表的交易日（A 股 `csi_all`，黄金 `gold_cny`）
-- 基础列 = 耦合层的**语义列名**（`open` / `close` / `vix` / `cb_holdings` …），
+- 列 = 耦合层的**语义列名**（`open` / `close` / `vix` / `cb_holdings` …），
   `prepare()` 与 `config.py` 只认这一套；退役的大写名（`CLOSE`/`VIX`…）由
   `tests/test_causual_dead_columns.py` 的 `LEGACY_COLS` 拦住，不许回流
-- 派生列（`prepare()` 产出、ETF 四列、股量两条流量列）仍用大写名，
-  与"来自数据层的列"区分开
+- **六列派生量也是面板列**（`etf_dispersion` / `size_flow` / `national_etf` /
+  `national_etf_event` / `dividend_yield` / `cb_gold_buy` / `etf_flow`）——
+  causual 不算它们，只是把列搬进来；**缺一列就 `KeyError`**（不静默 NaN）
+- `prepare()` 自己产出的特征仍用大写名（`VIX_CHG` / `SUPPLY_Z` / `MARGIN_NET`…），
+  与"来自耦合层的列"区分开
 - 月频/季频变量按 `metadata.lag_days` **推后**再对齐；是 ffill 到每交易日
   还是只落在观测日，由耦合层**逐列声明**（`daily` / `raw` 两种策略）
 
 例：2026-09-30 的 CPI，`lag_days=9` → 10-09 才进入面板。**这不是消费层的假设，
 是数据层的属性**，所以放在 `metadata` 而不是写死在代码里。
 
-### 4.3 派生列（数据层不存）
+### 4.3 派生列（数据层现算，不落表）
 
-| 列 | 来源 |
+2026-11-16 起这七列**全部由数据层算好**（`datahub/fin/derive.py` 的 `DERIVED` 注册表），
+adapter 落成面板列；causual 只读列，不再自己算：
+
+| 列 | 算法 |
 |---|---|
-| `SIZE_FLOW` / `ETF_DISPERSION` / `NATIONAL_ETF` / `NATIONAL_ETF_EVENT` | 由 `etf_shares` 现算 |
-| `DIVIDEND_YIELD` | 数据层现算（`series_map(["dividend_yield"])`，登记在 `DERIVED` 注册表，形态与表同构）；年度值对齐到**次年 1 月 1 日**，防前视 |
-| `CB_GOLD_BUY` | `cb_holdings.diff()` |
-| `ETF_FLOW` | `gold_etf_holdings.diff()` |
+| `etf_dispersion` / `size_flow` / `national_etf` / `national_etf_event` | 宽基 ETF 分组份额 → 变化率 / 差分 / 滚动分位 |
+| `dividend_yield` | 年度股息率（市值加权，%）；`period="Y"` → 对齐到**次年 1 月 1 日**再 ffill，防前视 |
+| `cb_gold_buy` / `etf_flow` | 持仓存量差分，落在**发布可见日**（+45 / +40 天） |
 
 判定标准：**去掉它之后能不能用库里其他数据算出来**。算得出来的就不入库。
 
-> **坑：ETF 代码按裸 6 位归一。** 数据层的 `etf_shares` 键是 `etf_shares:sh510300`
-> （2026-11-14 起带市场前缀），而 `GROUPS` 写的是裸码。`panel.bare_code()` 把
-> `sh510300` / `c510300` / `510300.SH` 一律归一成 `510300`，**列名与 `GROUPS` 两侧
-> 同口径比对**——否则四列派生量会整体消失，而且不报错（详见 CHANGES v5.40）。
-> `tests/test_causual_panel_derived.py` 盯着这件事。
+> **坑（历史）：ETF 代码按裸 6 位归一。** 2026-11-14 数据层把 `etf_shares` 的键从
+> `510300` 改成 `sh510300`，当时消费方按裸码字符串匹配 → 四列派生量整体消失且不报错
+> （详见 CHANGES v5.40）。现在归一逻辑只有一份，在 `datahub/fin/derive.py` 的
+> `bare_code`（分组知识归数据层），causual 不再碰代码格式。
+> `tests/test_causual_panel_derived.py` 盯着"列还在不在、新不新鲜"。
 
 > **坑：差分必须在原始频率上做。** 不能对日频 ffill 后的列再 `resample().diff()`——
 > 月末/季末落点依赖交易日，会错位一到两期（实测 ETF 流入相关性从 0.999 掉到 0.32）。
@@ -449,8 +456,8 @@ python -m causual.causual_core.cli regime --asset ashare   # 重拟状态模型
 python -m causual.causual_core.cli edges  --asset ashare   # 重估边 → 快照
 python -m causual.causual_core.cli audit  --asset ashare   # 方向一致性审计
 
-# 股息率：数据层现算（series_map(["dividend_yield"])，约 3.7 秒/次），
-# 出卡时自动装配，没有单独的缓存命令了
+# 股息率：已经是面板列（get_data(...)["dividend_yield"]，数据层现算），
+# 出卡时自动带上，没有单独的缓存命令了
 ```
 
 **手工维护的数据**（全部在 `datahub/intake/`）：
@@ -546,4 +553,4 @@ python -m causual.causual_core.cli audit  --asset ashare   # 方向一致性审�
 
 ## 12. 版本
 
-当前 v5.47（2026-11-16）。逐版变更见 [`CHANGES.md`](CHANGES.md)。
+当前 v5.48（2026-11-16）。逐版变更见 [`CHANGES.md`](CHANGES.md)。
