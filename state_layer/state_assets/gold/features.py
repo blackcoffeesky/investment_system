@@ -14,6 +14,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from shared.utils.data_processing import diff_bp, pct_change_pct, rolling_z
+
 from state_layer.state_assets.gold import config as C
 
 
@@ -28,20 +30,17 @@ def _upper(df: pd.DataFrame) -> pd.DataFrame:
 def _derive(df: pd.DataFrame) -> pd.DataFrame:
     """补上状态特征需要的派生列。
 
-    因果层的 `prepare()` 也算了这几列，但那是给边模型用的。
-    状态层自带一份**最小派生**，这样它不依赖因果层的面板处理——
-    两边公式必须一致，`test_state_features_match_causual` 守着。
+    这三条走 `shared.utils.data_processing` 的**单位原语**（和 A 股、和 causual 的
+    `prepare()` 同一个函数）。黄金面板里通常没有 `SHIBOR3M` / `MARGIN_BALANCE`，
+    前两条是给"万一有"的守卫；`VOLUME_Z` 目前黄金特征用不到（保留为最小派生的一部分）。
     """
     df = df.copy()
     if "SHIBOR_CHG_BP" not in df and "SHIBOR3M" in df:
-        df["SHIBOR_CHG_BP"] = df["SHIBOR3M"].diff() * 100.0
+        df["SHIBOR_CHG_BP"] = diff_bp(df["SHIBOR3M"])
     if "MARGIN_CHG" not in df and "MARGIN_BALANCE" in df:
-        df["MARGIN_CHG"] = df["MARGIN_BALANCE"].pct_change() * 100.0
+        df["MARGIN_CHG"] = pct_change_pct(df["MARGIN_BALANCE"])
     if "VOLUME_Z" not in df and "VOLUME" in df:
-        vol = df["VOLUME"]
-        mu = vol.rolling(60, min_periods=20).mean()
-        sd = vol.rolling(60, min_periods=20).std()
-        df["VOLUME_Z"] = (vol - mu) / sd.replace(0, np.nan)
+        df["VOLUME_Z"] = rolling_z(df["VOLUME"])
     return df
 
 

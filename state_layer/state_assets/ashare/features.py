@@ -22,6 +22,8 @@ import sys
 import numpy as np
 import pandas as pd
 
+from shared.utils.data_processing import diff_bp, pct_change_pct, rolling_z
+
 from state_layer.state_assets.ashare import config as C
 
 
@@ -36,20 +38,20 @@ def _upper(df: pd.DataFrame) -> pd.DataFrame:
 def _derive(df: pd.DataFrame) -> pd.DataFrame:
     """补上状态特征需要的派生列。
 
+    这三条走 `shared.utils.data_processing` 的**单位原语**（`diff_bp` / `pct_change_pct` /
+    `rolling_z`）：同样的公式在 causual 的 `prepare()` 里也有一份，改成同一个函数之后
+    "两边一致"是结构上的，不再靠测试守。
+
     因果层的 `prepare()` 也算了这几列，但那是给边模型用的。
-    状态层自带一份**最小派生**，这样它不依赖因果层的面板处理——
-    两边公式必须一致，`test_state_features_match_prepare` 守着。
+    状态层自带一份**最小派生**，这样它不依赖因果层的面板处理。
     """
     df = df.copy()
     if "SHIBOR_CHG_BP" not in df and "SHIBOR3M" in df:
-        df["SHIBOR_CHG_BP"] = df["SHIBOR3M"].diff() * 100.0
+        df["SHIBOR_CHG_BP"] = diff_bp(df["SHIBOR3M"])
     if "MARGIN_CHG" not in df and "MARGIN_BALANCE" in df:
-        df["MARGIN_CHG"] = df["MARGIN_BALANCE"].pct_change() * 100.0
+        df["MARGIN_CHG"] = pct_change_pct(df["MARGIN_BALANCE"])
     if "VOLUME_Z" not in df and "VOLUME" in df:
-        vol = df["VOLUME"]
-        mu = vol.rolling(60, min_periods=20).mean()
-        sd = vol.rolling(60, min_periods=20).std()
-        df["VOLUME_Z"] = (vol - mu) / sd.replace(0, np.nan)
+        df["VOLUME_Z"] = rolling_z(df["VOLUME"])
     return df
 
 
