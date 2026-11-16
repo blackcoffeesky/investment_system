@@ -10,7 +10,7 @@
 ⚠️ `shared/__init__.py` **不** import 本包（会把 datahub + sqlite 拖进纯工具层）。
 """
 
-from shared.adapter.datahub_adapter import (COLUMNS, Panel, column_of, get_data,
-                                            tables_of)
+from shared.adapter.datahub_adapter import (COLUMNS, Panel, clear_cache,
+                                            column_of, get_data, tables_of)
 
-__all__ = ["Panel", "get_data", "COLUMNS", "column_of", "tables_of"]
+__all__ = ["Panel", "get_data", "clear_cache", "COLUMNS", "column_of", "tables_of"]

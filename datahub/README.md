@@ -126,6 +126,7 @@ dividend_yield()   # 年度股息率（%）：yield_mcap_weighted / yield_median
 port.breadth(start, end)      # 市场宽度
 port.dividend_yield()         # 年度股息率（%，3.7s，别按年循环）
 port.catalog()                # 所有表 + 派生量清单（描述性、不稳定，别当契约）
+port.run_update(...)          # 跑更新（结束时自动 clear_cache()）
 ```
 
 **`series_map()` 会跳过 `static` 表并打一行警告**——static 没有日期轴，

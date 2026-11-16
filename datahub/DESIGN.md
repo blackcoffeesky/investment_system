@@ -675,3 +675,27 @@ INSERT INTO t (date, c1, c2) … ON CONFLICT(date) DO UPDATE SET c1=excluded.c1,
 所以 `csi_all` 缺的 3 天（11-11~11-13）是用 **ashareapi `/kline`（`sh000985`）** 补的：
 `amount` 元 ÷ 1e8 = **亿元**（与腾讯口径一致，已对账）、`turnover` 直接用（%）。
 以后想用 akshare 补指数历史，得先解决网络，别再重试一遍。
+
+## 17. 取数入口的唯一性 + 进程内缓存（2026-11-16）
+
+**`get_data` 是唯一取数入口，而且只在装配点调**：`*/cli.py`、`*/web/routes.py`、
+`service/**`。核心代码（`port.py` / `pipeline.py` / `features.py` / `analysis/*`）
+**只接收传进来的 DataFrame**。
+
+这条**有静态测试钉住**（`tests/test_layering.py`）：用 AST 扫
+"核心文件里有没有 `get_data(` 调用"，违反了直接红。为什么必须静态查——
+违反方式是静默的（`state_view` 里偷偷取一次数，测试全绿、行为也对，只是分层破了）。
+另有一条反向校验：定义处与至少一个装配点必须真的存在，否则检查器会"永远绿"。
+
+**进程内缓存**（`shared/adapter` 的 `_CACHE`）：
+
+```python
+get_data(panel, start=None, end=None, fresh=False)   # 命中直接返回副本（<1ms）
+clear_cache()                                        # 数据变了就丢
+```
+
+- 命中率来自"service 一次运行取 4 次 panel（日频/月频 × 2 资产）"，其中
+  `dividend_yield` 一次 4 秒 —— 实测：首次 **4.8s** → 命中 **0.0008s** → `clear_cache()` 后 5.6s
+- 失效策略**最朴素**：`DataPort.run_update()` 结束时调一次 `clear_cache()`
+  （`finally` 里，异常路径也清），外加 `fresh=True` 强制绕过
+- **不做 TTL / mtime 校验**（后话）；返回的是**副本**，调用方改它不会污染缓存

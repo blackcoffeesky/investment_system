@@ -66,7 +66,12 @@ class DataPort:
     def series_map(self, names: list[str], *,
                    start: str | None = None, end: str | None = None,
                    codes: list[str] | None = None) -> dict[str, pd.Series]:
-        """把若干张表读成 {key: Series}，供资产面板使用。
+        """把若干张表读成 {key: Series}（**时序数据主接口**）。
+
+        ⚠️ **上层不要直接调我**：其他模块只通过 `shared.adapter.get_data` 声明自己要什么，
+        而且只在 `cli.py` / `service/` / `web/routes.py` 这些**装配点**调；
+        核心代码（`pipeline` / `features` / `analysis`）只接收传进来的 `DataFrame`。
+        这条有静态测试钉住（`tests/test_layering.py`）。
 
         - single → `{表名: Series}`
         - multi  → `{表名: 列名}`
@@ -170,7 +175,13 @@ class DataPort:
                    only: list[str] | None = None) -> UpdateReport:
         from datahub.fin.update import run as _run
 
-        df = _run(start=start, end=end, only=only)
+        try:
+            df = _run(start=start, end=end, only=only)
+        finally:
+            # 数据变了就丢缓存（最朴素的失效策略；见 shared/adapter 的 _CACHE 注释）
+            from shared.adapter import clear_cache
+
+            clear_cache()
         ok = int((df["status"] == "ok").sum()) if len(df) else 0
         failed = int((df["status"] == "失败").sum()) if len(df) else 0
         rows = int(df.loc[df["status"] == "ok", "rows"].sum()) if len(df) else 0

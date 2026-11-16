@@ -1,5 +1,18 @@
 """datahub → 消费方的耦合层：**唯一允许依赖 datahub 的 shared 子包**。
 
+## 谁来调
+
+**`get_data` 是全系统唯一的取数入口**，而且**只在装配点调**：
+`*/cli.py`、`service/**`、`*/web/routes.py`（页面入口，等价于 CLI）。
+其余地方（`port.py` / `pipeline.py` / `features.py` / `analysis/*`）**一律不许调**——
+它们只接收传进来的 `DataFrame`。这条有静态测试钉住（`tests/test_layering.py`），
+不是"写在文档里就算"的约定。
+
+## 为什么
+
+模块的核心逻辑不该知道"数据从哪来"：喂假数据就能单测、换源不用改业务代码。
+耦合只允许发生在少数几个显式装配点，才能被数清、被审查。
+
 为什么要有这一层
 ----------------
 2026-11-14 的事故：datahub 把 ETF 代码从裸码改成 `sh510300`，消费方各自按
@@ -352,8 +365,21 @@ def tables_of(panel: Panel) -> tuple[str, ...]:
 COLUMNS: dict[Panel, dict[str, str]] = {p: columns_of(p) for p in _BUILD}
 
 
+#: 进程内缓存：`(panel, start, end) → 对齐好的面板`。
+#: 为什么值得：service 一次运行会取 4 次 panel（日频/月频 × 2 资产），其中
+#: `dividend_yield` 一次 4 秒——缓存能砍掉一半。失效策略是**最朴素的**：
+#: `run_update()` 结束时 `clear_cache()`（数据变了就丢），外加 `fresh=True` 强制绕过。
+#: 不做 TTL / mtime 校验（后话）。
+_CACHE: dict[tuple[Panel, str | None, str | None], pd.DataFrame] = {}
+
+
+def clear_cache() -> None:
+    """清空面板缓存。**数据写入后必须调**（`DataPort.run_update` 已自动调）。"""
+    _CACHE.clear()
+
+
 def get_data(panel: Panel, *, start: str | None = None,
-             end: str | None = None) -> pd.DataFrame:
+             end: str | None = None, fresh: bool = False) -> pd.DataFrame:
     """取一个面板：`index = DatetimeIndex`（升序、无重复），列见 `COLUMNS[panel]`。
 
     - 低频列按 `metadata.lag_days` 推后、再 ffill 到交易日（口径在
@@ -365,6 +391,10 @@ def get_data(panel: Panel, *, start: str | None = None,
     ⚠️ 股息率（`dividend_yield`）暂时还在装配点塞给 `panel()`（`series`），
     第二批才做成通用聚合。ETF 派生列需要的分组份额已经在返回里了。
     """
+    key = (panel, start, end)
+    if not fresh and key in _CACHE:
+        return _CACHE[key].copy()      # 返回副本：调用方改它不该污染缓存
+
     builders = _BUILD.get(panel)
     if builders is None:
         raise KeyError(f"未知 panel：{panel!r}；可用：{[p.name for p in _BUILD]}")
@@ -415,4 +445,5 @@ def get_data(panel: Panel, *, start: str | None = None,
         df = df[df.index >= pd.Timestamp(start)]
     if end is not None:
         df = df[df.index <= pd.Timestamp(end)]
-    return df
+    _CACHE[key] = df
+    return df.copy()
