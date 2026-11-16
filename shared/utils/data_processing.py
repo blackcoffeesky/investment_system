@@ -1,4 +1,4 @@
-"""数据处理：标准化、滚动 z、winsorize。**纯函数，不读库、不 import 任何模块**。
+"""数据处理：标准化、滚动 z、**单位原语**。纯函数，不读库、不 import 任何业务模块。
 
 三个来源合并而来（原来分散在三处，各写各的窗口口径）：
 
@@ -7,12 +7,58 @@
 - 两者本质都是"把原始读数变成可比尺度"，放一起才能保证同一份口径
 
 顺序约定：**先按原始分位 winsorize，再标准化**。反了会把几乎所有点压到边界（v5.8 的 bug）。
+
+单位原语（2026-11-16 加，**名字里带单位**）
+----------------------------------------
+`SHIBOR_CHG_BP` / `MARGIN_CHG` / `VOLUME_Z` 这三个公式原本在
+`causual/.../pipeline.py::prepare()` 和 `state_layer/.../features.py::_derive()`
+**各写了一遍**，靠一条测试守着"两边算得一样"——那是"复制两份"的老形状。
+现在收成三个原语，两个模块都调它们：
+
+| 原语 | 等价写法 | 单位 |
+|---|---|---|
+| `diff_bp(s, periods=1)` | `s.diff(p) * 100` | **bp**（利率/利差类） |
+| `pct_change_pct(s, periods=1)` | `s.pct_change(p) * 100` | **百分数**（2.5 表示 2.5%） |
+| `rolling_z(s, window=60, min_periods=20)` | `(s - rolling_mean) / rolling_std`，标准差为 0 记 NaN | 无量纲 |
+
+名字里的 `bp` / `pct` 不是装饰：**单位错一个数量级，卡片上的数就全错**，
+所以宁可名字长一点，也不要用 `chg()` 这种看不出单位的名字。
 """
 
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+
+
+def diff_bp(s: pd.Series, periods: int = 1) -> pd.Series:
+    """差分 × 100，单位 **bp**（利率 / 利差类：`SHIBOR3M`、`FED_RATE`、`REAL_YIELD_10Y`）。
+
+    等价于 `s.diff(periods) * 100.0`——**不是**"百分比变化"，别和 `pct_change_pct` 混用：
+    利差从 1.00% 到 1.10% 是 **+10 bp**，而 pct_change 会给出 +10%。
+    """
+    return s.diff(periods) * 100.0
+
+
+def pct_change_pct(s: pd.Series, periods: int = 1) -> pd.Series:
+    """百分比变化 × 100，单位 **百分数**（`MARGIN_CHG`：2.5 表示 +2.5%）。
+
+    等价于 `s.pct_change(periods) * 100.0`。
+    """
+    return s.pct_change(periods) * 100.0
+
+
+def rolling_z(s: pd.Series, window: int = 60, min_periods: int = 20) -> pd.Series:
+    """滚动 z 分数：`(s - 均值) / 标准差`，**标准差为 0 时记 NaN**（不是 0、不是 inf）。
+
+    等价于 `VOLUME_Z` 的手写版本：
+    `(s - s.rolling(w, min_periods=mp).mean()) / s.rolling(w, min_periods=mp).std().replace(0, np.nan)`。
+    保留 `.replace(0, np.nan)` 这一层：整段横盘时标准差会是 0，直接除会得到 `±inf`，
+    而 `inf` 进 HMM / 分位会污染整列。
+    """
+    mu = s.rolling(window, min_periods=min_periods).mean()
+    sd = s.rolling(window, min_periods=min_periods).std().replace(0, np.nan)
+    return (s - mu) / sd
 
 
 
