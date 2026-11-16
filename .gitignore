@@ -42,3 +42,6 @@ saved_models/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# 代理的任务工作日志（临时、由用户决定何时归档）
+task/
