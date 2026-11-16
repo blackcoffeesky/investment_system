@@ -67,27 +67,27 @@ class FakeCards:
         return ("csi_all",)
 
 
-    def last_data_date(self, asset, series):
+    def panel_kind(self, asset):
+        return None          # 假端口：不真取面板
+
+    def last_data_date(self, asset, panel):
         return "2026-11-02"
 
     def exists(self, asset, date):
         return False
 
-    def generate(self, asset, series, meta=None, date=None, state=None):
+    def generate(self, asset, panel, meta=None, date=None, state=None):
         if asset in self.fail:
             raise RuntimeError("假失败")
         return Path(f"/tmp/{asset}_{date}.md")
 
-    def generate_macro(self, asset, month, series, meta=None, state=None):
+    def generate_macro(self, asset, month, panel, meta=None, state=None):
         if asset in self.fail:
             raise RuntimeError("假失败")
         return Path(f"/tmp/{asset}_{month}.md")
 
     def macro_month(self, meta=None, *, asset=None):
         return "2026-11"
-
-    def derived_series(self, asset, data):
-        return {}
 
     def exists(self, asset, date, kind="card"):
         return False
@@ -99,7 +99,7 @@ class FakeState:
     def required_tables(self, asset):
         return ("csi_all",)
 
-    def state_view(self, asset, series, meta=None):
+    def state_view(self, asset, panel):
         import pandas as pd
 
         return {"labels": pd.Series(dtype=str), "label_name": {},

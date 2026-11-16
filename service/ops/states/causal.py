@@ -12,19 +12,18 @@ from service.ops.messages import Message, MessageLevel, StateResult
 ASSETS = ("ashare", "gold")
 
 
-def _load_series(data, cards, asset: str, state=None) -> dict:
-    """按模块声明的表清单把数据读成 {表名: Series}。
+def _load_panel(cards, asset: str):
+    """取该资产的面板（耦合层唯一入口）。
 
-    因果层要的表 ∪ 状态层要的表，一次读齐，两边共用同一份快照。
-    派生量（股息率等）由 `causual` 的 port 统一装配——CLI 和这里走同一个入口，
-    否则两套路径会出现「CLI 出的卡有这行、网页出的卡没有」。
+    service 是**装配层**，取数只发生在这里和模块的 cli/web 路由——
+    核心代码（pipeline / port）只收 DataFrame（AGENTS §4'③）。
     """
-    tables = list(cards.required_tables(asset))
-    if state is not None:
-        tables += [t for t in state.required_tables(asset) if t not in tables]
-    series = data.series_map(tables)
-    series.update(cards.derived_series(asset, data))
-    return series
+    kind = cards.panel_kind(asset)
+    if kind is None:        # 假端口（测试）不取真数据
+        return None
+    from shared.adapter import get_data
+
+    return get_data(kind)
 
 
 class GenerateMacroState(BaseState):
@@ -56,10 +55,10 @@ class GenerateMacroState(BaseState):
                     skipped.append(f"{asset} {month}")
                     continue
                 st = ctx.services["state"]
-                series = _load_series(data, cards, asset, st)
-                view = st.state_view(asset, series, data.metadata())
-                cards.generate_macro(asset, month, series, data.metadata(),
-                                     state=view)
+                panel = _load_panel(cards, asset)
+                view = st.state_view(asset, panel)
+                cards.generate_macro(asset, month, panel,
+                                     meta=data.metadata(), state=view)
                 made.append(f"{asset} {month}")
             except Exception as e:  # noqa: BLE001
                 failed.append((asset, f"{type(e).__name__}: {e}"))
@@ -109,8 +108,8 @@ class GenerateCardsState(BaseState):
         for asset in ASSETS:
             try:
                 st = ctx.services["state"]
-                series = _load_series(data, cards, asset, st)
-                date = cards.last_data_date(asset, series)
+                panel = _load_panel(cards, asset)
+                date = cards.last_data_date(asset, panel)
             except Exception as e:  # noqa: BLE001
                 failed.append((asset, f"取不到最后交易日：{type(e).__name__}: {e}"))
                 continue
@@ -119,8 +118,8 @@ class GenerateCardsState(BaseState):
                 if cards.exists(asset, date):
                     skipped.append(f"{asset} {date}")
                     continue
-                view = st.state_view(asset, series, meta)
-                cards.generate(asset, series, meta, date=date, state=view)
+                view = st.state_view(asset, panel)
+                cards.generate(asset, panel, date=date, state=view, meta=meta)
                 made.append(f"{asset} {date}")
             except Exception as e:  # noqa: BLE001
                 failed.append((asset, f"{type(e).__name__}: {e}"))
