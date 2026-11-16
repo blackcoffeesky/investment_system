@@ -361,6 +361,29 @@ dividend_yield(2025)    # 单年（同样要全表扫一遍，3.7s；循环里�
 `catalog` 的**定位**：描述性、**不稳定**、仅供展示与调度决策，**不要当契约**——
 字段名和行数都可能变。要取数据请用 `read` / `read_many` / `series_map` 或上面两个派生方法。
 
+### 10.1 窗口与代码过滤（2026-11-16 下推）
+
+`series_map(names, *, start=None, end=None, codes=None)`——三个参数**都落到 SQL**：
+
+| 参数 | 落到哪 | 适用 kind |
+|---|---|---|
+| `start` / `end` | `WHERE date >= ? AND date <= ?`（闭区间） | 全部（static 无日期轴，跳过） |
+| `codes` | `WHERE code IN (...)` | **只有 long**；打到 single/multi **告警并忽略** |
+
+为什么不静默忽略：调用方以为筛过了、实际拿到全量，是最难查的一类问题
+（`stock_daily` 1040 万行整表读进内存就是这样发生的）。
+
+**long 表的 key 随窗口收缩**：窗口内没有数据的代码不出现（`etf_shares` 2025 上半年
+是 22/24）。这不是"被筛掉"，别拿 key 数当"有多少只"。
+
+**`read()` 也接受 `codes`**：long 透传给 `read_long`、static 透传给 `read_static`，
+其它 kind 告警忽略——避免"`series_map` 绕过 `read` 直接调 `read_long`"造成两条路漂移。
+
+⚠️ **窗口起点还没有 warmup**：`get_data(start=...)` 把起点直接当取数起点，低频列在
+窗口头部没有历史可 ffill。实测 2025-01-01 起取：`STATE_ASHARE` 逐位相同（0 行差异），
+`CAUSUAL_GOLD` 头部 **23 行**差异（`usdcny/vix/usd_index/fed_rate`）。
+warmup（起点前多取 N 天、算完再切）是下一步。
+
 **为什么现算**：估值入库约 5000×2500×4 个浮点 ≈ 3 GB，且都是可推导量；
 一旦入库就要操心"股本变了要重算历史"。
 

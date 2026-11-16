@@ -129,6 +129,18 @@ port.catalog()                # 所有表 + 派生量清单（描述性、不稳
 **`series_map()` 会跳过 `static` 表并打一行警告**——static 没有日期轴，
 不是时间序列；调用方把整份表清单传进来也不会炸。
 
+**窗口和代码过滤要显式传**（2026-11-16 起）：
+
+```python
+port.series_map(tables)                                   # 全量（兼容旧调用）
+port.series_map(tables, start="2025-01-01", end="2026-11-10")   # 闭区间，下推到 SQL
+port.series_map(["stock_daily"], codes=["sh600519"])      # 只对 long 表有效
+```
+
+`start` / `end` 会下推成 `WHERE date >= ? AND date <= ?`；`codes` 下推成
+`WHERE code IN (...)`（**只有 long 表支持**，打到 single/multi 会告警并忽略）。
+long 表的 key 集合**随窗口收缩**（窗口内没数据的代码不出现），这不算筛掉。
+
 **写接口不对外。** 写库只发生在 `update.py` / `intake` 内部。
 
 ---

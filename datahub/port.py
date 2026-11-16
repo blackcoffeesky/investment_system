@@ -50,10 +50,12 @@ class DataPort:
 
     # ---------------- 读
     def read(self, name: str, *, column: str | None = None,
-             start: str | None = None, end: str | None = None):
+             start: str | None = None, end: str | None = None,
+             codes: list[str] | None = None):
+        """读一张表。`codes` 只对 long/static 有意义，其余 kind 会告警并忽略。"""
         import datahub.fin as fin
 
-        return fin.read(name, column=column, start=start, end=end)
+        return fin.read(name, column=column, start=start, end=end, codes=codes)
 
     def read_many(self, names: list[str], *, start: str | None = None,
                   end: str | None = None) -> pd.DataFrame:
@@ -61,13 +63,23 @@ class DataPort:
 
         return fin.read_many(names, start=start, end=end)
 
-    def series_map(self, names: list[str]) -> dict[str, pd.Series]:
+    def series_map(self, names: list[str], *,
+                   start: str | None = None, end: str | None = None,
+                   codes: list[str] | None = None) -> dict[str, pd.Series]:
         """把若干张表读成 {key: Series}，供资产面板使用。
 
         - single → `{表名: Series}`
         - multi  → `{表名: 列名}`
-        - long   → pivot 成宽表后 `{表名: 代码}`（代码多时请自己先过滤）
+        - long   → pivot 成宽表后 `{表名: 代码}`（`codes` 会**下推到 SQL**）
         - static → **跳过并告警**：没有日期轴，本来就不是时间序列
+
+        `start` / `end` 是**闭区间**，`None` = 不过滤（向后兼容）；
+        `codes` 只对 **long** 表有意义——传给了 single/multi 会**打一行警告并忽略**，
+        不能静默忽略（否则调用方以为筛过了，其实拿到全量）。
+        ⚠️ long 表的 key 集合**随窗口收缩**：窗口内没有数据的代码不会出现在结果里
+        （不等于"这只被筛掉了"，只是这段区间它确实没数据）。
+
+        每个名字**单独判 kind**：一批名字里可能混着 long 和 single，不能假设同 kind。
 
         static 跳过而不是抛异常：调用方常把整份表清单直接传进来，
         一张 `company` 不该把整个面板带崩（它的 code/name 是文本，`astype(float)` 必炸）。
@@ -91,7 +103,7 @@ class DataPort:
                       f"不是时间序列", file=sys.stderr)
                 continue
             if kind == "long":
-                df = fin.read_long(t)
+                df = fin.read_long(t, start=start, end=end, codes=codes)
                 if df.empty:
                     continue
                 value = "close" if "close" in df.columns else _long_columns(t)[0]
@@ -99,7 +111,10 @@ class DataPort:
                 for code in wide.columns:
                     out[f"{t}:{code}"] = cast(pd.Series, wide[code]).astype(float)
             else:
-                s = fin.read(t)
+                if codes:
+                    print(f"[datahub] series_map：{t!r} 是 {kind} 表，不支持 codes 过滤"
+                          f"（已忽略，返回全量）", file=sys.stderr)
+                s = fin.read(t, start=start, end=end)
                 if s is None:
                     continue
                 if isinstance(s, pd.DataFrame):

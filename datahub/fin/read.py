@@ -55,13 +55,23 @@ def kind_of(name: str, path: Path | None = None) -> str:
 
 def read(name: str, *, column: str | None = None,
          start: str | None = None, end: str | None = None,
+         codes: list[str] | None = None,
          path: Path | None = None):
-    """按 kind 分派：single → Series；multi → DataFrame（或指定 column 取 Series）。"""
+    """按 kind 分派：single → Series；multi → DataFrame（或指定 column 取 Series）。
+
+    `codes` 只对 **long** 表有意义（下推到 SQL 的 `WHERE code IN (...)`）；
+    打到其它 kind 上会**打一行警告并忽略**——不能静默忽略，否则调用方会以为筛过了。
+    """
     k = kind_of(name, path)
     if k == "long":
-        return read_long(name, start=start, end=end, path=path)
+        return read_long(name, start=start, end=end, codes=codes, path=path)
     if k == "static":
-        return read_static(name, path=path)
+        return read_static(name, codes=codes, path=path)
+    if codes:
+        import sys
+
+        print(f"[datahub] read({name!r}) 是 {k} 表，不支持 codes 过滤（已忽略）；"
+              f"要按标的筛请用 long 表", file=sys.stderr)
 
     cond, args = [], []
     if start:

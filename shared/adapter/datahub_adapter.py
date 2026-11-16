@@ -337,7 +337,10 @@ def get_data(panel: Panel, *, start: str | None = None,
     tables = sorted({_table_of(spec)
                      for name in builders for spec in _SPECS[name].values()}
                     | {t for name in builders for t in _EXTRA_TABLES.get(name, ())})
-    series = port.series_map(tables)
+    # 窗口**下推到 SQL**（`stock_daily` 上千万行，不推下去就是把整表读进内存再丢）。
+    # ⚠️ 起点暂时就等于 start：低频列在窗口头部没有历史可 ffill，会与"全量再切"差几行
+    #    （warmup 是下一步的事，这里先只接线）。
+    series = port.series_map(tables, start=start, end=end)
 
     frames = [_BUILDERS[name](series, meta) for name in builders]
     df = pd.concat(frames, axis=1).sort_index()
