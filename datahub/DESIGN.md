@@ -415,6 +415,26 @@ DERIVED["breadth"] = Derived(func=breadth, depends=("stock_daily",), period="D",
 
 验收：2025-01-01 起取，四个面板 **0 行差异**（原来是 `CAUSUAL_GOLD` 23 行）。
 
+### 10.3 `etf_group_shares` 也沉进数据层（2026-11-16）
+
+ETF 分组（哪几只 ETF 算"上证50/沪深300/中证1000 宽基"）与组内求和，2026-11-16
+从 `shared/adapter` 搬进 `fin/derive.py`：
+
+```python
+DERIVED["etf_group_shares"] = Derived(func=etf_group_shares, depends=("etf_shares",),
+                                      period="D", columns=("sse50","csi300","csi1000"),
+                                      warmup_obs=2, …)
+```
+
+- adapter 里**不再有** ETF 代码 / `_ETF_GROUPS` / `bare_code` / 组内求和；
+  它只知道"列叫 `etf_sse50`"和"派生量叫 `etf_group_shares`"（有测试钉住）
+- `series_map(["etf_group_shares"])` → `{"etf_group_shares:sse50": Series, …}`，
+  与表同构；窗口不变量同样成立（`warmup_obs=2` 保证窗口内第一条也有 pct_change 基准）
+- ⚠️ **刻意复刻一处旧 bug**：旧的 `wide[cols].sum(axis=1)` 在某组当天没有观测时
+  返回 `0.0`（pandas 全 NaN 求和的默认），把"没有数据"写成"份额为 0"——2016 年有
+  162 个这样的格子。本轮是**重构**（要求逐位一致），所以先照旧填 0；
+  改成 NaN 会动 `ETF_DISPERSION` 等派生列，应当单独一轮做。
+
 **为什么现算**：估值入库约 5000×2500×4 个浮点 ≈ 3 GB，且都是可推导量；
 一旦入库就要操心"股本变了要重算历史"。
 

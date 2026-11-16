@@ -40,6 +40,7 @@ def test_derived_window_invariance():
     cases = {
         "breadth": lambda: DERIVED["breadth"].func(START, END),
         "dividend_yield": lambda: DERIVED["dividend_yield"].func(start=START, end=END),
+        "etf_group_shares": lambda: DERIVED["etf_group_shares"].func(START, END),
     }
     for name, windowed in cases.items():
         d = DERIVED[name]
@@ -78,3 +79,19 @@ def test_get_data_window_matches_full_slice():
         assert len(win) > 0, f"{p.name} 窗口内没有数据"
         assert win.index.equals(expect.index), f"{p.name} 窗口索引与全量切片不一致"
         pd.testing.assert_frame_equal(win, expect, check_exact=True)
+
+
+def test_adapter_has_no_etf_group_knowledge():
+    """ETF 分组知识必须只在数据层（`fin/derive._ETF_GROUPS`），adapter 里不许再出现。
+
+    2026-11-14 的事故根因就是这份知识散在消费方（两套代码归一规则）。
+    adapter 现在只该知道"列名叫 etf_sse50"和"派生量叫 etf_group_shares"。
+    """
+    import inspect
+
+    import shared.adapter.datahub_adapter as A
+
+    src = inspect.getsource(A)
+    for code in ("510050", "510710", "512100", "560010", "510580"):
+        assert code not in src, f"adapter 里还有 ETF 代码 {code}——分组知识该归数据层"
+    assert "def bare_code" not in src, "adapter 里不该再有自己的代码归一"

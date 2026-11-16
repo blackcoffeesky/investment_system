@@ -310,6 +310,93 @@ def dividend_yield(year: int | None = None, *, start: str | None = None,
 
 
 # ======================================================================
+# ETF 分组份额
+# ======================================================================
+#: 宽基 ETF 分组（**裸 6 位码**）。分组是**市场定义**，归数据层——消费方不该各自维护
+#: 一份（2026-11-14 的事故就是两侧代码归一规则不一致，四个派生列整体消失）。
+_ETF_GROUPS: dict[str, tuple[str, ...]] = {
+    "sse50": ("510050", "510710", "510100", "510190"),
+    "csi300": ("510300", "510310", "510330"),
+    "csi1000": ("512100", "560010", "510580", "510510"),
+}
+
+
+def bare_code(name: object) -> str:
+    """`sh510300` / `c510300` / `510300.SH` → `510300`。
+
+    数据层 2026-11 起给代码加了市场前缀，归一逻辑**只在这里有一份**。
+    """
+    digits = "".join(ch for ch in str(name) if ch.isdigit())
+    return digits[-6:] if len(digits) >= 6 else str(name)
+
+
+def etf_group_shares(start: str | None = None, end: str | None = None, *,
+                     path: Path | None = None,
+                     warmup_obs: int | None = None) -> pd.DataFrame:
+    """宽基 ETF **分组份额**（组内求和），`index=date`，列 = 组名 `sse50/csi300/csi1000`。
+
+    **原生观测日有值、其余日期不出现（不 ffill）**——消费方是在观测日上算
+    `pct_change`，先 ffill 会让非观测日的变化变成 0，口径就变了（实测均值差 −72%、
+    66% 的日期变 0）。
+
+    `start` 会按 `warmup_obs`（默认取注册表里的 2）往前多取几个**观测**，
+    保证窗口内第一条也有 pct_change 的基准；算完由调用方切回 `[start, end]`。
+    """
+    obs = DERIVED["etf_group_shares"].warmup_obs if warmup_obs is None else int(warmup_obs)
+    con = _conn(path)
+    try:
+        lo = None
+        if start and obs > 0:
+            rows = con.execute(
+                "SELECT DISTINCT date FROM etf_shares WHERE date <= ? "
+                "ORDER BY date DESC LIMIT ?", (str(start), obs)).fetchall()
+            if rows:
+                lo = min(str(r[0]) for r in rows)
+        cond, args = [], []
+        if lo:
+            cond.append("date >= ?")
+            args.append(lo)
+        if end:
+            cond.append("date <= ?")
+            args.append(str(end))
+        where = (" WHERE " + " AND ".join(cond)) if cond else ""
+        df = pd.read_sql(f"SELECT code, date, shares FROM etf_shares{where}",
+                         con, params=args)
+    finally:
+        con.close()
+
+    cols = list(_ETF_GROUPS)
+    if df.empty:
+        return pd.DataFrame(columns=cols,
+                            index=pd.DatetimeIndex([], name="date"), dtype=float)
+
+    group_of = {c: g for g, codes in _ETF_GROUPS.items() for c in codes}
+    # `all_dates` 必须取**全部 ETF**（含不在分组里的代码）的日期并集——旧实现的 `wide`
+    # 就是全 24 只的透视表，`sum(axis=1)` 在"某组当天没有观测"时落 0.0。
+    all_dates = pd.DatetimeIndex(pd.to_datetime(df["date"].unique())).sort_values()
+    df["g"] = df["code"].map(lambda c: group_of.get(bare_code(c)))
+    df = df.dropna(subset=["g"])
+    if df.empty:
+        return pd.DataFrame(columns=cols,
+                            index=pd.DatetimeIndex([], name="date"), dtype=float)
+
+    wide = df.pivot_table(index="date", columns="g", values="shares", aggfunc="sum")
+    wide.index = pd.DatetimeIndex(pd.to_datetime(wide.index), name="date")
+    # ⚠️ **刻意复刻旧实现的 bug**：旧的 `wide[cols].sum(axis=1)` 在某组当天
+    # "一个观测都没有"时返回 **0.0**（pandas 对全 NaN 求和的默认行为），
+    # 于是"没有数据"被写成"份额为 0"（2016 年有 162 个这样的格子）。
+    # 本轮是重构、不是修语义，所以先按旧行为填 0 保住逐位一致；
+    # 要修（改成 NaN）应当单独一轮，因为它会改变 ETF_DISPERSION 等派生列。
+    wide = wide.reindex(index=all_dates)
+    for g in cols:
+        if g not in wide.columns:
+            wide[g] = np.nan
+    out = cast(pd.DataFrame, wide[cols].astype(float).fillna(0.0).sort_index())
+    out.index.name = "date"
+    return out
+
+
+# ======================================================================
 # 派生量注册表
 # ======================================================================
 @dataclass(frozen=True)
@@ -368,6 +455,19 @@ DERIVED: dict[str, Derived] = {
             "依赖 `adj_factor` 的**除权日**口径（不是报告期）＋ `shares_history` 的"
             "**当前股本快照**（不是当年股本 → 越往前越不准）＋ `stock_daily` 的年末价。"
             "股东回报口径/股本源一变，这个数就不可比。"
+        ),
+    ),
+    "etf_group_shares": Derived(
+        func=etf_group_shares,
+        depends=("etf_shares",),
+        period="D",
+        columns=tuple(_ETF_GROUPS),
+        doc="宽基 ETF 分组份额（按组求和，原生观测日有值、不 ffill）",
+        warmup_obs=2,          # pct_change 要上一次观测
+        depends_note=(
+            "ETF 码表/分组定义（`_ETF_GROUPS`）变了，组内求和就变——"
+            "分组知识归数据层，消费方不要再自己维护一份。"
+            "另外 `etf_shares` 只覆盖上交所的这 24 只，深市宽基（sz159xxx）不在里面。"
         ),
     ),
 }

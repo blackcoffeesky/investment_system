@@ -21,7 +21,8 @@
 
 from __future__ import annotations
 
-from shared.adapter import Panel, bare_code, get_data, tables_of
+from datahub.fin.derive import bare_code
+from shared.adapter import Panel, get_data, tables_of
 
 # 允许落后 csi_all 的交易日数：宏观 / ETF 表本身有 lag_days，
 # 但「整列 NaN」或「停在几个月前」不能容忍。
@@ -34,7 +35,7 @@ PANELS = {"ashare": Panel.STATE_ASHARE, "gold": Panel.STATE_GOLD}
 def test_feature_columns_reach_latest_trading_day():
     from state_layer import state_assets
 
-    # ---- ① 代码归一：数据层前缀怎么变，都要能对上（归一逻辑现在在 adapter 里）
+    # ---- ① 代码归一：数据层前缀怎么变，都要能对上（归一逻辑在 derive.etf_group_shares）
     for raw, want in (("sh510300", "510300"), ("sz159919", "159919"),
                       ("c510300", "510300"), ("510300", "510300"),
                       ("510300.SH", "510300")):

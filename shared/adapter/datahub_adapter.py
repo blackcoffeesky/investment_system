@@ -124,14 +124,14 @@ _SPECS: dict[str, Mapping[str, Any]] = {
     "gold_macro": _GOLD_MACRO,
 }
 
-# 宽基 ETF 分组（裸 6 位码）。**放在这一层**是因为它属于"市场定义"，
-# 消费方不该各自维护一份——2026-11-14 的事故就是两侧代码归一规则不一致。
-_ETF_GROUPS: dict[str, tuple[str, ...]] = {
-    "sse50": ("510050", "510710", "510100", "510190"),
-    "csi300": ("510300", "510310", "510330"),
-    "csi1000": ("512100", "560010", "510580", "510510"),
-}
-_ETF_COLS: tuple[str, ...] = tuple(f"etf_{g}" for g in _ETF_GROUPS)
+# 宽基 ETF 分组份额：**分组知识与求和都在数据层**
+# （`datahub.fin.derive.DERIVED["etf_group_shares"]`）。这里只留列名，
+# 不再有 ETF 代码 / `bare_code` / 组内求和逻辑——2026-11-14 的事故（两侧归一规则
+# 不一致、四个派生列整体消失）根因就是这种知识散在消费方。
+_ETF_GROUP_KEYS: tuple[str, ...] = ("sse50", "csi300", "csi1000")
+_ETF_COLS: tuple[str, ...] = tuple(f"etf_{g}" for g in _ETF_GROUP_KEYS)
+#: 请求 `series_map` 时用的派生量名字（见 `fin/derive.DERIVED`）
+_ETF_DERIVED = "etf_group_shares"
 
 # ---------------------------------------------------------------- 每列策略
 # `daily`：下游要"每天能看到的最新值"（做逐日 diff / z-score / 展示）→ ffill 到交易日
@@ -254,50 +254,24 @@ def column_of(spec: Any) -> str:
     return spec[1] if isinstance(spec, tuple) else str(spec)
 
 
-def bare_code(name: object) -> str:
-    """`sh510300` / `c510300` / `510300.SH` → `510300`。
-
-    数据层 2026-11 起给代码加了市场前缀。归一逻辑**只在这里有一份**，
-    消费方要用就 `from shared.adapter import bare_code`（两个 panel 已转出口）。
-    """
-    digits = "".join(ch for ch in str(name) if ch.isdigit())
-    return digits[-6:] if len(digits) >= 6 else str(name)
-
-
-def _etf_group_shares(series: Mapping[str, pd.Series], meta: pd.DataFrame,
-                      idx: pd.DatetimeIndex) -> dict[str, pd.Series]:
-    """宽基 ETF **分组份额**（组内求和），按原生观测日给出、**不做 ffill**。
-
-    为什么不能 ffill：派生列（`SIZE_FLOW` 等）是在**观测日**上算 `pct_change`
-    再 ffill 结果的。先 ffill 会让非观测日的 pct_change 变成 0，口径就变了。
-    所以这里用 `panel_align.to_daily(..., ffill=False)`：只对齐日历、留 NaN，
-    消费方 `.dropna()` 就能拿回原生序列。
-    """
-    keys = [k for k in series if k.startswith("etf_shares:")]
-    if not keys:
-        _warn("series 里没有 etf_shares:*，ETF 分组份额整块缺席")
-        return {c: pd.Series(index=idx, dtype=float) for c in _ETF_COLS}
-
-    wide = pd.DataFrame({bare_code(k.split(":", 1)[1]): series[k] for k in keys})
-    lag = T.lag_of("etf_shares", meta)
-    out: dict[str, pd.Series] = {}
-    for group, codes in _ETF_GROUPS.items():
-        cols = [c for c in codes if c in wide.columns]
-        name = f"etf_{group}"
-        if not cols:
-            _warn(f"ETF 组 {group} 一个代码都没匹配上（代码格式又变了？）")
-            out[name] = pd.Series(index=idx, dtype=float)
-        else:
-            out[name] = T.to_daily(wide[cols].sum(axis=1), idx, lag, ffill=False)
-    return out
-
-
 def _build_ashare_base(series: Mapping[str, pd.Series],
                        meta: pd.DataFrame) -> pd.DataFrame:
+    """A 股基础面板：价格/指数/两融走 `build`，ETF 分组份额取自**派生量**。
+
+    `etf_group_shares` 是 `series_map` 按名字现算的（分组与求和都在数据层），
+    这里只把 `etf_group_shares:sse50` 之类的 key 落到 `etf_sse50` 列上，
+    并按原生观测日 reindex（不 ffill）。
+    """
     df = T.build(_ASHARE_BASE, "csi_all", series, meta,
                  policy=_ASHARE_BASE_POLICY)
-    for col, s in _etf_group_shares(series, meta, df.index).items():
-        df[col] = s
+    idx = df.index
+    for g in _ETF_GROUP_KEYS:
+        s = series.get(f"{_ETF_DERIVED}:{g}")
+        if s is None:
+            _warn(f"series 里没有 {_ETF_DERIVED}:{g}，etf_{g} 整列 NaN")
+            df[f"etf_{g}"] = pd.Series(index=idx, dtype=float)
+        else:
+            df[f"etf_{g}"] = s.reindex(idx)
     return df
 
 
@@ -369,8 +343,12 @@ def get_data(panel: Panel, *, start: str | None = None,
     port = get_port()
     meta = port.metadata()
     tables = sorted({_table_of(spec)
-                     for name in builders for spec in _SPECS[name].values()}
-                    | {t for name in builders for t in _EXTRA_TABLES.get(name, ())})
+                     for name in builders for spec in _SPECS[name].values()})
+    # ETF 分组份额是**派生量**（`fin/derive.DERIVED["etf_group_shares"]`）：
+    # 分组与求和都在数据层，这里只按名字取，**不直接读 etf_shares**。
+    names = list(tables)
+    if any(_EXTRA_COLS.get(name) for name in builders):
+        names.append(_ETF_DERIVED)
     # 窗口**下推到 SQL**（`stock_daily` 上千万行，不推下去就是把整表读进内存再丢）。
     # 取数起点 = start - max(warmup)：低频列必须在窗口起点之前有一个观测，
     # ffill 才有东西可填（否则窗口头部是 NaN，见 `_WARMUP` 的注释）。
@@ -379,7 +357,7 @@ def get_data(panel: Panel, *, start: str | None = None,
     fetch_start = None
     if start is not None and warm:
         fetch_start = (pd.Timestamp(start) - pd.Timedelta(days=warm)).strftime("%Y-%m-%d")
-    series = port.series_map(tables, start=fetch_start or start, end=end)
+    series = port.series_map(names, start=fetch_start or start, end=end)
 
     frames = [_BUILDERS[name](series, meta) for name in builders]
     df = pd.concat(frames, axis=1).sort_index()

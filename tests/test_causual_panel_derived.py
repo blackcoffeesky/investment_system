@@ -189,10 +189,10 @@ def test_ashare_derived_columns_present_and_fresh():
 def test_bare_code_normalizes_etf_codes():
     """数据层的代码前缀怎么变，ETF 分组都要能对上。
 
-    归一逻辑**只有一份**，在 `shared.adapter.bare_code`（2026-11-15 从
-    `causual_assets/ashare/panel.py` 上移；那份文件已删）。
+    归一逻辑**只有一份**，在 `datahub.fin.derive.bare_code`（2026-11-16 随
+    `etf_group_shares` 一起沉进数据层；分组知识归数据层，消费方不再各存一份）。
     """
-    from shared.adapter import bare_code
+    from datahub.fin.derive import bare_code
 
     for raw, want in (("sh510300", "510300"), ("sz159919", "159919"),
                       ("c510300", "510300"), ("510300", "510300"),

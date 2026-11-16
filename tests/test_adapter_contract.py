@@ -21,8 +21,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from shared.adapter import (COLUMNS, Panel, bare_code, column_of, get_data,
-                            tables_of)
+from shared.adapter import (COLUMNS, Panel, column_of, get_data, tables_of)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -108,6 +107,8 @@ def test_state_and_causual_ashare_agree_on_shared_columns():
 
 def test_column_of_and_bare_code_conventions():
     """两个约定 helper：`panel.py` 靠它们把旧映射接到语义列上。"""
+    from datahub.fin.derive import bare_code
+
     assert column_of(("csi_all", "close")) == "close"
     assert column_of("csi300") == "csi300"
     for raw, want in (("sh510300", "510300"), ("sz159919", "159919"),
