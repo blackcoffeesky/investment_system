@@ -481,6 +481,34 @@ DERIVED["etf_group_shares"] = Derived(func=etf_group_shares, depends=("etf_share
 **为什么现算**：估值入库约 5000×2500×4 个浮点 ≈ 3 GB，且都是可推导量；
 一旦入库就要操心"股本变了要重算历史"。
 
+### 10.5 派生量总表（9 条，warmup 三种单位）
+
+| 派生量 | 列 | 依赖 | warmup | 落位 |
+|---|---|---|---|---|
+| `breadth` | `adv/dec/…` | `stock_daily` | **`warmup_days=400`** | 交易日 |
+| `dividend_yield` | `yield_mcap_weighted` 等 3 列 | `adj_factor`/`stock_daily`/`shares_history` | **`warmup_years=0`** | 年 Y → Y+1-01-01 → ffill |
+| `etf_group_shares` | `sse50/csi300/csi1000` | `etf_shares` | **`warmup_obs=2`** | 观测日（不 ffill） |
+| `etf_dispersion` | `dispersion` | `etf_shares` | `warmup_obs=2` | 观测日 → `daily` |
+| `size_flow` | `flow` | `etf_shares` | `warmup_obs=2` | 观测日 → `daily` |
+| `national_etf` | `net` | `etf_shares` | `warmup_obs=2` | 观测日 → `daily` |
+| `national_etf_event` | `event` | `etf_shares` | **`warmup_days=120`** | 日频 0/1（头部为 0） |
+| `cb_gold_buy` | `flow` | `cb_holdings` | **`warmup_obs=3`** | 稀疏（可见日） |
+| `etf_flow` | `flow` | `gold_etf_holdings` | `warmup_obs=3` | 稀疏（可见日） |
+
+**warmup 三种单位**，按"这个量要多少历史"选，不搞一个全局常量：
+
+- `warmup_days` —— 日期单位（`breadth` 400 天：停牌超 40 天的股票在窗口起点算不出前收；
+  `national_etf_event` 120 天兜住 60 个观测的滚动分位 + 长假）
+- `warmup_obs` —— **观测**单位（周频/月频表"往前 3 天"可能一个观测都没有）
+- `warmup_years` —— 年度口径（`dividend_yield` 是 0：每年独立，没有跨年滚动）
+
+**`depends_note` 是"什么条件下这个数会变味"**，不是装饰：写的是"换源 / 改口径 /
+分组变了 / 用当前股本近似"这类**会让历史不可比**的条件。改派生量前先读它。
+
+**`period="Y"` 的对齐规则**：年 Y 的值 → **Y+1-01-01** → ffill 到日频。
+理由：年 Y 的除息日全落在 Y 内，数据到 Y+1 才完整；这是"数据期→可见日"的换算，
+和 `lag_days` 同类，所以由**适配层**做（不在消费方各写一遍）。
+
 ### 11.1 "原始 / 派生"不再由 `metadata` 区分（2026-11-16 改）
 
 2026-11-14 曾在 `metadata` 加了 `source` / `depends` 两列，想用它们标记"这张表是原始
@@ -699,3 +727,5 @@ clear_cache()                                        # 数据变了就丢
 - 失效策略**最朴素**：`DataPort.run_update()` 结束时调一次 `clear_cache()`
   （`finally` 里，异常路径也清），外加 `fresh=True` 强制绕过
 - **不做 TTL / mtime 校验**（后话）；返回的是**副本**，调用方改它不会污染缓存
+- **边界（知道比不知道好）**：多 worker 时**每个进程各一份**；**别的进程写库不会让它失效**
+  （只有本进程的 `run_update` 会清）。看到"库里更新了、服务还读旧值"，第一嫌疑是这里

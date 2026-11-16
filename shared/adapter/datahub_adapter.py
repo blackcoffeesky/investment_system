@@ -29,14 +29,37 @@ datahub 内部怎么变（表改名、宽表拆开、代码加前缀）都只改
 2. **`shared/__init__.py` 不许 import 本包**——否则任何 `import shared`
    都会把 datahub + sqlite 拖进来（纯工具那层必须保持无副作用）。
 
-对齐口径（`lag_days` + ffill）走 `shared.utils.panel_align`，这里不另写一份。
+对齐口径（`lag_days` + ffill）走 `shared.utils.time_align`，这里不另写一份。
 
-列名从哪来
-----------
-四个 `panel.py` 里的 `COLS` / `ASHARE` / `GOLD` / `SHARED` 映射已经写好了
-"要哪张表的哪一列"。本文件把它们按资产 + 层（base / macro）重排成 4 个声明，
-`_BUILD` 决定每个 `Panel` 要拼哪几块。**列名是语义名**（`close`、`csi300`、
-`margin_balance`），不带表名前缀——消费方不该知道数据来自哪张表。
+## 缓存
+
+`get_data` 在**进程内**缓存 `(panel, start, end) → 面板`，返回的是**副本**：
+
+- 命中直接返回（实测 **<1ms**；未命中 4~5s，大头是 `dividend_yield` 扫 `stock_daily`）
+- **失效**：`DataPort.run_update()` 结束时（`finally` 里，异常路径也清）自动
+  `clear_cache()`；`get_data(..., fresh=True)` 是逃生口
+- **边界**（知道比不知道好）：多 worker 时**每个进程各一份**；
+  **别的进程写库不会让它失效**——只有本进程的 `run_update` 会清。
+  所以看到"库里更新了、服务还读旧值"，第一嫌疑就是这里
+- 不做 TTL / mtime 校验（刻意：最简单的策略最不容易错）
+
+## 不要绕过它
+
+不要直接 `port.series_map(...)` 再自己拼面板——那是 `series_map` 时代的做法，
+等于把装配做两遍（`AGENTS.md` §4'③ 已写死）。
+
+要新的列 ⇒ 在 `_ASHARE_BASE` / `_GOLD_BASE` / `_SPECS` / `_PANEL_DERIVED` 里**声明**，
+不要在消费方外面拼。`series_map` 的 docstring 也标注了"上层不要直接调我"。
+
+## 列名从哪来
+
+- 基础列：`_ASHARE_BASE` / `_ASHARE_MACRO` / `_GOLD_BASE` / `_GOLD_MACRO` 四张声明，
+  `_BUILD` 决定每个 `Panel` 拼哪几块
+- ETF 分组份额：`etf_group_shares` 派生量 → `etf_sse50/csi300/csi1000`（`raw`，不 ffill）
+- 通用业务派生量：`_PANEL_DERIVED` 按**面板**声明（`etf_dispersion` / `size_flow` /
+  `national_etf` / `national_etf_event`，causual 另加 `dividend_yield`）
+- **列名是语义名**（`close`、`csi300`、`margin_balance`），不带表名前缀——
+  消费方不该知道数据来自哪张表
 """
 
 from __future__ import annotations

@@ -59,6 +59,24 @@ datahub/
 
 **合并的前提（缺一不可）：共享 date 主键、同频、同源、同生命周期。**
 
+### 写库契约（2026-11-16 起，务必知道）
+
+**往 multi 表写数只更新"本次返回的列"，其余列保持原值。**
+
+```sql
+INSERT INTO t (date, c1, c2) … ON CONFLICT(date) DO UPDATE SET c1=excluded.c1, c2=excluded.c2
+```
+
+改前用的是 `INSERT OR REPLACE`——REPLACE 是"删旧行 + 插新行"，**本次没返回的列会变成
+NULL**。`csi_all` 的源只回 5 列，于是每次刷新都把 `amount`/`turnover` 从 3503 清成 0，
+**没有任何测试响过**（state 层偶然看 `/state` 才发现）。这条现在是**契约**，不是实现细节：
+写路径的四个行为（等价 / 缺列不清空 / 主键语义不变 / single·long 不受影响）由
+`tests/test_write_upsert.py` 钉住。
+
+**列熔断**：每次 multi 写入后比较各列非空数，某列从 **>50% 掉到 0** 就打
+`[列熔断] …` 到 stderr。整列被清空不可能是正常业务，只可能是源缺列/写路径错——宁可吵。
+
+
 | 表 | kind | 说明 |
 |---|---|---|
 | `csi_all` | multi | open/high/low/close/volume/amount/turnover |
@@ -302,6 +320,8 @@ df = read_long("stock_daily", start="2026-01-01", codes=["000001"])
 wide = pivot(df, "close")                 # long → 日期 × 代码
 ```
 
-装配给资产面板用 `DataPort.series_map(tables)`——single/multi/long 都统一成 `{key: Series}`。
+装配点（`cli.py` / `service/` / `web/routes.py`）拿数据走 **`shared.adapter.get_data(panel)`**；
+`series_map(tables)` 是数据层内部的主接口（single/multi/long 统一成 `{key: Series}`），
+**上层别直接调**——那等于把装配做两遍。
 
 `freq="SPARSE"` 的表（事件表、份额快照）不做逐日缺口检查，只看是否很久没更新。
