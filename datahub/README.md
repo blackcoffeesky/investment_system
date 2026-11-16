@@ -155,6 +155,12 @@ port.series_map(["dividend_yield"])   # → {"dividend_yield:yield_mcap_weighted
 **传窗口 == 全量切片**（自带 warmup，见 DESIGN §10.2）。
 `DataPort.breadth()` / `dividend_yield()` 是过渡期保留的旧入口，迁完就该删。
 
+现有 9 个派生量：`breadth` / `dividend_yield` / `etf_group_shares` /
+`etf_dispersion` / `size_flow` / `national_etf` / `national_etf_event` /
+`cb_gold_buy` / `etf_flow`。前三个是"数据集"，后六个是**通用业务特征**
+（2026-11-16 从 `shared/utils/features.py` 迁来，改成自己读库）；
+A 股面板直接多出 `etf_dispersion` 等 4 列，黄金面板多出 `cb_gold_buy` / `etf_flow`。
+
 **写接口不对外。** 写库只发生在 `update.py` / `intake` 内部。
 
 ---

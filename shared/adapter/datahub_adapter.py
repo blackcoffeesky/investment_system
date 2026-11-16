@@ -133,6 +133,24 @@ _ETF_COLS: tuple[str, ...] = tuple(f"etf_{g}" for g in _ETF_GROUP_KEYS)
 #: 请求 `series_map` 时用的派生量名字（见 `fin/derive.DERIVED`）
 _ETF_DERIVED = "etf_group_shares"
 
+# 通用业务派生量 → 面板列：(派生量名, 派生量里的列名, 对齐策略)。
+# 这些量**自己读库**（`datahub.fin.derive`），adapter 只按名字取，不再吃面板列。
+_ASHARE_DERIVED: tuple[tuple[str, str, str], ...] = (
+    ("etf_dispersion", "dispersion", "daily"),
+    ("size_flow", "flow", "daily"),
+    ("national_etf", "net", "daily"),
+    ("national_etf_event", "event", "daily"),
+)
+_GOLD_DERIVED: tuple[tuple[str, str, str], ...] = (
+    ("cb_gold_buy", "flow", "raw"),
+    ("etf_flow", "flow", "raw"),
+)
+#: 哪个 builder 负责把派生列挂进面板（一个面板只挂一次，别在 base 和 macro 里重复）
+_BUILDER_DERIVED: dict[str, tuple[tuple[str, str, str], ...]] = {
+    "ashare_base": _ASHARE_DERIVED,
+    "gold_macro": _GOLD_DERIVED,
+}
+
 # ---------------------------------------------------------------- 每列策略
 # `daily`：下游要"每天能看到的最新值"（做逐日 diff / z-score / 展示）→ ffill 到交易日
 # `raw`  ：下游要做 diff 或**按观测频率聚合** → 只在观测日有值，不铺满
@@ -299,6 +317,11 @@ def columns_of(panel: Panel) -> dict[str, str]:
             out[col] = _POLICY[name][col]
         for col in _EXTRA_COLS.get(name, ()):    # ETF 分组份额：raw
             out[col] = _RAW
+    # 派生列统一追加在**最后**——`get_data` 是 concat 完之后才挂它们，
+    # 顺序必须与这里一致（契约测试按列顺序断言）
+    for name in _BUILD[panel]:
+        for dname, _, how in _BUILDER_DERIVED.get(name, ()):
+            out[dname] = how
     return out
 
 
@@ -349,6 +372,8 @@ def get_data(panel: Panel, *, start: str | None = None,
     names = list(tables)
     if any(_EXTRA_COLS.get(name) for name in builders):
         names.append(_ETF_DERIVED)
+    derived_cols = [d for name in builders for d in _BUILDER_DERIVED.get(name, ())]
+    names += [d[0] for d in derived_cols]
     # 窗口**下推到 SQL**（`stock_daily` 上千万行，不推下去就是把整表读进内存再丢）。
     # 取数起点 = start - max(warmup)：低频列必须在窗口起点之前有一个观测，
     # ffill 才有东西可填（否则窗口头部是 NaN，见 `_WARMUP` 的注释）。
@@ -361,6 +386,13 @@ def get_data(panel: Panel, *, start: str | None = None,
 
     frames = [_BUILDERS[name](series, meta) for name in builders]
     df = pd.concat(frames, axis=1).sort_index()
+    for dname, src_col, how in derived_cols:
+        s = series.get(f"{dname}:{src_col}")
+        if s is None:
+            _warn(f"series 里没有 {dname}:{src_col}，{dname} 整列 NaN")
+            df[dname] = pd.Series(index=df.index, dtype=float)
+        else:
+            df[dname] = T.to_daily(s, df.index, 0, ffill=(how == "daily"))
     df = df.loc[:, ~df.columns.duplicated()]
 
     if start is not None:

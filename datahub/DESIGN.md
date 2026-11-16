@@ -442,6 +442,33 @@ DERIVED["etf_group_shares"] = Derived(func=etf_group_shares, depends=("etf_share
   所以**必须同轮重拟合 + 重估 edges，不能单独改**（2026-11-16 决定：先记账，等下一次
   计划内的重拟合一起做）。
 
+### 10.4 通用业务派生量也进了注册表（2026-11-16）
+
+原来放在 `shared/utils/features.py`、吃**面板列**的 6 个通用特征，改成在 derive 里
+**自己读库**并注册（`series_map` 按名字给，`get_data` 直接出现在面板里）：
+
+| 派生量 | 列 | 依赖 | warmup | 出现处 |
+|---|---|---|---|---|
+| `etf_dispersion` | `dispersion` | `etf_shares` | `warmup_obs=2` | A 股面板（`daily`，ffill） |
+| `size_flow` | `flow` | `etf_shares` | `warmup_obs=2` | 同上 |
+| `national_etf` | `net` | `etf_shares` | `warmup_obs=2` | 同上 |
+| `national_etf_event` | `event` | `etf_shares` | `warmup_days=120` | 同上（日频 0/1，头部为 0） |
+| `cb_gold_buy` | `flow` | `cb_holdings` | `warmup_obs=3` | 黄金面板（`raw`，落在可见日） |
+| `etf_flow` | `flow` | `gold_etf_holdings` | `warmup_obs=3` | 同上 |
+
+**warmup 各填各的**（不再一个全局常量）：pct_change 只要 1 个历史观测，
+60 日滚动分位要 60 个，差分还要"上上个"作基准（`_gold_flow` 因此是 **3** 不是 2——
+只取 2 个的话窗口内第一笔会缺，实测 2025-01-09 差一格）。
+
+**两种落位口径**：`etf_*` 返回**观测日**（`daily` 策略由 adapter ffill），
+`national_etf_event` 返回**日频**（0/1 标记，"没有观测"应当是 0 不是 NaN），
+黄金两条返回**稀疏**（`raw` 策略，落在可见日之后的第一个交易日）。
+
+验收：9 个派生量窗口不变量全过；四个面板**原有列逐位不变**（35/17/14/7 列），
+新增 4/2/4/0 列；6 个新列与旧的 `features.*` 算法**逐位相同**——
+唯一例外是 `etf_flow` 多了 **1 个值**（2008-01-09）：derive 直接读库，有基期观测，
+而旧的"吃面板列"版本因为面板起点之前没有那一行，算不出第一笔。**新的是更完整的**。
+
 **为什么现算**：估值入库约 5000×2500×4 个浮点 ≈ 3 GB，且都是可推导量；
 一旦入库就要操心"股本变了要重算历史"。
 

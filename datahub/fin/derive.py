@@ -330,9 +330,9 @@ def bare_code(name: object) -> str:
     return digits[-6:] if len(digits) >= 6 else str(name)
 
 
-def etf_group_shares(start: str | None = None, end: str | None = None, *,
-                     path: Path | None = None,
-                     warmup_obs: int | None = None) -> pd.DataFrame:
+def _etf_group_wide(start: str | None = None, end: str | None = None, *,
+                    path: Path | None = None,
+                    warmup_obs: int | None = None) -> pd.DataFrame:
     """宽基 ETF **分组份额**（组内求和），`index=date`，列 = 组名 `sse50/csi300/csi1000`。
 
     **原生观测日有值、其余日期不出现（不 ffill）**——消费方是在观测日上算
@@ -393,7 +393,234 @@ def etf_group_shares(start: str | None = None, end: str | None = None, *,
             wide[g] = np.nan
     out = cast(pd.DataFrame, wide[cols].astype(float).fillna(0.0).sort_index())
     out.index.name = "date"
+    # 内部版**不切片**：上层的派生量要靠这几行 warmup 算 pct_change
     return out
+
+
+# ======================================================================
+# ETF / 黄金的通用派生量（2026-11-16 从 shared/utils/features.py 迁来）
+# ======================================================================
+# 为什么迁到数据层：这些量吃的是"哪一个 ETF 算宽基、分几组、央行持仓什么时候可见"，
+# 全是**数据侧知识**。留在 shared/utils 就要求每个消费方自己拼面板列，
+# 一旦列名/代码格式变，消费方各自静默失效（2026-11-14 的事故）。
+# 迁来之后 `series_map` 按名字给，形态与表同构。
+
+
+def _raw_series(table: str, path: Path | None = None,
+                start: str | None = None,
+                end: str | None = None,
+                warmup_obs: int = 0) -> pd.Series:
+    """读一张 **single** 表的原始序列（`date → value`），可选按观测数往前多取。"""
+    con = _conn(path)
+    try:
+        lo = None
+        if start and warmup_obs > 0:
+            rows = con.execute(
+                f'SELECT DISTINCT date FROM "{table}" WHERE date <= ? '
+                "ORDER BY date DESC LIMIT ?", (str(start), int(warmup_obs))).fetchall()
+            if rows:
+                lo = min(str(r[0]) for r in rows)
+        cond, args = [], []
+        if lo:
+            cond.append("date >= ?")
+            args.append(lo)
+        if start and not lo:
+            cond.append("date >= ?")
+            args.append(str(start))
+        if end:
+            cond.append("date <= ?")
+            args.append(str(end))
+        where = (" WHERE " + " AND ".join(cond)) if cond else ""
+        df = pd.read_sql(f'SELECT date, value FROM "{table}"{where} ORDER BY date',
+                         con, params=args)
+    finally:
+        con.close()
+    if df.empty:
+        return pd.Series(dtype=float)
+    s = pd.Series(df["value"].to_numpy(dtype=float),
+                  index=pd.DatetimeIndex(pd.to_datetime(df["date"]), name="date"))
+    return s.dropna()
+
+
+def _calendar(table: str = "csi_all", path: Path | None = None) -> pd.DatetimeIndex:
+    """某张表当作"交易日历"用的日期轴（`csi_all` 是 A 股主轴，`gold_cny` 是黄金主轴）。"""
+    con = _conn(path)
+    try:
+        df = pd.read_sql(f'SELECT date FROM "{table}" ORDER BY date', con)
+    finally:
+        con.close()
+    return pd.DatetimeIndex(pd.to_datetime(df["date"]), name="date")
+
+
+def _place(series: pd.Series, cal: pd.DatetimeIndex) -> pd.Series:
+    """把观测日落到"之后第一个交易日"（不复制到其它交易日）。"""
+    out = pd.Series(index=cal, dtype=float)
+    if len(series) == 0 or len(cal) == 0:
+        return out
+    pos = cal.searchsorted(pd.DatetimeIndex(series.index), side="left")
+    keep = pos < len(cal)
+    out.iloc[pos[keep]] = series.to_numpy()[keep]
+    return out
+
+
+def _slice(obj, start: str | None, end: str | None):
+    """把结果切回 `[start, end]`。
+
+    派生函数内部会按 warmup **往前多取**（否则窗口头部算不对），但**结果区间**
+    只能是调用方要的那一段——不然"传窗口"会多出几行，窗口不变量（传窗口 ==
+    全量切片）就不成立。
+    """
+    if isinstance(obj, pd.DataFrame) and obj.empty:
+        return obj
+    out = obj
+    if start is not None:
+        out = out[out.index >= pd.Timestamp(start)]
+    if end is not None:
+        out = out[out.index <= pd.Timestamp(end)]
+    return out
+
+
+def etf_group_shares(start: str | None = None, end: str | None = None, *,
+                     path: Path | None = None,
+                     warmup_obs: int | None = None) -> pd.DataFrame:
+    """宽基 ETF 分组份额（公开入口）：`_etf_group_wide` 的结果切回 `[start, end]`。"""
+    return cast(pd.DataFrame,
+                _slice(_etf_group_wide(start, end, path=path,
+                                       warmup_obs=warmup_obs), start, end))
+
+
+def _etf_groups_frame(start: str | None, end: str | None,
+                      path: Path | None, warmup_obs: int | None = None) -> pd.DataFrame:
+    """ETF 分组份额（观测日索引），供下面四个 ETF 派生量共用。
+
+    `warmup_obs` 必须由**需要多少历史观测**决定，不是一律 2：
+    pct_change 只要 1 个，而 60 日滚动分位要 60 个。
+    """
+    return _etf_group_wide(start, end, path=path, warmup_obs=warmup_obs)
+
+
+def etf_dispersion(start: str | None = None, end: str | None = None, *,
+                   path: Path | None = None) -> pd.DataFrame:
+    """宽基 ETF 申赎的**分歧度**：各组份额变化的截面标准差。
+
+    ⚠️ 顺序不能动：`dropna → pct_change → std`，**ffill 交给调用方（adapter 的 daily 策略）**。
+    先 ffill 再算变化率会让非观测日的 pct_change 变成 0，整条特征静默换掉
+    （实测近 250 日均值 0.0478 → 0.0134，零值占比 0% → 66.4%）。
+    """
+    g = _etf_groups_frame(start, end, path)
+    cols = list(_ETF_GROUPS)
+    if g.empty:
+        return pd.DataFrame(columns=["dispersion"],
+                            index=pd.DatetimeIndex([], name="date"), dtype=float)
+    parts = [g[c].dropna().pct_change() for c in cols if g[c].notna().any()]
+    if len(parts) < 2:
+        return pd.DataFrame(columns=["dispersion"],
+                            index=pd.DatetimeIndex([], name="date"), dtype=float)
+    s = pd.concat(parts, axis=1).std(axis=1).replace([np.inf, -np.inf], np.nan)
+    return cast(pd.DataFrame, _slice(s.rename("dispersion").to_frame(), start, end))
+
+
+def size_flow(start: str | None = None, end: str | None = None, *,
+              path: Path | None = None) -> pd.DataFrame:
+    """大小盘 ETF 份额变化之差（小盘 − 大盘）：资金在风格间的迁移。"""
+    g = _etf_groups_frame(start, end, path)
+    if g.empty or g["csi1000"].isna().all() or g["csi300"].isna().all():
+        return pd.DataFrame(columns=["flow"],
+                            index=pd.DatetimeIndex([], name="date"), dtype=float)
+    s = (g["csi1000"].dropna().pct_change()
+         - g["csi300"].dropna().pct_change())
+    s = s.replace([np.inf, -np.inf], np.nan)
+    return cast(pd.DataFrame, _slice(s.rename("flow").to_frame(), start, end))
+
+
+def national_etf(start: str | None = None, end: str | None = None, *,
+                 path: Path | None = None) -> pd.DataFrame:
+    """国家队净申购：上证50 + 沪深300 两组份额合计的差分。"""
+    g = _etf_groups_frame(start, end, path)
+    if g.empty:
+        return pd.DataFrame(columns=["net"],
+                            index=pd.DatetimeIndex([], name="date"), dtype=float)
+    parts = [g[c].dropna() for c in ("sse50", "csi300") if g[c].notna().any()]
+    if not parts:
+        return pd.DataFrame(columns=["net"],
+                            index=pd.DatetimeIndex([], name="date"), dtype=float)
+    s = sum(parts).diff().replace([np.inf, -np.inf], np.nan)
+    return cast(pd.DataFrame, _slice(s.rename("net").to_frame(), start, end))
+
+
+def national_etf_event(start: str | None = None, end: str | None = None, *,
+                       path: Path | None = None) -> pd.DataFrame:
+    """国家队异动：净申购超过滚动 60 日 95 分位 → 1，否则 0。
+
+    返回**已对齐到交易日轴**的日频序列（不是观测日）：这个量是 0/1 标记，
+    "没有观测"应当是 0 而不是 NaN——它的头部就是 0（旧实现 `fillna(0)` 的口径）。
+    """
+    # 60 个观测的滚动分位：必须真的往前取满 60 个观测，否则窗口起点的阈值会与全量不同
+    g = _etf_groups_frame(start, end, path, warmup_obs=61)
+    cal = _calendar("csi_all", path)
+    empty = pd.DataFrame(columns=["event"],
+                         index=pd.DatetimeIndex([], name="date"), dtype=float)
+    if g.empty:
+        return empty
+    parts = [g[c].dropna() for c in ("sse50", "csi300") if g[c].notna().any()]
+    if not parts:
+        return empty
+    nat = sum(parts)
+    dn = nat.diff()
+    thr = dn.rolling(60, min_periods=40).quantile(0.95)
+    s = (dn > thr).astype(float).reindex(cal, method="ffill").fillna(0.0)
+    # `start`/`end` 是**结果区间**：先按整条日历 ffill（阈值/标记依赖历史），再切窗口
+    if start is not None:
+        s = s[s.index >= pd.Timestamp(start)]
+    if end is not None:
+        s = s[s.index <= pd.Timestamp(end)]
+    s.index.name = "date"
+    return cast(pd.DataFrame, s.rename("event").to_frame())
+
+
+def _gold_flow(table: str, start: str | None, end: str | None,
+               path: Path | None, warmup_obs: int = 3) -> pd.DataFrame:
+    """单表存量 → 流量：相邻观测差分，落在**可见日之后的第一个交易日**。
+
+    可见日 = 观测日 + `metadata.lag_days`（央行购金 45 天、ETF 持仓 40 天）。
+    旧实现把差分落在观测日（季末）——那等于用了一份 40 多天后才公布的数据（前视）。
+    """
+    # warmup_obs=3 而不是 2：差分要"上上个"观测做基准——只取 2 个的话，
+    # 第一个进入窗口的观测没有基准，窗口内会缺一笔（实测 2025-01-09 差一格）
+    s = _raw_series(table, path, start, end, warmup_obs=warmup_obs)
+    if len(s) < 2:
+        return pd.DataFrame(columns=["flow"],
+                            index=pd.DatetimeIndex([], name="date"), dtype=float)
+    lag = 0
+    try:
+        con = _conn(path)
+        try:
+            row = con.execute("SELECT lag_days FROM metadata WHERE name=?",
+                              (table,)).fetchone()
+        finally:
+            con.close()
+        lag = int(row[0] or 0) if row else 0
+    except Exception:  # noqa: BLE001
+        lag = 0
+    if lag:
+        s = s.copy()
+        s.index = s.index + pd.Timedelta(days=lag)
+    flow = s.diff().dropna().replace([np.inf, -np.inf], np.nan)
+    placed = _place(flow, _calendar("gold_cny", path))
+    placed.index.name = "date"
+    return cast(pd.DataFrame, _slice(placed.rename("flow").to_frame(), start, end))
+
+
+def cb_gold_buy(start: str | None = None, end: str | None = None, *,
+                path: Path | None = None) -> pd.DataFrame:
+    """央行购金（季度）：`cb_holdings` 的相邻差分，落在可见日。"""
+    return _gold_flow("cb_holdings", start, end, path)
+
+
+def etf_flow(start: str | None = None, end: str | None = None, *,
+             path: Path | None = None) -> pd.DataFrame:
+    """黄金 ETF 持仓变化（月度）：`gold_etf_holdings` 的相邻差分，落在可见日。"""
+    return _gold_flow("gold_etf_holdings", start, end, path)
 
 
 # ======================================================================
@@ -469,6 +696,63 @@ DERIVED: dict[str, Derived] = {
             "分组知识归数据层，消费方不要再自己维护一份。"
             "另外 `etf_shares` 只覆盖上交所的这 24 只，深市宽基（sz159xxx）不在里面。"
         ),
+    ),
+    "etf_dispersion": Derived(
+        func=etf_dispersion,
+        depends=("etf_shares",),
+        period="D",
+        columns=("dispersion",),
+        doc="宽基 ETF 申赎分歧度（组份额变化的截面标准差；观测日有值，由调用方 ffill）",
+        warmup_obs=2,
+        depends_note="同 etf_group_shares：分组定义/ETF 码表一变，std 就变。",
+    ),
+    "size_flow": Derived(
+        func=size_flow,
+        depends=("etf_shares",),
+        period="D",
+        columns=("flow",),
+        doc="大小盘 ETF 份额变化之差（小盘 − 大盘）",
+        warmup_obs=2,
+        depends_note="同 etf_group_shares；另注意组划分（csi1000 算小、csi300 算大）是市场定义。",
+    ),
+    "national_etf": Derived(
+        func=national_etf,
+        depends=("etf_shares",),
+        period="D",
+        columns=("net",),
+        doc="国家队净申购（上证50 + 沪深300 组份额合计的差分）",
+        warmup_obs=2,
+        depends_note="同 etf_group_shares；'国家队'的组划分（sse50 + csi300）是口径，不是事实。",
+    ),
+    "national_etf_event": Derived(
+        func=national_etf_event,
+        depends=("etf_shares",),
+        period="D",
+        columns=("event",),
+        doc="国家队异动（净申购 > 滚动 60 日 95 分位 → 1）",
+        warmup_days=120,       # 60 个观测的滚动分位 + 长假余量
+        depends_note="分位窗口/阈值（60 日、95%）改了就变；返回日频 0/1，头部为 0。",
+    ),
+    "cb_gold_buy": Derived(
+        func=cb_gold_buy,
+        depends=("cb_holdings",),
+        period="Q",
+        columns=("flow",),
+        doc="央行购金（季度存量差分，落在可见日）",
+        warmup_obs=3,
+        depends_note=(
+            "`cb_holdings` 是**季度**存量、`lag_days=45`；差分落在可见日而非季末"
+            "（旧实现落在季末 = 前视）。换源/改 lag 会整体平移。"
+        ),
+    ),
+    "etf_flow": Derived(
+        func=etf_flow,
+        depends=("gold_etf_holdings",),
+        period="M",
+        columns=("flow",),
+        doc="黄金 ETF 持仓变化（月度存量差分，落在可见日）",
+        warmup_obs=3,
+        depends_note="`gold_etf_holdings` 月频、`lag_days=40`；差分落在可见日（防前视）。",
     ),
 }
 

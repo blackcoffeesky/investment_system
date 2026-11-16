@@ -36,19 +36,18 @@ def test_registry_entries_are_complete():
 
 
 def test_derived_window_invariance():
-    """派生量：传窗口 == 全量切片（**逐位**，NaN 也算相等）。"""
-    cases = {
-        "breadth": lambda: DERIVED["breadth"].func(START, END),
-        "dividend_yield": lambda: DERIVED["dividend_yield"].func(start=START, end=END),
-        "etf_group_shares": lambda: DERIVED["etf_group_shares"].func(START, END),
-    }
-    for name, windowed in cases.items():
-        d = DERIVED[name]
+    """派生量：传窗口 == 全量切片（**逐位**，NaN 也算相等）。
+
+    **遍历整个注册表**，不写死名字——以后加派生量自动被这条测试覆盖
+    （warmup 填错的典型症状就是"窗口第一行与全量切片不同"）。
+    """
+    for name, d in DERIVED.items():
         full = d.func()
-        got = windowed()
-        assert len(got) > 0, f"{name} 窗口内没有数据，测试前提不成立"
-        expect = full.loc[got.index[0]:got.index[-1]] if isinstance(got.index, pd.DatetimeIndex) \
-            else full.loc[got.index]
+        got = d.func(start=START, end=END)
+        assert not full.empty, f"{name} 全量是空的，测试前提不成立"
+        if got.empty:
+            continue
+        expect = full.loc[got.index]
         pd.testing.assert_frame_equal(got, expect, check_exact=True)
 
 
