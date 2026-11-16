@@ -165,34 +165,6 @@ class DataPort:
                 out.update(x.strip() for x in s.table.split("|"))
         return out
 
-    # ---------------- 派生量（现算，不落表）
-    # ⚠️ 这两个方法是**过渡期保留**：新的统一入口是
-    #    `series_map(["breadth"], start=..., end=...)`（派生量注册在 `fin/derive.DERIVED`）。
-    #    现在还有 1 个外部调用方（`causual/causual_core/cli.py` 的 `derived_series`
-    #    调 `port.dividend_yield()`）；它迁到 `series_map` 之后这两个方法就该删掉，
-    #    否则"这是派生量"这个区别会一直在 port 上暴露。
-    def breadth(self, start: str | None = None, end: str | None = None) -> pd.DataFrame:
-        """市场宽度（现算，不落表）。
-
-        index=date，列 `adv / dec / flat / limit_up / limit_down / total`。
-        口径见 `datahub/fin/derive.py` 的模块 docstring。
-        """
-        from datahub.fin.derive import DERIVED
-
-        return cast(pd.DataFrame, DERIVED["breadth"].func(start=start, end=end))
-
-    def dividend_yield(self, year: int | None = None) -> pd.DataFrame:
-        """年度股息率（**百分数**，2.1258 = 2.13%）。现算，不落表。
-
-        index=year(int)，列 `yield_mcap_weighted / yield_median / n_stocks`。
-
-        ⚠️ 一次约 3.7 秒（要扫一遍 `stock_daily` 取各股年末价）——
-        **一次拿全表，不要在循环里按年调**。
-        """
-        from datahub.fin.derive import DERIVED
-
-        return cast(pd.DataFrame, DERIVED["dividend_yield"].func(year=year))
-
     # ---------------- 受控动作
     def run_update(self, start: str = "2000-01-01", end: str | None = None,
                    only: list[str] | None = None) -> UpdateReport:
