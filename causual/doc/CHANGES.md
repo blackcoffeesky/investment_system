@@ -2,6 +2,40 @@
 
 ---
 
+# v5.49（2026-11-16）：`prepare()` 的手写公式换成单位原语
+
+`shared.utils.data_processing` 加了三个**名字里带单位**的原语（`diff_bp` /
+`pct_change_pct` / `rolling_z`），`prepare()` 改成调它们：
+
+| 列 | 旧 | 新 |
+|---|---|---|
+| `RET` / `USDCNY_RET` / `GOLD_RET` / `XAU_RET` / `MARGIN_CHG` / `OI_CHG_PCT` | `s.pct_change() * 100` | `dp.pct_change_pct(s)` |
+| `RY_CHG_BP` / `FED_CHG_BP` / `SHIBOR_CHG_BP` | `s.diff() * 100` | `dp.diff_bp(s)` |
+| `VOLUME_Z` | 手写 rolling mean/std + `replace(0, nan)` | `dp.rolling_z(s, 60, 20)` |
+
+**为什么**：`SHIBOR_CHG_BP` / `MARGIN_CHG` / `VOLUME_Z` 这三条在
+state_layer 的 `_derive()` 里各有一份，两边只靠 `test_state_features_match_prepare`
+守着"算得一样"。换成同一个函数后，**一致是结构性的**，不再是测试的功劳。
+
+**没换的**：`RET_OC`（两个序列相除，没有对应原语）、`USDX_CHG` / `VIX_CHG` /
+`PMI_CHG` / `MARGIN_NET` / `GEO_CHG`（**纯差分、不 ×100**，`diff_bp` 是 bp 口径，套上去
+会放大 100 倍）、`SUPPLY_Z`（月度去趋势 z，不是日频 rolling z）。
+
+⚠️ `diff_bp` 与 `pct_change_pct` 不是一回事：利差 1.00% → 1.10% 是 **+10 bp**，
+`pct_change` 也算出 +10%（在利率上纯属巧合）。利率类一律 `diff_bp`。
+
+## 验证（两条，都逐位）
+
+1. **同一份输入**：把旧公式逐字重写一遍当对照，与新 `prepare()` 比 56 列 →
+   **0 格差异**。
+2. **同一份数据出卡**：monkeypatch 回旧 `prepare` 生成一套卡（`out_dir` 到临时目录）、
+   再跑新 `prepare` 生成一套 → 日频卡 / 明细卡 / 月频卡 / 月频明细
+   **四份 Markdown 全部逐字相同**（`*.meta.json` 只有 `generated_at` 时间戳不同）。
+
+`tests/run_tests.py` 120/120、pyright 0、`daily --asset ashare` exit 0。
+
+---
+
 # v5.48（2026-11-16）：派生列沉进耦合层，`series: dict` 通道彻底删除
 
 ## 一、六列派生量不再由 causual 算

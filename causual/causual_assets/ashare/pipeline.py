@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 
 from shared.adapter import Panel, tables_of
+from shared.utils import data_processing as dp
 
 from causual.causual_core import snapshot
 from causual.causual_core.estimators import EdgeModel, fit_all
@@ -109,20 +110,27 @@ def load_raw(panel: pd.DataFrame) -> pd.DataFrame:
 
 
 def prepare(df: pd.DataFrame) -> pd.DataFrame:
+    """从面板算 causual 自己的特征（**列名保持大写**：它们是 causual 的特征，不是耦合层的列）。
+
+    单位原语来自 `shared.utils.data_processing`（`diff_bp` / `pct_change_pct` /
+    `rolling_z`）——和 state_layer 的 `_derive()` 调**同一个函数**，两边一致不再靠测试守，
+    而是结构上不可能不一致。**别把 `diff_bp` 和 `pct_change_pct` 混用**：
+    利差 1.00% → 1.10% 是 +10 bp，pct_change 算出来也是 +10%（在利率上纯属巧合）。
+    """
     df = df.copy()
     df.index = pd.DatetimeIndex(df.index)
     df = df[~df.index.duplicated(keep="last")].sort_index()
 
-    df["RET"] = df["close"].pct_change() * 100.0
+    df["RET"] = dp.pct_change_pct(df["close"])
     df["RET_OC"] = (df["close"] / df["open"] - 1.0) * 100.0
-    df["RY_CHG_BP"] = df["real_yield_10y"].diff() * 100.0
+    df["RY_CHG_BP"] = dp.diff_bp(df["real_yield_10y"])
     df["USDX_CHG"] = df["usd_index"].diff()
     df["VIX_CHG"] = df["vix"].diff()
-    df["USDCNY_RET"] = df["usdcny"].pct_change() * 100.0
-    df["FED_CHG_BP"] = df["fed_rate"].diff() * 100.0
-    df["SHIBOR_CHG_BP"] = df["shibor3m"].diff() * 100.0
+    df["USDCNY_RET"] = dp.pct_change_pct(df["usdcny"])
+    df["FED_CHG_BP"] = dp.diff_bp(df["fed_rate"])
+    df["SHIBOR_CHG_BP"] = dp.diff_bp(df["shibor3m"])
     df["PMI_CHG"] = df["pmi"].diff()
-    df["MARGIN_CHG"] = df["margin_balance"].pct_change() * 100.0
+    df["MARGIN_CHG"] = dp.pct_change_pct(df["margin_balance"])
     # 两融净流入（亿元/日）：余额差分。信号层用"净流入/流出方向"比余额水平更有信息
     df["MARGIN_NET"] = df["margin_balance"].diff()
 
@@ -142,10 +150,7 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
         df["SUPPLY_Z"] = np.nan
 
     # 放量冲击：成交量 60 日 z（成交额不可得，见 PROBLEM P21）
-    vol = df["volume"]
-    vmu = vol.rolling(60, min_periods=20).mean()
-    vsd = vol.rolling(60, min_periods=20).std()
-    df["VOLUME_Z"] = (vol - vmu) / vsd.replace(0, np.nan)
+    df["VOLUME_Z"] = dp.rolling_z(df["volume"], window=60, min_periods=20)
     df["AMOUNT_SHOCK"] = df["VOLUME_Z"]
 
     # 供需派生：**先在月频上算，再 ffill 回日频**。

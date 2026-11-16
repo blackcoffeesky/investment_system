@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 
 from shared.adapter import Panel, tables_of
+from shared.utils import data_processing as dp
 from shared.utils.calendar import merge_shared_nodes
 from causual.causual_core import snapshot
 from causual.causual_core.estimators import EdgeModel, fit_all
@@ -95,20 +96,25 @@ def load_raw(panel: pd.DataFrame) -> pd.DataFrame:
 
 
 def prepare(df: pd.DataFrame) -> pd.DataFrame:
+    """从面板算 causual 自己的特征（**列名保持大写**：causual 的特征，不是耦合层的列）。
+
+    单位原语来自 `shared.utils.data_processing`：利率类是 `diff_bp`（bp），
+    价格/持仓类是 `pct_change_pct`（百分数）——两者别混用。
+    """
     df = df.copy()
     df.index = pd.DatetimeIndex(df.index)
     df = df[~df.index.duplicated(keep="last")].sort_index()
 
-    df["GOLD_RET"] = df["close"].pct_change() * 100.0
-    df["XAU_RET"] = df["xau_usd"].pct_change() * 100.0
-    df["USDCNY_RET"] = df["usdcny"].pct_change() * 100.0
-    df["RY_CHG_BP"] = df["real_yield_10y"].diff() * 100.0
+    df["GOLD_RET"] = dp.pct_change_pct(df["close"])
+    df["XAU_RET"] = dp.pct_change_pct(df["xau_usd"])
+    df["USDCNY_RET"] = dp.pct_change_pct(df["usdcny"])
+    df["RY_CHG_BP"] = dp.diff_bp(df["real_yield_10y"])
     df["VIX_CHG"] = df["vix"].diff()
     df["USDX_CHG"] = df["usd_index"].diff()
     df["GEO_CHG"] = df["geopolitic_risk"].diff()
-    df["FED_CHG_BP"] = df["fed_rate"].diff() * 100.0
+    df["FED_CHG_BP"] = dp.diff_bp(df["fed_rate"])
     oi = df["gold_open_interest"].replace(0, np.nan)
-    df["OI_CHG_PCT"] = (oi.pct_change() * 100.0).clip(-50, 50)
+    df["OI_CHG_PCT"] = dp.pct_change_pct(oi).clip(-50, 50)
     return df
 
 

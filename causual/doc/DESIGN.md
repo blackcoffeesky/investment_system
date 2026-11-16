@@ -96,7 +96,7 @@ causual/output/{asset}/cards/
 
 | 文件 | 职责 |
 |---|---|
-| `ashare/pipeline.py` | `PANEL_KIND`（要哪个耦合层面板）+ `PANEL_COLS`（选哪些基础列）+ `DERIVED_COLS`（耦合层算好的派生列）；`load_raw(panel)` **只装配不取数**；`_derived(df, base)` 是派生列的唯一接缝（测试打桩它）；`prepare()` 算特征、供需层 |
+| `ashare/pipeline.py` | `PANEL_KIND`（要哪个耦合层面板）+ `PANEL_COLS`（选哪些基础列）+ `DERIVED_COLS`（耦合层算好的派生列）；`load_raw(panel)` **只装配不取数**；`_derived(df, base)` 是派生列的唯一接缝（测试打桩它）；`prepare()` 算特征、供需层，单位换算调 `shared.utils.data_processing` 的 `diff_bp` / `pct_change_pct` / `rolling_z` |
 | `ashare/config.py` | 边的定义（机制、方向、估计器、是否进 α）+ `NOT_CONNECTED`（已知没数据的列） |
 | `gold/*` | 同结构；`DERIVED_COLS = ("cb_gold_buy", "etf_flow")` |
 

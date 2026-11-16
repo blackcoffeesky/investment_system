@@ -553,4 +553,4 @@ python -m causual.causual_core.cli audit  --asset ashare   # 方向一致性审�
 
 ## 12. 版本
 
-当前 v5.48（2026-11-16）。逐版变更见 [`CHANGES.md`](CHANGES.md)。
+当前 v5.49（2026-11-16）。逐版变更见 [`CHANGES.md`](CHANGES.md)。
