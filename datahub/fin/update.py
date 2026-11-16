@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import sqlite3
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -85,9 +86,51 @@ def _write(con: sqlite3.Connection, table: str, obj, end: str) -> int:
     ph = ",".join("?" * (len(cols) + 1))
     rows = [(str(i.date()), *[None if pd.isna(v) else float(v) for v in r])
             for i, r in df.iterrows()]
+    # ⚠️ **不能**用 `INSERT OR REPLACE`：REPLACE = 删旧行 + 插新行，**本次没返回的列会变成
+    # NULL**。2026-11-16 就是这么把 `csi_all.amount` / `turnover` 从 3503 清成 0 的
+    # （`index_tx` 只回 5 列）。改成 `ON CONFLICT(date) DO UPDATE SET`：只更新本次返回的列。
+    before = _column_counts(con, table, cols)
     con.executemany(
-        f'INSERT OR REPLACE INTO "{table}" (date, {col_sql}) VALUES ({ph})', rows)
+        f'INSERT INTO "{table}" (date, {col_sql}) VALUES ({ph}) '
+        f'ON CONFLICT(date) DO UPDATE SET '
+        + ", ".join(f'"{c}"=excluded."{c}"' for c in cols), rows)
+    _warn_column_loss(con, table, before)
     return len(rows)
+
+
+def _column_counts(con: sqlite3.Connection, table: str,
+                   cols: list[str]) -> dict[str, int]:
+    """各列当前的非空行数（列不存在时记 0）。写前调用，用于"列熔断"。"""
+    out: dict[str, int] = {}
+    for c in cols:
+        try:
+            out[c] = int(con.execute(f'SELECT COUNT("{c}") FROM "{table}"').fetchone()[0])
+        except sqlite3.OperationalError:
+            out[c] = 0
+    return out
+
+
+def _warn_column_loss(con: sqlite3.Connection, table: str,
+                      before: dict[str, int]) -> list[str]:
+    """**列熔断**：本次写入把某列从"大量有值"变成"全空"时，大声报警。
+
+    2026-11-16：`csi_all.amount` / `turnover` 从 3503 掉到 0，**没有任何测试或 check 响过**
+    （是 `state-layer-agent` 偶然看 `/state` 显示「缺」才发现的）。这种"整列被清空"
+    不可能是正常业务，只可能是源缺列 / 写路径错——所以宁可吵。
+    """
+    n = int(con.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0])
+    if n == 0:
+        return []
+    lost: list[str] = []
+    for c, old in before.items():
+        if old <= 0 or old <= n * 0.5:
+            continue
+        now = _column_counts(con, table, [c])[c]
+        if now == 0:
+            lost.append(c)
+            print(f"[列熔断] {table}.{c} 非空 {old} → 0（本次写入把这一列清空了！"
+                  f"源是不是没返回这一列？）", file=sys.stderr)
+    return lost
 
 
 def _ensure_meta(con: sqlite3.Connection) -> int:

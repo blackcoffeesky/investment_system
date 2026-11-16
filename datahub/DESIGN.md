@@ -639,3 +639,39 @@ Fuyao 一旦断供，`stock_daily` 会处于"价格已更新、复权事件没�
 > ⚠️ 那条测试的阈值按**日历日**算，长周末/长假后会**假红**（比如 5 天阈值遇上三天连休）。
 > 这是刻意的：**假红比假绿好**——把阈值改成"按交易日"会让真停更被咽掉
 > （3 个交易日 < 5 → 绿），那才是哨兵不睁眼。**看到它红，先查数据管线，别改阈值。**
+
+## 16. multi 表的写路径：只更新本次返回的列（2026-11-16 修）
+
+**事故**：`_write` 的 multi 分支用 `INSERT OR REPLACE`。REPLACE 是"删旧行 + 插新行"，
+**本次没返回的列会变成 NULL**。`csi_all` 的源 `index_tx` 只回
+`open/high/low/close/volume` 五列，于是任何一次刷新都把 `amount` / `turnover`
+从 **3503 清成 0**——而**没有任何测试或 `check` 响过**，是 `state-layer-agent`
+偶然看 `/state` 显示「缺」才发现的。
+
+**改法**：
+
+```sql
+-- 改前（会清空没返回的列）      -- 改后（只更新返回的列）
+INSERT OR REPLACE INTO t (date, c1, c2) …
+INSERT INTO t (date, c1, c2) … ON CONFLICT(date) DO UPDATE SET c1=excluded.c1, c2=excluded.c2
+```
+
+**四条契约**（`tests/test_write_upsert.py` 钉住）：
+
+1. **等价**：同一份数据写两次 == 写一次（实测 `csi_all` / `gold_cny` 两张 multi 表逐位相同）
+2. **缺列不清空**：先写全列、再只写 5 列 → `amount`/`turnover` 仍 3506 非空、值逐位未变
+3. **主键/冲突语义不变**：同一 date 写两次只有一行、值被更新。`DATA_DDL` 里**没有
+   TRIGGER / AUTOINCREMENT / WITHOUT ROWID**（2026-11-16 核查），所以"就地更新"与
+   "删了重插"没有可观察差异
+4. **`single` / `long` 分支不动**：它们本来就是 `INSERT OR REPLACE (date,value)` /
+   `ON CONFLICT(code,date) DO UPDATE`，没有这个坑
+
+**列熔断**（`_warn_column_loss`）：每次 multi 写入后比较各列非空数，
+若某列从 **> 50%** 掉到 **0** → 打 `[列熔断]` 到 stderr。整列被清空不可能是正常业务，
+只可能是源缺列/写路径错——**宁可吵**。这次的事故如果早有这条，会当场报出来。
+
+**已知环境限制（2026-11-16）**：本机 **eastmoney 的接口不通**
+（akshare `index_zh_a_hist` 报 `ProxyError` / `RemoteDisconnected`，有代理/无代理都试过）。
+所以 `csi_all` 缺的 3 天（11-11~11-13）是用 **ashareapi `/kline`（`sh000985`）** 补的：
+`amount` 元 ÷ 1e8 = **亿元**（与腾讯口径一致，已对账）、`turnover` 直接用（%）。
+以后想用 akshare 补指数历史，得先解决网络，别再重试一遍。
