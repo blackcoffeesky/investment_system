@@ -11,7 +11,6 @@
 - `time_align`     lag 推后 / 日频对齐 / 低频聚合（2026-11-15 由 panel_align 改名）
 - `panel_align`    **兼容 shim**，转发 time_align
 - `data_processing` 标准化、滚动 z
-- `features`       纯派生列（输入 DataFrame → 输出 Series）：ETF 离散度、国家队等
 """
 
 from shared.utils import calendar, data_processing, time_align

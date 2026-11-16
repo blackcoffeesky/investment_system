@@ -444,7 +444,7 @@ DERIVED["etf_group_shares"] = Derived(func=etf_group_shares, depends=("etf_share
 
 ### 10.4 通用业务派生量也进了注册表（2026-11-16）
 
-原来放在 `shared/utils/features.py`、吃**面板列**的 6 个通用特征，改成在 derive 里
+原来放在 `shared/utils/features.py`（**该文件已于 2026-11-16 删除**）、吃**面板列**的 6 个通用特征，改成在 derive 里
 **自己读库**并注册（`series_map` 按名字给，`get_data` 直接出现在面板里）：
 
 | 派生量 | 列 | 依赖 | warmup | 出现处 |
