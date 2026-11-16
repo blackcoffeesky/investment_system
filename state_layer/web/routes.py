@@ -13,7 +13,7 @@ from fastapi.responses import HTMLResponse
 
 from shared.adapter import get_data
 
-from state_layer import store
+from state_layer import state_assets, store
 from state_layer.analysis import observations
 from state_layer.port import get_port
 from service.registry import Module, register
@@ -36,12 +36,6 @@ COLORS = {
 
 def _tpl(request: Request):
     return request.app.state.templates
-
-
-def _series_for(request: Request) -> dict:
-    data = request.app.state.services["datahub"]
-    port = get_port()
-    return data.series_map(list(port.required_tables("ashare")))
 
 
 def _svg(rows: list[dict], width: int = 900, height: int = 218) -> str:
@@ -121,22 +115,21 @@ def _svg(rows: list[dict], width: int = 900, height: int = 218) -> str:
 @router.get("/state", response_class=HTMLResponse)
 def index(request: Request, asset: str = "ashare", days: int = 250):
     port = get_port()
-    series = _series_for(request)
-    prof = port.profile(asset, series)
-    tl = port.timeline(asset, series, days)
-    avail = port.availability(series)
+    # 装配点（AGENTS §4'③：web 路由与 cli 等价）：**取一次面板**，往下全传 DataFrame
+    panel = get_data(state_assets.panel_of(asset))
+
+    prof = port.profile(asset, panel)
+    tl = port.timeline(asset, panel, days)
+    avail = port.availability(panel)
     try:
         cur = port.current_state(asset)
     except FileNotFoundError:
         cur = {}          # 还没拟合过模型：页面照常打开，只是没有状态信息
 
-    # 市场状态区块：特征由状态层自己的资产包算，面板数据走耦合层
+    # 市场状态区块：特征由状态层自己的资产包算
     feats = None
     try:
-        from state_layer import state_assets
-
-        pkg = state_assets.load(asset)
-        feats = pkg.features.build(get_data(state_assets.panel_of(asset)))
+        feats = state_assets.load(asset).features.build(panel)
         cur = port.current_state(asset, feats)
     except Exception as e:  # noqa: BLE001
         print(f"[state] 现算后验失败：{type(e).__name__}: {e}")

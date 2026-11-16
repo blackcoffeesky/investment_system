@@ -57,8 +57,8 @@ state_layer/
 | `current_state(asset, features=None)` | 单点状态 + 后验 |
 | `extend(asset, features, labels)` | 把标签外推到最新一天 |
 | `transition(asset, features)` | 状态黏性（留在原状态的概率、平均停留） |
-| `causual_view(asset, series, meta)` | **给因果层的一次性视图**（标签+名称+spec+一行提示） |
-| `profile` / `timeline` / `availability` | 页面用的画像与观测 |
+| `state_view(asset, panel)` | **给消费者的一次性视图**（标签+名称+spec+一行提示；`panel` 由装配点传入） |
+| `profile(asset, panel)` / `timeline(asset, panel)` / `availability(panel)` | 页面用的画像与观测 |
 
 其他模块**只能用这些**，不许 import `model/` 或 `state_assets/`。
 

@@ -15,8 +15,6 @@ from typing import cast
 import numpy as np
 import pandas as pd
 
-from shared.adapter import get_data
-
 from state_layer import state_assets
 from state_layer import store
 from state_layer.analysis import observations, stats
@@ -208,18 +206,16 @@ class StatePort:
         return stat.transition(hmm_part if len(hmm_part) else None)
 
     # ---------------- 状态的视图
-    def state_view(self, asset: str, series: dict, meta=None) -> dict:
+    def state_view(self, asset: str, panel: pd.DataFrame) -> dict:
         """需要的状态数据，一次给全。
 
         消费者不知道状态层的存在，只消费这个 dict：
         `{labels, label_name, labels_order, version, line}`。
 
-        `series` / `meta` 保留只为**兼容既有调用点**（装配点仍会顺手传进来）：
-        面板现在直接走耦合层 `get_data`，这两个参数已经不用了。删参数要同步
-        service 2 处 + causual cli + 1 条测试，改动面远大于留一个无用参数。
+        `panel` 由**装配点**（`cli.py` / `web/routes.py` / service）传进来——
+        状态层不自己取数，也不接受 `{表名: Series}` 的 dict。
         """
         pkg = state_assets.load(asset)
-        panel = get_data(state_assets.panel_of(asset))
         feats = pkg.features.build(panel)
 
         labels = self.extend(asset, feats)
@@ -245,18 +241,15 @@ class StatePort:
             "line": " · ".join(bits) + "（详见 /state）",
         }
 
-    # ---------------- 展示
-    def panel(self, series: dict) -> pd.DataFrame:
-        return observations.panel(series)
+    # ---------------- 展示（面板由装配点传进来，这里不取数）
+    def availability(self, panel: pd.DataFrame) -> list[dict]:
+        return observations.availability(panel)
 
-    def availability(self, series: dict) -> list[dict]:
-        return observations.availability(series)
+    def profile(self, asset: str, panel: pd.DataFrame) -> pd.DataFrame:
+        return stats.profile(asset, observations.panel(panel))
 
-    def profile(self, asset: str, series: dict) -> pd.DataFrame:
-        return stats.profile(asset, observations.panel(series))
-
-    def timeline(self, asset: str, series: dict, days: int = 250) -> list[dict]:
-        return stats.timeline(asset, observations.panel(series), days)
+    def timeline(self, asset: str, panel: pd.DataFrame, days: int = 250) -> list[dict]:
+        return stats.timeline(asset, observations.panel(panel), days)
 
 
 _INSTANCE: StatePort | None = None

@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import cast
 
 import pandas as pd
 
@@ -53,27 +54,31 @@ OBSERVATIONS: tuple[Obs, ...] = (
 GROUPS = {1: "市场结果", 2: "资金活动代理", 3: "近主体观测（归 causual）"}
 
 
-def panel(series: dict) -> pd.DataFrame:
-    """把 {表名: Series} 拼成观测面板（索引=交易日）。"""
-    close = _pick(series, "csi_all", "close")
-    idx = pd.DatetimeIndex(close.index)
+def panel(df: pd.DataFrame) -> pd.DataFrame:
+    """从**面板**取观测列（索引=交易日）。
+
+    面板由装配点（cli / web 路由 / service）传进来，列名是 adapter 的语义名（小写）。
+    缺列时该观测整列 NaN——面板真缺表 `get_data` 会直接抛，这里只管"列在不在"，
+    缺口由 `availability()` 显示成「缺」。
+    """
+    idx = pd.DatetimeIndex(df.index)
     out = pd.DataFrame(index=idx)
+    close = _col(df, "close")
     out["close"] = close          # 时间轴画图用，不参与诊断
     out["ret"] = close.pct_change() * 100
     out["vol20"] = out["ret"].rolling(20, min_periods=10).std() * 100
-    # 成交额/换手率现在和 OHLCV 同一张表（csi_all），列名 amount / turnover
-    out["amount"] = _align(_pick_opt(series, "csi_all", "amount"), out.index)
-    out["turnover"] = _align(_pick_opt(series, "csi_all", "turnover"), out.index)
+    out["amount"] = _col(df, "amount")
+    out["turnover"] = _col(df, "turnover")
 
-    small = _align(_pick_opt(series, "csi1000"), out.index).pct_change() * 100
-    large = _align(_pick_opt(series, "csi300"), out.index).pct_change() * 100
+    small = _col(df, "csi1000").pct_change() * 100
+    large = _col(df, "csi300").pct_change() * 100
     out["small_large"] = small - large
     return out
 
 
-def availability(series: dict) -> list[dict]:
+def availability(df: pd.DataFrame) -> list[dict]:
     """每个观测列"有没有数据、覆盖到哪天"。页面用它显示缺口。"""
-    p = panel(series)
+    p = panel(df)
     rows = []
     for obs in OBSERVATIONS:
         if set(obs.sources) & set(EXCLUDED_TABLES):
@@ -93,25 +98,8 @@ def availability(series: dict) -> list[dict]:
 
 
 # ---------------------------------------------------------------- 内部
-def _pick(series: dict, table: str, col: str | None = None) -> pd.Series:
-    s = _pick_opt(series, table, col)
-    if s is None:
-        raise KeyError(f"观测数据缺表：{table}")
-    return s
-
-
-def _pick_opt(series: dict, table: str, col: str | None = None) -> pd.Series | None:
-    """按 "表名:列名" → "表名" 的顺序找；多列表默认取 close。"""
-    for key in ((f"{table}:{col}",) if col else ()) + (f"{table}:close", table):
-        if key in series and isinstance(series[key], pd.Series):
-            return series[key]
-    hits = [k for k in series if k.startswith(f"{table}:")]
-    if hits:
-        return series[sorted(hits)[0]]
-    return None
-
-
-def _align(s: pd.Series | None, idx: pd.Index) -> pd.Series:
-    if s is None:
-        return pd.Series(index=pd.DatetimeIndex(idx), dtype=float)
-    return s.reindex(pd.DatetimeIndex(idx))
+def _col(df: pd.DataFrame, name: str) -> pd.Series:
+    """取一列；缺列给全 NaN（不静默造数据，缺口由 availability 显示）。"""
+    if name in df.columns:
+        return cast(pd.Series, df[name])
+    return pd.Series(index=pd.DatetimeIndex(df.index), dtype=float)

@@ -49,7 +49,7 @@ saved_models/<asset>/     current.json / labels.csv / chain.pkl
 |---|---|---|
 | `state_assets/<asset>/config.py` | K / 特征清单 / 极端阈值 / 标签词表 / `MODEL_CHAIN` / `METRICS` / **`REQUIRED_TABLES`**（该资产要哪些表） | fit / port |
 | `state_assets/<asset>/features.py` | 面板 → 特征矩阵（纯函数）；入口把列名大小写收口一次，派生列走 `shared.utils.features` | fit |
-| —（`panel.py` 已于 2026-11-15 退役） | 面板改由 `shared.adapter.get_data(Panel.STATE_<asset>)` 统一提供 | cli / web / port |
+| —（`panel.py` 已于 2026-11-15 退役） | 面板改由 `shared.adapter.get_data(Panel.STATE_<asset>)` 提供 | **只在装配点取**：`cli.py` / `web/routes.py` / service |
 | `model/base.py` | `Model` 协议：fit / infer / state_params / to_dict | 所有模型 |
 | `model/hmm/` | GaussianHMM + 拟合 + 选 K + 序列化 | 链 |
 | `model/extreme/` | 极端行情规则模型（认领极端日） | 链 |
@@ -64,9 +64,11 @@ saved_models/<asset>/     current.json / labels.csv / chain.pkl
 | `cli.py` | `python -m state_layer.cli regime` | 人 |
 | `web/` | `/state` 页面 | service |
 
-**数据从哪来**：面板统一由 `shared.adapter.get_data(Panel.STATE_<asset>)` 提供
-（index=交易日，列是语义名：`close` / `csi300` / `etf_sse50`…）。状态层不再自己拼面板，
-也就不再随数据层改表名 / 改代码格式而漂。
+**数据从哪来**：面板由 `shared.adapter.get_data(Panel.STATE_<asset>)` 提供
+（index=交易日，列是语义名：`close` / `csi300` / `etf_dispersion`…，全部小写），
+但**只在装配点调**（`cli.py` / `web/routes.py` / service），取到的 `DataFrame` 往下传。
+`port` / `analysis` / `features` 只收 DataFrame，不自己取数、也不接受 `{表名: Series}` 的 dict
+——这是 AGENTS §4'③ 的硬约束（2026-11-16 改完）。
 `config.REQUIRED_TABLES` **不参与取数**，它是 `port.required_tables()` 的装配清单
 （service / causual cli 拿它做并集）；`tests/test_state_features_fresh.py::test_required_tables_match_adapter`
 把它与 `tables_of(Panel)` 钉成相等，两份声明不可能各自漂。
@@ -134,16 +136,18 @@ features ──► extreme: 认领极端日，返回剩下的
 - **`model.version`** = 类型 + K + 签名 + 拟合日，任何一项变了都能定位
 - `state_probabilities` 为空时（极端日），`confidence` 也是 `None`
 
-### 给因果层的视图
+### 状态的视图（给消费者）
 
-`port.causual_view(asset, series, meta)` 返回：
+`port.state_view(asset, panel)` 返回：
 
 ```python
 {"labels": Series, "label_name": dict, "labels_order": tuple,
  "version": str, "spec": dict, "line": str}
 ```
 
-因果层只消费这个 dict，**不 import 状态层**。
+`panel` 由**装配点**（`cli.py` / `web/routes.py` / service）传入——状态层不自己取数，
+也不接受 `{表名: Series}` 的 dict（AGENTS §4'③）。
+消费者只消费这个 dict，**不 import 状态层**。
 
 ---
 
