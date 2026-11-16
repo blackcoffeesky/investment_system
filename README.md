@@ -1,6 +1,6 @@
 # quant —— 量化研究工作空间
 
-> **更新日期：2026-11-14**
+> **更新日期：2026-11-16**
 
 一个**分层**的量化研究环境：数据、状态识别、因果归因、运维展示各自独立，
 层与层之间只通过显式端口通信。
@@ -17,7 +17,7 @@
 ```
 quant/
 ├── AGENTS.md        多代理协作的硬约束（先读这个）
-├── shared/          跨模块纯工具（面板对齐 / 标准化 / 滚动 z）
+├── shared/          跨模块机制：utils/（时间对齐·标准化·单位原语）+ adapter/（唯一取数入口）
 ├── datahub/         数据层：SQLite + 抓取入库 + /data 页面
 ├── state_layer/     状态层：市场观测 → 状态标签 + /state 页面（因果层的上游）
 ├── causual/         因果层：机制 → 方向 → 强度 → 卡片 + /cards /fit 页面
@@ -36,6 +36,22 @@ quant/
 
 **`state_layer` 是 `causual` 的上游**：状态层回答"现在像什么"，因果层回答"为什么"。
 因果层把状态当数据用，**不 import 状态层内部**——状态以 `state` 字典传入。
+
+### 数据只走一条路
+
+```
+datahub（表 / 派生量）  →  shared/adapter.get_data()  →  DataFrame  →  cli / service 装配  →  核心代码
+```
+
+- `get_data()` 是**全系统唯一取数入口**，只在装配点调（`*/cli.py`、`*/web/routes.py`、`service/`）
+- `port.py` / `pipeline.py` / `features.py` / `analysis/` **只收 DataFrame**，不自己取数（`tests/test_layering.py` 静态钉住）
+- 原始表与派生量对调用方**没有区别**：`series_map(["csi_all", "breadth"])` 返回形态一致
+
+```
+原语（diff_bp / rolling_z …）        → shared/utils/data_processing
+通用业务特征（breadth / etf_dispersion …） → datahub/fin/derive.py 的 DERIVED 注册表
+资产专属特征（ma20_slope / rv_ratio …）    → 各模块内
+```
 
 ---
 
@@ -57,7 +73,8 @@ service/      app.py registry.py ops/(状态机) templates/(共享骨架)
 | service 内部（状态机、app、路由） | 必须走端口：`ctx.services["datahub"]` |
 | 模块 web（自己的页面） | 只能调**自己**的 port，跨模块走 `request.app.state.services` |
 | 模块内部 | 只能调自己的实现 |
-| `*/cli.py` | 允许直接 import 别的模块的 **port**（命令行是装配点） |
+| `*/cli.py`、`*/web/routes.py` | 装配点：取数（`get_data`）、调别人的 port，把 DataFrame 喂给核心代码 |
+| `service/` | 框架层本身就是装配层 |
 | 任何模块 `import` 别人的内部实现 | **禁止**（`tests/test_decoupling.py` 会拦） |
 
 ---
