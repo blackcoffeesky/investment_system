@@ -141,6 +141,18 @@ port.series_map(["stock_daily"], codes=["sh600519"])      # 只对 long 表有�
 `WHERE code IN (...)`（**只有 long 表支持**，打到 single/multi 会告警并忽略）。
 long 表的 key 集合**随窗口收缩**（窗口内没数据的代码不出现），这不算筛掉。
 
+**派生量也能从 `series_map` 拿**（2026-11-16 起）：
+
+```python
+port.series_map(["breadth"], start="2025-01-01", end="2025-12-31")
+# → {"breadth:adv": Series, "breadth:dec": …, …}   形态和普通表一样
+port.series_map(["dividend_yield"])   # → {"dividend_yield:yield_mcap_weighted": …}
+```
+
+派生量注册在 `datahub/fin/derive.py` 的 `DERIVED`（不落表、不进 metadata），
+**传窗口 == 全量切片**（自带 warmup，见 DESIGN §10.2）。
+`DataPort.breadth()` / `dividend_yield()` 是过渡期保留的旧入口，迁完就该删。
+
 **写接口不对外。** 写库只发生在 `update.py` / `intake` 内部。
 
 ---

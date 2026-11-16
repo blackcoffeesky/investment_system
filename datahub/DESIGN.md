@@ -384,6 +384,37 @@ dividend_yield(2025)    # 单年（同样要全表扫一遍，3.7s；循环里�
 `CAUSUAL_GOLD` 头部 **23 行**差异（`usdcny/vix/usd_index/fed_rate`）。
 warmup（起点前多取 N 天、算完再切）是下一步。
 
+### 10.2 派生量注册表 + warmup（2026-11-16）
+
+派生量（`breadth` / `dividend_yield`）注册在 `fin/derive.DERIVED`：
+
+```python
+DERIVED["breadth"] = Derived(func=breadth, depends=("stock_daily",), period="D",
+                             columns=("adv",…,"total"), warmup_days=400, doc=…)
+```
+
+- **不进 `metadata`**：派生量不落表、没有 `sync_log`，塞进 metadata 会让
+  `check` / `/data` 页分不清"缺表"和"该现算"。
+- **`series_map` 认名字**：`series_map(["breadth"], start, end)` 返回
+  `{breadth:adv: Series, …}`，**与普通表形态完全同构**，调用方分不出哪个是算的。
+- **不变量**：`func(start, end)` 恒等于 `func()` 再 `.loc[start:end]`。
+  为此 `breadth` 的回看从 40 天提到 **400 天**——40 天时 `breadth(2025)` 与
+  全量切片有 **0.82%** 的格子不同（停牌超过 40 天的股票在窗口起点算不出前收）。
+
+**`get_data` 的 warmup**：每列在 adapter 里声明往前多取多少天
+（`_WARMUP`，0/10/45/130），取数起点 = `start − max(warmup)`，build 完再
+`df.loc[start:end]`。**只有传了 `start` 才生效**，不传就是全量（老行为，逐位不变）。
+
+| 列 | warmup | 为什么 |
+|---|---|---|
+| 价格 / 指数 | 0 | 本身就是日频，窗口内每天都有 |
+| 拆借 / 两融 / VIX / 汇率 | 10 天 | 跨周末与长假 |
+| 月频（PMI/CPI/M1/M2/固投…） | 45 天 | 1 个月 + 公布滞后余量 |
+| 月频存量（ETF 持仓） | 45 天 | 同上（含 40 天公布滞后） |
+| 季频（`cb_holdings`） | 130 天 | 1 个季度 + 45 天公布滞后 |
+
+验收：2025-01-01 起取，四个面板 **0 行差异**（原来是 `CAUSUAL_GOLD` 23 行）。
+
 **为什么现算**：估值入库约 5000×2500×4 个浮点 ≈ 3 GB，且都是可推导量；
 一旦入库就要操心"股本变了要重算历史"。
 

@@ -46,16 +46,21 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Callable, cast
 
 import numpy as np
 import pandas as pd
 
 from datahub import DB_PATH
 
-# 算前收要多取的日历天数（长假 + 停牌够用；端午/国庆最长 8~10 天）
-_LOOKBACK_DAYS = 40
+# 算前收要多取的日历天数。
+# **不是"长假够用"那种 40 天**：停牌可能长达数月（重组/立案），窗口起点那天如果某只
+# 股票上一次成交在 40 天之前，全量能算出前收、窗口版算不出 → adv/dec 差几只。
+# 2026-11-16 实测：40 天时 `breadth(2025)` 与 `breadth().loc["2025"]` 有 0.82% 的格子不同；
+# 400 天（≈1 年 + 余量）后归零。再长的停牌属于极少数，接受为残差。
+_LOOKBACK_DAYS = 400
 
 # 板块阈值：按**带前缀的 code** 判定（2026-11-14 起全库统一 sh/sz/bj 前缀），ST 最后覆盖
 _LIMIT_MAIN = 9.8
@@ -128,7 +133,13 @@ def breadth(start: str | None = None, end: str | None = None, *,
             path: Path | None = None) -> pd.DataFrame:
     """市场宽度：按日聚合 `stock_daily`。返回 index=date，列 `_COLUMNS`。
 
+    `start` / `end` 是**结果区间**（闭区间）；内部按 `_LOOKBACK_DAYS` 往前多取
+    算前收，**算完再切回** `[start, end]`。所以
+    `breadth(start, end)` 恒等于 `breadth()` 再 `.loc[start:end]`（窗口不变量）。
+
     这是**派生量**：不建表、不注册成 Source，每次现算（口径见模块 docstring）。
+    消费方从 `DataPort.series_map(["breadth"], start=..., end=...)` 取，
+    形态和普通表完全一样。
     """
     df = _load_daily(start, end, path)
     if df.empty:
@@ -175,7 +186,9 @@ def breadth(start: str | None = None, end: str | None = None, *,
 _YIELD_COLUMNS = ["yield_mcap_weighted", "yield_median", "n_stocks"]
 
 
-def dividend_yield(year: int | None = None, *, path: Path | None = None) -> pd.DataFrame:
+def dividend_yield(year: int | None = None, *, start: str | None = None,
+                   end: str | None = None,
+                   path: Path | None = None) -> pd.DataFrame:
     """全市场年度股息率。`index = year`（int），列固定为 `_YIELD_COLUMNS`。
 
     | 列 | 含义 | 单位 |
@@ -275,8 +288,67 @@ def dividend_yield(year: int | None = None, *, path: Path | None = None) -> pd.D
         })
     res = cast(pd.DataFrame, pd.DataFrame(rows).set_index("year")[_YIELD_COLUMNS].round(4))
 
+    # `start` / `end` 是**结果区间**：年度口径每年独立（分红按除权日归年、股本用当年年末价），
+    # 不存在跨年依赖，所以**不需要 warmup**，切年份即可。
+    if start is not None:
+        res = res[res.index >= pd.Timestamp(start).year]
+    if end is not None:
+        res = res[res.index <= pd.Timestamp(end).year]
+
     if year is not None:
         if int(year) not in res.index:
             raise KeyError(f"没有 {year} 年的股息率；可用年份：{list(res.index)}")
         return res.loc[[int(year)]]
     return res
+
+
+# ======================================================================
+# 派生量注册表
+# ======================================================================
+@dataclass(frozen=True)
+class Derived:
+    """一个派生量：**名字 → 算它的函数 + 依赖 + 窗口 + 列**。
+
+    为什么不放进 `metadata`：派生量不是库里的表（不落表、无 sync_log），
+    硬塞进 metadata 会让 `check` / `/data` 页分不清"缺表"和"该现算"。
+    注册表只给 `series_map` 认名字用。
+
+    `warmup_*`：算 `[start, end]` 时**必须往前多取**多少（单位三选一）。
+    - `warmup_days`：日频派生（按日历天）
+    - `warmup_years`：年度派生
+    - `warmup_obs`：按"上一次观测"（低频序列做 pct_change/diff 时）
+    **不变量**：`func(start, end)` 恒等于 `func()` 再 `.loc[start:end]`。
+    """
+
+    func: Callable
+    depends: tuple[str, ...]
+    period: str                 # D / W / M / Q / Y
+    columns: tuple[str, ...]
+    doc: str
+    warmup_days: int = 0
+    warmup_years: int = 0
+    warmup_obs: int = 0
+
+
+#: 派生量注册表：`series_map` 见到这些名字就调 `func(start, end)`，不当表读。
+DERIVED: dict[str, Derived] = {
+    "breadth": Derived(
+        func=breadth,
+        depends=("stock_daily",),
+        period="D",
+        columns=tuple(_COLUMNS),
+        doc="全市场涨跌家数（按板块分档判涨跌停）",
+        # 只为了算"前收"：与 `_LOOKBACK_DAYS` 同一个数（改一处改两行，别让它漂）
+        warmup_days=_LOOKBACK_DAYS,
+    ),
+    "dividend_yield": Derived(
+        func=dividend_yield,
+        depends=("adj_factor", "stock_daily", "shares_history"),
+        period="Y",
+        columns=tuple(_YIELD_COLUMNS),
+        doc="年度股息率（市值加权 + 中位数，用当前股本近似）",
+        # 年度口径**每年独立**（分红按除权日归年、分母用当年年末价），没有跨年依赖
+        warmup_years=0,
+    ),
+}
+

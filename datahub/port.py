@@ -92,11 +92,22 @@ class DataPort:
         import datahub.fin as fin
         # 注意：`datahub.fin.read` 这个**属性**被同名函数占用了，
         # 所以要按函数名 import，不能 `from datahub.fin import read as rd`。
+        from datahub.fin.derive import DERIVED
         from datahub.fin.read import _long_columns, kind_of
         from datahub.fin.read import pivot as pivot_long
 
         out: dict[str, pd.Series] = {}
         for t in names:
+            # 派生量：**先于表**判，因为它不在 metadata 里，`kind_of` 认不出来。
+            # 形态与表完全同构（`{名:列: Series}`），调用方分不出哪个是算出来的。
+            if t in DERIVED:
+                d = DERIVED[t]
+                got = d.func(start=start, end=end)
+                if got is None or len(got) == 0:
+                    continue
+                for c in got.columns:
+                    out[f"{t}:{c}"] = cast(pd.Series, got[c]).astype(float)
+                continue
             kind = kind_of(t)
             if kind == "static":
                 print(f"[datahub] series_map 跳过 static 表 {t!r}：没有日期轴，"
@@ -155,15 +166,20 @@ class DataPort:
         return out
 
     # ---------------- 派生量（现算，不落表）
+    # ⚠️ 这两个方法是**过渡期保留**：新的统一入口是
+    #    `series_map(["breadth"], start=..., end=...)`（派生量注册在 `fin/derive.DERIVED`）。
+    #    现在还有 1 个外部调用方（`causual/causual_core/cli.py` 的 `derived_series`
+    #    调 `port.dividend_yield()`）；它迁到 `series_map` 之后这两个方法就该删掉，
+    #    否则"这是派生量"这个区别会一直在 port 上暴露。
     def breadth(self, start: str | None = None, end: str | None = None) -> pd.DataFrame:
         """市场宽度（现算，不落表）。
 
         index=date，列 `adv / dec / flat / limit_up / limit_down / total`。
         口径见 `datahub/fin/derive.py` 的模块 docstring。
         """
-        from datahub.fin.derive import breadth as _breadth
+        from datahub.fin.derive import DERIVED
 
-        return _breadth(start, end)
+        return cast(pd.DataFrame, DERIVED["breadth"].func(start=start, end=end))
 
     def dividend_yield(self, year: int | None = None) -> pd.DataFrame:
         """年度股息率（**百分数**，2.1258 = 2.13%）。现算，不落表。
@@ -173,9 +189,9 @@ class DataPort:
         ⚠️ 一次约 3.7 秒（要扫一遍 `stock_daily` 取各股年末价）——
         **一次拿全表，不要在循环里按年调**。
         """
-        from datahub.fin.derive import dividend_yield as _dividend_yield
+        from datahub.fin.derive import DERIVED
 
-        return _dividend_yield(year)
+        return cast(pd.DataFrame, DERIVED["dividend_yield"].func(year=year))
 
     # ---------------- 受控动作
     def run_update(self, start: str = "2000-01-01", end: str | None = None,

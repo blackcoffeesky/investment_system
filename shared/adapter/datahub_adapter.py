@@ -175,6 +175,40 @@ _POLICY: dict[str, Mapping[str, str]] = {
     "gold_macro": _GOLD_MACRO_POLICY,
 }
 
+# ---------------------------------------------------------------- 每列 warmup
+# 取数时**往前多取**多少日历天：`get_data(start=...)` 的取数起点 = start - max(warmup)。
+# 为什么需要：低频列在窗口起点之前必须有一个观测，`ffill` 才有东西可填；
+# 否则窗口头部会是 NaN（实测 CAUSUAL_GOLD 2025-01-01 起取，头部 23 行差异）。
+# 0 = 当天就够（价格类，本身就是日频且窗口内每天都有）。
+_WARMUP: dict[str, Mapping[str, int]] = {
+    "ashare_base": {
+        **{c: 0 for c in ("open", "high", "low", "close", "volume", "csi300", "csi1000")},
+        **{c: 10 for c in ("shibor3m", "margin_balance")},
+        **{c: 10 for c in _ETF_COLS},          # 份额存量：日频，10 天足够跨个长假
+    },
+    "ashare_macro": {
+        **{c: 10 for c in ("vix", "usdcny", "usd_index", "fed_rate",
+                           "real_yield_10y", "geopolitic_risk")},
+        # 月频：45 天 = 1 个月 + 公布滞后余量
+        **{c: 45 for c in ("pmi", "cpi_yoy", "ppi_yoy", "retail_sales",
+                           "retail_sales_mom", "industrial_yoy", "exports_yoy",
+                           "m1_yoy", "m2_yoy")},
+        **{c: 45 for c in ("m1_level", "m2_level", "total_mktcap",
+                           "equity_fin_monthly", "insider_net")},
+    },
+    "gold_base": {
+        **{c: 0 for c in ("open", "high", "low", "close", "volume")},
+        "usdcny": 10, "vix": 10,
+    },
+    "gold_macro": {
+        **{c: 10 for c in ("usd_index", "fed_rate", "real_yield_10y",
+                           "geopolitic_risk", "xau_usd", "gold_open_interest",
+                           "gold_cot_net_long", "gold_cpi_surprise")},
+        "gold_etf_holdings": 45,               # 月频 + 40 天公布滞后
+        "cb_holdings": 130,                    # 季频 + 45 天公布滞后
+    },
+}
+
 # 一致性：每个 spec 列都必须有策略（少一列就报，别等到运行时 KeyError）
 for _name, _spec in _SPECS.items():
     _missing = set(_spec) - set(_POLICY[_name])
@@ -338,9 +372,14 @@ def get_data(panel: Panel, *, start: str | None = None,
                      for name in builders for spec in _SPECS[name].values()}
                     | {t for name in builders for t in _EXTRA_TABLES.get(name, ())})
     # 窗口**下推到 SQL**（`stock_daily` 上千万行，不推下去就是把整表读进内存再丢）。
-    # ⚠️ 起点暂时就等于 start：低频列在窗口头部没有历史可 ffill，会与"全量再切"差几行
-    #    （warmup 是下一步的事，这里先只接线）。
-    series = port.series_map(tables, start=start, end=end)
+    # 取数起点 = start - max(warmup)：低频列必须在窗口起点之前有一个观测，
+    # ffill 才有东西可填（否则窗口头部是 NaN，见 `_WARMUP` 的注释）。
+    warm = max((_WARMUP[name].get(col, 0)
+                for name in builders for col in _SPECS[name]), default=0)
+    fetch_start = None
+    if start is not None and warm:
+        fetch_start = (pd.Timestamp(start) - pd.Timedelta(days=warm)).strftime("%Y-%m-%d")
+    series = port.series_map(tables, start=fetch_start or start, end=end)
 
     frames = [_BUILDERS[name](series, meta) for name in builders]
     df = pd.concat(frames, axis=1).sort_index()
