@@ -77,6 +77,7 @@ causual 不直接对外提供服务，而是暴露三样东西让 service 挂载
 | 接口 | 位置 | 契约 |
 |---|---|---|
 | `load_raw(panel)` | `causual_assets/{asset}/pipeline.py` | **只装配不取数**：按 `PANEL_COLS` 选列 + `_derived` 搬派生列（缺列 `KeyError`） |
+| `build_panel(asof=None, panel=None, state=None)` | `causual_assets/{asset}/pipeline.py` | `prepare(load_raw(panel))` + 贴状态标签；`panel` 没传直接报错 |
 | `pipeline.run(asset, panel, *, meta, state, asof=None, quiet=...)` | `causual_core/pipeline.py` | 出卡：**只吃数据，不取数**；`meta` 可选（新鲜度提示 / 月频归档月） |
 | `required_tables(asset)` / `panel_kind(asset)` | `port.py` | 装配用：要哪些表 / 要哪个耦合层面板（**都是纯声明，不取数**） |
 | `generate(asset, panel, ...)` / `generate_macro(asset, month, panel, ...)` | `port.py` | 出卡（`panel` 由装配点取好） |
@@ -175,6 +176,15 @@ regime（状态） / signal（边） / narrative（卡片）
 `shared/adapter` 是唯一知道"数据层表名 ↔ 语义列名"的地方；`causual_core` **不含任何取数代码**。
 `load_raw(panel)` 只装配、不取数；`_derived(df, base)` 是派生列的唯一接缝（测试打桩它）。
 
+**`_derived` 现在不计算任何东西**——它只是按 `DERIVED_COLS` 从面板里把耦合层算好的列搬进来
+（缺列直接 `KeyError`）。留着它有三个理由：① 它是 `test_guard_turns_red_when_derived_vanishes`
+的打桩点，没有它那几条断言就只能证明"今天数据是好的"；② 六列的装配关系只写在这一处；
+③ 将来真要在 causual 里算点什么（不从面板拿的），加在这里，别内联进 `load_raw`。
+
+`PANEL_COLS` / `DERIVED_COLS` 是**模块声明**，必须是 `COLUMNS[PANEL_KIND]` 的子集——
+由 `tests/test_causual_panel_derived.py::test_panel_cols_are_declared_by_adapter` 钉住。
+运行期的 `panel[list(PANEL_COLS)]` 只是兜底，别当唯一防线（卡片是定时任务，半夜崩没人看得见）。
+
 ### 4.2 面板契约
 
 `load_raw(panel)` 的输入/输出都是日频宽表：
@@ -206,6 +216,16 @@ adapter 落成面板列；causual 只读列，不再自己算：
 | `cb_gold_buy` / `etf_flow` | 持仓存量差分，落在**发布可见日**（+45 / +40 天） |
 
 判定标准：**去掉它之后能不能用库里其他数据算出来**。算得出来的就不入库。
+
+### 4.5 已删除的东西（2026-11-16，别复活）
+
+| 名字 | 曾经是什么 | 现在用什么 |
+|---|---|---|
+| `{表名: Series}` 的 dict 通道 | 装配点拼 27 张表 + 派生量，核心代码自己配对 | `panel: DataFrame`（`get_data(PANEL_KIND)`） |
+| `cli._load_series` | 拉表 + 拼 dict → `(series, meta)` | `cli._load_panel` |
+| `cli.derived_series` / `port.derived_series` | 把股息率装进 `series` | 面板列 `dividend_yield` |
+| `pipeline._dividend_yield` / `DIVIDEND_YIELD_KEY` | 年度 → 次年 1/1 对齐 + ffill | 适配层按 `period="Y"` 做；缺列 `KeyError` |
+| `DataPort.dividend_yield()` / `DataPort.breadth()` | 数据层专用方法 | `DERIVED` 注册表里的普通条目 |
 
 > **坑（历史）：ETF 代码按裸 6 位归一。** 2026-11-14 数据层把 `etf_shares` 的键从
 > `510300` 改成 `sh510300`，当时消费方按裸码字符串匹配 → 四列派生量整体消失且不报错

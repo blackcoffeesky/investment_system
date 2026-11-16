@@ -2,6 +2,40 @@
 
 ---
 
+# v5.50（2026-11-16）：列声明等式测试 + 文档补齐
+
+## 一、`PANEL_COLS` 与 adapter 的 `COLUMNS` 钉成一条等式
+
+```python
+set(PANEL_COLS) | set(DERIVED_COLS) <= set(COLUMNS[PANEL_KIND])   # 两个资产各一条
+```
+
+`tests/test_causual_panel_derived.py::test_{ashare,gold}_panel_cols_are_declared_by_adapter`。
+
+**为什么**：`load_raw` 里的 `panel[list(PANEL_COLS)]` 只是运行期兜底——真到了出卡那一刻
+才 `KeyError`，而卡片是定时任务，崩在凌晨没人看得见。adapter 删列 / 改名时这条测试当场红。
+和 `REQUIRED_TABLES = tables_of(PANEL_KIND)` 一个形状：**声明与实现之间不留第二份真相**。
+
+反向验证过：临时往 `PANEL_COLS` 里加一个不存在的列，这条立刻报
+`CAUSUAL_ASHARE：这些列在 causual 里声明了，但耦合层没有——['this_col_does_not_exist']`。
+
+## 二、文档补齐（这一轮改动的收尾）
+
+`DESIGN.md` 新增三节：**§3.1 数据只在装配点进来**（谁能 `get_data`、谁只能收 DataFrame）、
+**§3.2 列名约定**（耦合层的列小写、`prepare()` 自产的大写，判据是"别人给的还是我算的"）、
+**§3.3 `PANEL_COLS` 是模块声明**（等式测试 + 运行期兜底两层）。
+另加 **§9.1 已删除的接口**（`series_map` 通道 / `_load_series` / `derived_series` /
+`_dividend_yield` / `DIVIDEND_YIELD_KEY` / `DataPort.dividend_yield` 与 `breadth`），
+以及 §4.2 里"`_derived` 接缝为什么还留着"三条理由。
+
+`readme.md` 补 §4.5「已删除的东西（别复活）」+ `build_panel` 的签名 + `_derived` 接缝说明。
+
+顺手修了 §3 数据流代码块里一处错位的围栏（`macro_layer` / `narrative` 两行被甩到块外）。
+验收：文档里除"已删除"小节外不再出现 `series_map` / `derived_series` / `_load_series` /
+`DIVIDEND_YIELD_KEY` / `_dividend_yield`。
+
+---
+
 # v5.49（2026-11-16）：`prepare()` 的手写公式换成单位原语
 
 `shared.utils.data_processing` 加了三个**名字里带单位**的原语（`diff_bp` /

@@ -181,6 +181,39 @@ def test_dividend_yield_reaches_panel():
         f"dividend_yield 最后有效日 {v.index[-1].date()}，落后 {lag} 个交易日")
 
 
+def _assert_panel_cols_declared_by_adapter(asset: str) -> None:
+    """`PANEL_COLS ∪ DERIVED_COLS` 必须是 `COLUMNS[PANEL_KIND]` 的子集。
+
+    为什么要有这条：`load_raw` 里 `panel[list(PANEL_COLS)]` 只是**运行期**兜底——
+    真到了出卡那一刻才 `KeyError`，而卡片是定时任务，可能一整天才发现。
+    adapter 删一列 / 改名时，这条测试当场红，和 `REQUIRED_TABLES = tables_of(...)`
+    是同一个形状（声明与实现之间没有第二份真相）。
+
+    `DERIVED_COLS` 一起查：`_derived` 也是从 panel 里取这些列，少一个就 KeyError。
+    """
+    from shared.adapter import COLUMNS
+
+    from causual.causual_assets import load
+
+    pkg = load(asset)
+    cols = set(pkg.PANEL_COLS) | set(pkg.DERIVED_COLS)
+    have = set(COLUMNS[pkg.PANEL_KIND])
+    missing = sorted(cols - have)
+    assert not missing, (
+        f"{pkg.PANEL_KIND.name}：这些列在 causual 里声明了，但耦合层没有——{missing}；"
+        f"装配点会 KeyError（改 adapter 的 COLUMNS，或改本模块的 PANEL_COLS）")
+
+
+def test_ashare_panel_cols_are_declared_by_adapter():
+    """A 股的模块声明 ⊆ 耦合层实现。"""
+    _assert_panel_cols_declared_by_adapter("ashare")
+
+
+def test_gold_panel_cols_are_declared_by_adapter():
+    """黄金的模块声明 ⊆ 耦合层实现（两个资产各一条，红的时候一眼看出是哪个）。"""
+    _assert_panel_cols_declared_by_adapter("gold")
+
+
 def test_missing_panel_column_raises():
     """缺列必须 `KeyError`，不能静默整列 NaN。
 

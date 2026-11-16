@@ -59,7 +59,6 @@ causual_assets/{ashare,gold}/pipeline.py
 causual_core/
      ├─ regime_infer.py   外推最新标签
      ├─ signal_layer.py         逐边算 z、β、贡献 → α
-```
      ├─ macro_layer.py      供需层：位置 × 边际
      └─ narrative.py      渲染卡片
      ▼
@@ -67,6 +66,46 @@ causual/output/{asset}/cards/
      ├── YYYY/MM/card_YYYY-MM-DD.md     日频：状态 + 信号层
      └── YYYY/MM/macro_YYYY-MM.md       月频：结构 + 供需
 ```
+
+### 3.1 铁律：数据只在装配点进来
+
+| 谁 | 能做什么 | 不能做什么 |
+|---|---|---|
+| `cli.py` / `web/routes.py` / `service` | `get_data(Panel.CAUSUAL_*)` 取面板 | —— |
+| `causual_core/*` / `causual_assets/*` / `port.py` | 只收 `panel: DataFrame` 参数 | **不许** `import datahub`、**不许**调 `get_data`、**不许**要求调用方先拼 `{表名: Series}` |
+
+要哪个面板由资产包声明（`pipeline.PANEL_KIND`），装配点用 `CausalPort.panel_kind(asset)` 查——
+所以装配点**不需要知道**"ashare 对应哪个 Panel 枚举"。
+
+**为什么禁止 dict 通道**：传 `{表名: Series}` 意味着下游还要再拼一次（哪张表配哪列、怎么对齐），
+等于装配做两遍，而两遍必然漂移——历史上真出过"CLI 有股息率、service 没有"。
+`series_map` 那套接口已于 2026-11-16 全量删除，**别把它加回来**。
+
+### 3.2 列名约定（两套，别混）
+
+| 来源 | 命名 | 例子 | 谁产生 |
+|---|---|---|---|
+| **耦合层**（adapter 落的面板列） | **语义小写** | `close` / `vix` / `etf_dispersion` / `size_flow` / `national_etf` / `national_etf_event` / `dividend_yield` / `cb_gold_buy` / `etf_flow` | datahub 的 `DERIVED` 注册表 + adapter |
+| **本模块自产**（`prepare()` 算的） | **大写** | `RET` / `VIX_CHG` / `SUPPLY_Z` / `MARGIN_NET` / `VOLUME_Z` / `GOLD_RET` | `prepare()` |
+
+判断标准一句话：**这列是"别人给的"还是"我算的"**。别人给的一律小写，我算的一律大写。
+混了就会出现"两套列名"——v5.46 花了一整轮才并掉，别再退回去。
+退役名由 `tests/test_causual_dead_columns.py::LEGACY_COLS` 拦住（只增不改）。
+
+### 3.3 `PANEL_COLS` 是**模块声明**，不是抄来的清单
+
+```python
+PANEL_COLS   = (...)   # 我这张面板需要哪些列
+DERIVED_COLS = (...)   # 其中"耦合层算好、我只搬进来"的那几列
+```
+
+两者都必须是 `COLUMNS[PANEL_KIND]` 的子集，由
+`tests/test_causual_panel_derived.py::test_panel_cols_are_declared_by_adapter` 钉住
+（同一个形状还有 `REQUIRED_TABLES = tables_of(PANEL_KIND)`：**从耦合层推导，不手抄**）。
+
+- 运行期还有兜底：`panel[list(PANEL_COLS)]` 少列直接 `KeyError`，`_derived` 同样。
+- 但**别把运行时当唯一防线**：卡片是定时任务，崩在凌晨没人看得见。
+  改了 adapter 的 `COLUMNS` 而没同步这里，测试当场红——这就是那条等式测试的意义。
 
 ---
 
@@ -103,6 +142,20 @@ causual/output/{asset}/cards/
 > `panel.py` 已于 2026-11-15 删除；2026-11-16 起**连派生列也不再由 causual 算**：
 > 六列（ETF 四列 + 股息率 + 黄金两条流量）都在 datahub 的 `DERIVED` 注册表里，
 > adapter 落成面板列。字段映射在 `pipeline.PANEL_COLS`，代码归一在 `shared.adapter`。
+
+#### `_derived(df, base)` 这个接缝为什么还留着
+
+它现在**不计算任何东西**，只是按 `DERIVED_COLS` 从 `base` 里取列（缺列 → `KeyError`）。
+留着是因为三件事：
+
+1. **它是测试的打桩点**：`tests/test_causual_panel_derived.py::test_guard_turns_red_when_derived_vanishes`
+   把 `_derived` 打桩成 `lambda df, base: {}`，然后要求"派生列消失"被判定抓住。
+   没有这个函数，那几条断言就只能证明"今天数据是好的"，证明不了"判定逻辑本身有效"。
+2. **它是列契约的落点**：六列由耦合层给，`PANEL_COLS` 里不重复列，装配关系只写在这一处。
+3. **它是将来加 causual 自有派生量的位置**：真要算点什么（不从面板拿的），加在这里，
+   不要内联进 `load_raw`。
+
+**别把它删掉**，哪怕它永远只剩一行 `return {...}`。
 
 ### 4.3 产物目录
 
@@ -251,8 +304,10 @@ causual 不直接对外提供服务。service 通过三样东西使用它：
 
 | 接口 | 位置 | 契约 | 谁调用 |
 |---|---|---|---|
-| `load_raw(panel)` | `causual_assets/{asset}/pipeline.py` | **只装配不取数**：按 `PANEL_COLS` 选列，`_derived` 把耦合层算好的派生列搬进来（缺列 `KeyError`） | `pipeline` / 测试 |
-| `pipeline.run(asset, panel, *, meta, state, asof, quiet)` | `causual_core/pipeline.py` | 出卡；**只吃数据，不取数**。`meta` 可选，只给新鲜度提示与月频归档月 | `causual.port.CausalPort` |
+| `PANEL_KIND` / `PANEL_COLS` / `DERIVED_COLS` | `causual_assets/{asset}/pipeline.py` | 模块声明：要哪个面板、要哪些列（⊆ `COLUMNS[PANEL_KIND]`，等式测试钉住） | 装配点 / 测试 |
+| `load_raw(panel)` | `causual_assets/{asset}/pipeline.py` | **只装配不取数**：按 `PANEL_COLS` 选列，`_derived` 把耦合层算好的派生列搬进来（缺列 `KeyError`） | `build_panel` / 测试 |
+| `build_panel(asof=None, panel=None, state=None)` | `causual_assets/{asset}/pipeline.py` | `prepare(load_raw(panel))` + 贴状态标签 → `(df, spec)`；`panel is None` 直接报错（装配点漏传） | `pipeline.run` |
+| `pipeline.run(asset, panel, *, meta=None, state, asof, quiet)` | `causual_core/pipeline.py` | 出卡；**只吃数据，不取数**。`meta` 可选，只给新鲜度提示与月频归档月 | `causual.port.CausalPort` |
 | `required_tables(asset)` | `causual/port.py` | 该资产要哪些表（纯声明，= `tables_of(PANEL_KIND)`） | CLI / service 装配点 |
 | `panel_kind(asset)` | `causual/port.py` | 该资产要哪个耦合层面板（纯查表，**不取数**）；装配点拿它 `get_data(...)` | CLI / service / web |
 | `macro_month(meta, *, asset=None)` | `causual/port.py` | 月频卡该覆盖的月份；`asset` 是**关键字参数**（传了就按该资产的表收窄） | service（`exists` 之前） |
@@ -260,8 +315,15 @@ causual 不直接对外提供服务。service 通过三样东西使用它：
 | `list_cards / get_card / to_html` | `causual/port.py` | 卡片检索与 Markdown→HTML | `causual/web/routes.py` |
 | `register_module()` | `web/routes.py` | 返回 `Module`（router + templates + nav + port） | `service.registry.load()` |
 
-> `derived_series(asset, data)` 已于 2026-11-16 **退役**：股息率是面板列，
-> 装配点直接 `get_data(...)["dividend_yield"]`，不再需要"装配派生量"这一步。
+### 9.1 已删除的接口（2026-11-16，**别复活**）
+
+| 名字 | 曾经是什么 | 为什么删 |
+|---|---|---|
+| `series_map(...)` 传下来的 `{表名: Series}` 通道 | 装配点拼 dict、核心代码自己配对 | 下游要再拼一次 = 装配做两遍 → 两边漂移（出过"CLI 有股息率、service 没有"） |
+| `cli._load_series` | 拉 27 张表 + 拼派生 dict → `(series, meta)` | 被 `cli._load_panel`（`get_data(PANEL_KIND)`）取代 |
+| `cli.derived_series` / `CausalPort.derived_series` | 把股息率装进 `series` | 股息率已是面板列 `dividend_yield` |
+| `pipeline._dividend_yield` / `DIVIDEND_YIELD_KEY` | 把"年度 → 次年 1/1"对齐 + ffill 那一步 | 对齐归**适配层**（adapter 按 `period="Y"` 做）；缺列改 `KeyError`，不再"告警 + 整列 NaN" |
+| `DataPort.dividend_yield()` / `DataPort.breadth()` | 数据层的专用方法 | 派生量进 `DERIVED` 注册表后与普通表同构，专用方法等于把"这是算出来的"暴露给外部 |
 
 `CardService.generate()` 幂等：目标日期已有卡片就直接返回路径。
 
