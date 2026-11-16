@@ -141,14 +141,23 @@ _ASHARE_DERIVED: tuple[tuple[str, str, str], ...] = (
     ("national_etf", "net", "daily"),
     ("national_etf_event", "event", "daily"),
 )
+#: 年度股息率：`year Y` 的值到 `Y+1-01-01` 才可见（防前视），再 ffill 到日频。
+#: **只给 causual.ashare**——算一次要 3.7 秒（扫一遍 `stock_daily`），状态层用不上。
+_DIVIDEND_YIELD: tuple[tuple[str, str, str], ...] = (
+    ("dividend_yield", "yield_mcap_weighted", "daily"),
+)
 _GOLD_DERIVED: tuple[tuple[str, str, str], ...] = (
     ("cb_gold_buy", "flow", "raw"),
     ("etf_flow", "flow", "raw"),
 )
-#: 哪个 builder 负责把派生列挂进面板（一个面板只挂一次，别在 base 和 macro 里重复）
-_BUILDER_DERIVED: dict[str, tuple[tuple[str, str, str], ...]] = {
-    "ashare_base": _ASHARE_DERIVED,
-    "gold_macro": _GOLD_DERIVED,
+#: 每个面板挂哪些派生列（**按 Panel 而不是 builder**：`ashare_base` 同时被 state 和
+#: causual 用，而 `dividend_yield` 一次要 3.7 秒、state 又用不上——不能因为它俩共享
+#: builder 就让 state 也付这个代价）。
+_PANEL_DERIVED: dict[Panel, tuple[tuple[str, str, str], ...]] = {
+    Panel.STATE_ASHARE: _ASHARE_DERIVED,
+    Panel.CAUSUAL_ASHARE: _ASHARE_DERIVED + _DIVIDEND_YIELD,
+    Panel.STATE_GOLD: (),
+    Panel.CAUSUAL_GOLD: _GOLD_DERIVED,
 }
 
 # ---------------------------------------------------------------- 每列策略
@@ -319,9 +328,8 @@ def columns_of(panel: Panel) -> dict[str, str]:
             out[col] = _RAW
     # 派生列统一追加在**最后**——`get_data` 是 concat 完之后才挂它们，
     # 顺序必须与这里一致（契约测试按列顺序断言）
-    for name in _BUILD[panel]:
-        for dname, _, how in _BUILDER_DERIVED.get(name, ()):
-            out[dname] = how
+    for dname, _, how in _PANEL_DERIVED[panel]:
+        out[dname] = how
     return out
 
 
@@ -372,7 +380,7 @@ def get_data(panel: Panel, *, start: str | None = None,
     names = list(tables)
     if any(_EXTRA_COLS.get(name) for name in builders):
         names.append(_ETF_DERIVED)
-    derived_cols = [d for name in builders for d in _BUILDER_DERIVED.get(name, ())]
+    derived_cols = list(_PANEL_DERIVED[panel])
     names += [d[0] for d in derived_cols]
     # 窗口**下推到 SQL**（`stock_daily` 上千万行，不推下去就是把整表读进内存再丢）。
     # 取数起点 = start - max(warmup)：低频列必须在窗口起点之前有一个观测，
@@ -392,6 +400,14 @@ def get_data(panel: Panel, *, start: str | None = None,
             _warn(f"series 里没有 {dname}:{src_col}，{dname} 整列 NaN")
             df[dname] = pd.Series(index=df.index, dtype=float)
         else:
+            # 年度口径（`index` 是年份整数，不是日期）：年 Y 的值到 **Y+1-01-01** 才可见
+            # （年 Y 的除息日都落在 Y 内，数据到 Y+1 才完整）——这是"数据期→可见日"的
+            # 换算，和 `lag_days` 同类，所以放在适配层而不是消费方。
+            if not isinstance(s.index, pd.DatetimeIndex):
+                s = pd.Series(
+                    s.to_numpy(dtype=float),
+                    index=pd.DatetimeIndex([pd.Timestamp(year=int(y) + 1, month=1, day=1)
+                                            for y in s.index]))
             df[dname] = T.to_daily(s, df.index, 0, ffill=(how == "daily"))
     df = df.loc[:, ~df.columns.duplicated()]
 

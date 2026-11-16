@@ -80,6 +80,27 @@ def test_get_data_window_matches_full_slice():
         pd.testing.assert_frame_equal(win, expect, check_exact=True)
 
 
+def test_dividend_yield_is_causual_only_and_aligned_to_next_year():
+    """`dividend_yield` 是**年度**口径，落位规则：年 Y 的值 → Y+1-01-01 → ffill 到日频。
+
+    所以面板里它的"变化点"必须全落在**年初**（1 月的头几个交易日）。
+    它也**只给 causual.ashare**：算一次 3.7 秒（扫一遍 `stock_daily`），状态层用不上。
+    """
+    from shared.adapter import COLUMNS, Panel, get_data
+
+    assert "dividend_yield" in COLUMNS[Panel.CAUSUAL_ASHARE]
+    assert "dividend_yield" not in COLUMNS[Panel.STATE_ASHARE], (
+        "dividend_yield 不该进状态层面板——它每次要 3.7 秒，state 也不用它")
+
+    col = get_data(Panel.CAUSUAL_ASHARE)["dividend_yield"]
+    assert col.notna().any(), "整列 NaN，测试前提不成立"
+    v = col.dropna()
+    change = v[v.diff().fillna(1.0) != 0.0]
+    assert len(change) > 1
+    bad = [d for d in change.index if d.month != 1]
+    assert not bad, f"年度值的变化点必须落在 1 月（Y+1-01-01 → 首个交易日），这些不在：{bad[:3]}"
+
+
 def test_adapter_has_no_etf_group_knowledge():
     """ETF 分组知识必须只在数据层（`fin/derive._ETF_GROUPS`），adapter 里不许再出现。
 

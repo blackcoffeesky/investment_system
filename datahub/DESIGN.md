@@ -449,6 +449,7 @@ DERIVED["etf_group_shares"] = Derived(func=etf_group_shares, depends=("etf_share
 
 | 派生量 | 列 | 依赖 | warmup | 出现处 |
 |---|---|---|---|---|
+| `dividend_yield` | `yield_mcap_weighted` | `adj_factor`/`stock_daily`/`shares_history` | `warmup_years=0` | **只给 causual.ashare**（`daily`） |
 | `etf_dispersion` | `dispersion` | `etf_shares` | `warmup_obs=2` | A 股面板（`daily`，ffill） |
 | `size_flow` | `flow` | `etf_shares` | `warmup_obs=2` | 同上 |
 | `national_etf` | `net` | `etf_shares` | `warmup_obs=2` | 同上 |
@@ -459,6 +460,14 @@ DERIVED["etf_group_shares"] = Derived(func=etf_group_shares, depends=("etf_share
 **warmup 各填各的**（不再一个全局常量）：pct_change 只要 1 个历史观测，
 60 日滚动分位要 60 个，差分还要"上上个"作基准（`_gold_flow` 因此是 **3** 不是 2——
 只取 2 个的话窗口内第一笔会缺，实测 2025-01-09 差一格）。
+
+**`dividend_yield` 的年度对齐也在 adapter**：年 Y 的值对齐到 **Y+1-01-01**（年 Y 的除息日
+全落在 Y 内，数据到 Y+1 才完整），再 ffill 到日频。这条换算原来散在
+`causual/cli.derived_series`（改 index）+ `pipeline._dividend_yield`（`to_daily`）两处，
+现在归适配层——它和 `lag_days` 是同一类"数据期→可见日"的换算。
+实测与旧两步路径**逐位相同**（2394 个非空、末值 2.1258）。
+它**只挂 causual.ashare**：算一次 3.7 秒，状态层不用——`_PANEL_DERIVED` 按 **Panel**
+而不是 builder 挂载，就是为了不让共享 `ashare_base` 的 state 也付这个代价。
 
 **两种落位口径**：`etf_*` 返回**观测日**（`daily` 策略由 adapter ffill），
 `national_etf_event` 返回**日频**（0/1 标记，"没有观测"应当是 0 不是 NaN），
