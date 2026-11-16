@@ -418,17 +418,21 @@ DERIVED["breadth"] = Derived(func=breadth, depends=("stock_daily",), period="D",
 **为什么现算**：估值入库约 5000×2500×4 个浮点 ≈ 3 GB，且都是可推导量；
 一旦入库就要操心"股本变了要重算历史"。
 
-### 11.1 怎么标记"原始 / 派生"
+### 11.1 "原始 / 派生"不再由 `metadata` 区分（2026-11-16 改）
 
-`metadata` 有两个列区分（2026-11-14 加）：
+2026-11-14 曾在 `metadata` 加了 `source` / `depends` 两列，想用它们标记"这张表是原始
+数据还是算出来的"。**2026-11-16 删掉了**，理由：
 
-| 列 | 值 | 含义 |
-|---|---|---|
-| `source` | `raw`（默认）/ `derived` | 这张表是原始数据，还是由别的表算出来的 |
-| `depends` | 表名，逗号分隔 | 派生表依赖哪几张原生表；`raw` 留空 |
+- 派生量**不落表**（现算、无 `sync_log`、不在 `/data` 页），塞进 `metadata` 会让
+  `check` / `/data` 分不清"缺表"和"该现算"；
+- 唯一真正的消费者是 `check`（"派生表缺了不用抓"），而派生量根本不在 `tables()` 里，
+  这条判断从来不会触发。
 
-本轮只**把列准备好**，不写派生数据、不建派生表。将来派生函数落地时，
-用 `source='derived' + depends=...` 登记，`check` 才知道"这张表缺了不用去抓"。
+现在**派生量的登记只有一个地方**：`fin/derive.DERIVED`（`depends` + `depends_note`），
+消费方通过 `series_map` 按名字取，形态与表同构（见 §10.2）。
+
+迁移：老库由 `core/schema.METADATA_DROPS` 幂等删列（SQLite 3.35+ 的
+`ALTER TABLE … DROP COLUMN`）；新库的 `DATA_DDL` 直接不带这两列。
 
 ### 11.2 名字撞车：`total_shares` 有三种含义（刻意不改名）
 

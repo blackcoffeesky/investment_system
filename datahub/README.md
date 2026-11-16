@@ -32,7 +32,9 @@ datahub/
 
 **2026-11-13 起**：`csi_all` 合并了成交额/换手率（三表合一）；`etf_shares` 从 multi 改成 long。
 **2026-11-14 起**：新增公司四表 `company` / `shares_history` / `dividend` / `financials`，
-接入 ashareapi；`metadata` 加 `source` / `depends` 两列（标记原始 vs 派生）。
+接入 ashareapi。
+**2026-11-16 起**：`metadata` 去掉 `source` / `depends` 两列——派生量不进 metadata
+（它们不落表、没有 `sync_log`），依赖写在 `fin/derive.DERIVED` 的 `depends` / `depends_note` 里。
 **过渡中**：`breadth_*` 已停止采集（`SOURCES` 里两条注册已删），但**表还在**
 （`state_layer` 仍在读它）——等派生函数与旧表比对一致后再删表。
 `csi_all_amount` / `csi_all_turnover` 同理：已合并进 `csi_all`，不再单独采集。
@@ -96,7 +98,7 @@ from datahub.fin import read, metadata, tables, run_check, missing
 
 tables()                        # 表名列表（= metadata 里登记过的表）
 metadata()                      # name/display/freq/unit/start/end/n_rows/note/
-                                #   kind/columns/market/lag_days/source/depends
+                                #   kind/columns/market/lag_days
 read("vix")                     # single  → Series
 read("csi_all")                 # multi   → DataFrame
 read("csi_all", column="close") #         → Series

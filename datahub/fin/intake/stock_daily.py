@@ -99,11 +99,11 @@ def register(con: sqlite3.Connection, table: str, freq: str = "D",
     con.execute("DELETE FROM metadata WHERE name=?", (table,))
     con.execute(
         "INSERT INTO metadata(name, display, freq, unit, start_date, end_date,"
-        " n_rows, note, kind, columns, market, lag_days, source)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        " n_rows, note, kind, columns, market, lag_days)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         (table, table, freq, "", st["start_date"], st["end_date"], st["n_rows"],
          note or f"long 表，{st['codes']} 个标的", "long",
-         ",".join(_long_columns(table)), market, 0, "raw"))
+         ",".join(_long_columns(table)), market, 0))
     con.commit()
     print(f"metadata: {table} n_rows={st['n_rows']} codes={st['codes']}")
 

@@ -130,10 +130,10 @@ def _ensure_meta(con: sqlite3.Connection) -> int:
         freq, market, lag = FREQ_HINT.get(name, ("D", "NONE", 0))
         con.execute(
             "INSERT OR IGNORE INTO metadata(name, display, freq, unit, start_date,"
-            " end_date, n_rows, note, kind, columns, market, lag_days, source)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " end_date, n_rows, note, kind, columns, market, lag_days)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (name, name, freq, "", "", "", 0, "自动创建", kind,
-             ",".join(c for c in cols if c != "date"), market, lag, "raw"))
+             ",".join(c for c in cols if c != "date"), market, lag))
         n += 1
     con.commit()
     return n

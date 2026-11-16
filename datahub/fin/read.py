@@ -6,7 +6,7 @@
     read("csi_all")                    # multi  → DataFrame
     read("csi_all", column="close")    # multi  → Series
     read_many(["vix", "usdcny"])       # 多个 single → DataFrame
-    metadata()                         # 元数据（含 kind / columns / source / depends）
+    metadata()                         # 元数据（含 kind / columns / lag_days）
     run_check()                        # 完整性检查
 """
 

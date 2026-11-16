@@ -26,9 +26,9 @@ CREATE TABLE IF NOT EXISTS metadata (
     kind        TEXT DEFAULT 'single',
     columns     TEXT,
     market      TEXT DEFAULT 'CN',    -- CN / US / NONE：判断"哪些日子本该有数据"
-    lag_days    INTEGER DEFAULT 0,    -- 公布滞后天数：数据期结束后多少天才可见
-    source      TEXT DEFAULT 'raw',   -- raw / derived：原始数据，还是由别的表算出来的
-    depends     TEXT                  -- 派生表的依赖（原生表名，逗号分隔）；raw 留空
+    lag_days    INTEGER DEFAULT 0     -- 公布滞后天数：数据期结束后多少天才可见
+    -- 2026-11-16 删掉 source / depends：派生量不进 metadata（它们不落表、没有 sync_log），
+    -- metadata 只管库里的表。派生量的依赖写在 `fin/derive.DERIVED` 的 depends/depends_note 里。
 );
 
 -- 上次成功抓取时间：事件型表（分红/股本）没有"当期"概念，只能按时间间隔节流
@@ -54,12 +54,14 @@ CREATE TABLE IF NOT EXISTS "{name}" (
 """
 
 
-# 老库补列（新库由 METADATA_DDL 直接建好）。SQLite 的 ADD COLUMN 带 DEFAULT 时
-# 会把已有行填成默认值，所以 source 老行自然是 'raw'——它们本来就是原始表。
-METADATA_MIGRATIONS: dict[str, str] = {
-    "source": "ALTER TABLE metadata ADD COLUMN source TEXT DEFAULT 'raw'",
-    "depends": "ALTER TABLE metadata ADD COLUMN depends TEXT",
-}
+# 老库补列（新库由 DATA_DDL 直接建好）。
+# 2026-11-16：`source` / `depends` 已**废弃**（派生量不进 metadata），改成"删列"，
+# 见 `METADATA_DROPS`。这里不再新增列。
+METADATA_MIGRATIONS: dict[str, str] = {}
+
+#: 要从老库里**删掉**的 metadata 列（幂等：列不在就跳过）。
+#: SQLite 3.35+ 支持 `ALTER TABLE ... DROP COLUMN`（本机 3.53）。
+METADATA_DROPS: tuple[str, ...] = ("source", "depends")
 
 # 数据表补列（列定义在 `fin/read.py` 的 LONG_SCHEMAS，这里只放"给老库补"的 DDL）
 DATA_MIGRATIONS: dict[str, dict[str, str]] = {
@@ -89,8 +91,26 @@ def _add_columns(con: sqlite3.Connection, table: str, wanted: dict[str, str]) ->
     return done
 
 
+def _drop_columns(con: sqlite3.Connection, table: str,
+                  unwanted: tuple[str, ...]) -> list[str]:
+    """从已存在的表里删掉废弃列（幂等：列不在就跳过）。
+
+    SQLite 3.35+ 才支持 `ALTER TABLE ... DROP COLUMN`；更低版本只能整表重建，
+    这里直接报错而不是静默跳过——否则老库会带着废弃列一直跑，谁也发现不了。
+    """
+    if not _table_exists(con, table):
+        return []
+    have = {r[1] for r in con.execute(f'PRAGMA table_info("{table}")')}
+    done = []
+    for col in unwanted:
+        if col in have:
+            con.execute(f'ALTER TABLE "{table}" DROP COLUMN "{col}"')
+            done.append(f"drop {table}.{col}")
+    return done
+
+
 def migrate_metadata(con: sqlite3.Connection) -> list[str]:
-    """给已有库补 metadata 的新列、并把空串日期统一成 NULL。幂等：没有要改的就返回 [].
+    """给已有库补 metadata 的新列、删掉废弃列、并把空串日期统一成 NULL。幂等。
 
     为什么空串要转 NULL：`''` 会让下游的 `isna()` 漏过去（static 表的
     start_date/end_date 就是空串），排序时 `''` 又会排在最前，都是暗坑。
@@ -100,6 +120,7 @@ def migrate_metadata(con: sqlite3.Connection) -> list[str]:
     if not _table_exists(con, "metadata"):
         return []                     # 全新的库：DATA_DDL 会直接建好，不用迁移
     done = _add_columns(con, "metadata", METADATA_MIGRATIONS)
+    done += _drop_columns(con, "metadata", METADATA_DROPS)
     for col in ("start_date", "end_date"):
         cur = con.execute(f"UPDATE metadata SET {col}=NULL WHERE {col}=''")
         if cur.rowcount:
