@@ -119,12 +119,17 @@ pyright --project pyrightconfig_off.json     # 必须 0 error
 | 地点 | 允许做什么 |
 |---|---|
 | **模块内的 `cli.py`** | 装配：读别人的数据、调别人的 port，把结果喂给核心代码 |
+| **模块内的 `web/routes.py`** | 页面入口，**等价于该模块的 CLI**（同样只是装配点，不写业务逻辑） |
+| **`service/`** | 框架层本身就是装配层 |
 | **`shared/`** | 跨模块的公共机制（纯工具 / 适配层） |
 
 ```
-❌ 在 pipeline / port / web 里 import 别的模块
-✅ 在 cli.py 里装配好，核心代码只收参数
+❌ 在 pipeline / port / features 里 import 别的模块或调 get_data
+✅ 在 cli / web 路由里装配好，核心代码只收参数
 ```
+
+**跨模块传数据用 `DataFrame`（`get_data` 的输出），不要传 `{表名: Series}` 的 dict**
+—— 那是 `series_map` 时代的化石。传 dict 意味着下游还要再拼一次，等于装配做两遍。
 
 **这三条合起来的效果**：把"耦合"从散落各处集中到少数几个明确的点。耦合不会消失，只会转移——所以让它可以被数清、被审查。
 
