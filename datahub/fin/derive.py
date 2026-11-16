@@ -137,6 +137,13 @@ def breadth(start: str | None = None, end: str | None = None, *,
     算前收，**算完再切回** `[start, end]`。所以
     `breadth(start, end)` 恒等于 `breadth()` 再 `.loc[start:end]`（窗口不变量）。
 
+    ⚠️ **`_LOOKBACK_DAYS = 400` 不是为了分位数，是为了停牌**：
+    本函数没有任何滚动统计（不分位、不均值），多取的那段**只用来算"前一个交易日
+    收盘"**。而停牌可能长达数月——停牌超过 40 天的股票，在窗口起点处拿不到前收
+    （`has_prev=False`），于是它算进 `total` 却进不了 `adv/dec`；全量版能算出前收，
+    两边就对不上。实测 40 天时 `breadth(2025)` 与全量切片有 **0.82%** 的格子不同，
+    400 天才归零。**别把它"优化"成 40 天，也别以为它和滚动窗口有关。**
+
     这是**派生量**：不建表、不注册成 Source，每次现算（口径见模块 docstring）。
     消费方从 `DataPort.series_map(["breadth"], start=..., end=...)` 取，
     形态和普通表完全一样。
@@ -328,6 +335,7 @@ class Derived:
     warmup_days: int = 0
     warmup_years: int = 0
     warmup_obs: int = 0
+    depends_note: str = ""      # 依赖的**语义边界**：换源/补数会让结果变的地方
 
 
 #: 派生量注册表：`series_map` 见到这些名字就调 `func(start, end)`，不当表读。
@@ -340,6 +348,13 @@ DERIVED: dict[str, Derived] = {
         doc="全市场涨跌家数（按板块分档判涨跌停）",
         # 只为了算"前收"：与 `_LOOKBACK_DAYS` 同一个数（改一处改两行，别让它漂）
         warmup_days=_LOOKBACK_DAYS,
+        depends_note=(
+            "依赖 `stock_daily` 的**未复权收盘 + 当日是否有成交**。"
+            "三个语义边界：① 退市股不在表里 → 幸存者偏差；"
+            "② 未复权 → 除权日会被算成大跌（分红季几十只）；"
+            "③ `company.name` 是**当前**快照 → 历史某天是否 ST 无从得知。"
+            "这三点任一变化，adv/dec/limit_up 的口径就变。"
+        ),
     ),
     "dividend_yield": Derived(
         func=dividend_yield,
@@ -349,6 +364,11 @@ DERIVED: dict[str, Derived] = {
         doc="年度股息率（市值加权 + 中位数，用当前股本近似）",
         # 年度口径**每年独立**（分红按除权日归年、分母用当年年末价），没有跨年依赖
         warmup_years=0,
+        depends_note=(
+            "依赖 `adj_factor` 的**除权日**口径（不是报告期）＋ `shares_history` 的"
+            "**当前股本快照**（不是当年股本 → 越往前越不准）＋ `stock_daily` 的年末价。"
+            "股东回报口径/股本源一变，这个数就不可比。"
+        ),
     ),
 }
 

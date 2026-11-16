@@ -32,6 +32,7 @@ def test_registry_entries_are_complete():
         assert d.period in ("D", "W", "M", "Q", "Y"), f"{name} 的 period 不认识：{d.period}"
         assert d.doc, f"{name} 没有 doc"
         assert d.depends, f"{name} 没声明依赖表"
+        assert d.depends_note, f"{name} 没写 depends_note（依赖的语义边界）"
 
 
 def test_derived_window_invariance():
