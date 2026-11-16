@@ -20,7 +20,7 @@ from typing import Callable
 import pandas as pd
 
 from datahub.fin.read import read
-from datahub.fin.sources.base import _num
+from datahub.fin.sources.base import _max_date, _num, _with_prefix
 
 
 API_BASE = "https://api.ashareapi.com/v1"
@@ -457,6 +457,95 @@ def ashare_financials_single(*, table: str = "", periods: int = 4,
     print(f"  financials(单只)：完成 {ok_n + fail_n} 只（成功 {ok_n}），"
           f"本次返回剩余 {len(rows)} 行（已落库的由 on_chunk 负责）")
     return pd.DataFrame(rows)
+
+
+def _trade_calendar() -> pd.DatetimeIndex | None:
+    """A 股交易日历（akshare，**免费、不占 ashareapi 额度**）。拿不到返回 None。"""
+    try:
+        from datahub.fin.sources import akshare as AK
+
+        df = AK._ak().tool_trade_date_hist_sina()
+        return pd.DatetimeIndex(pd.to_datetime(df["trade_date"]))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def ashare_daily_delta(*, table: str = "stock_daily", force_date: str = "",
+                       redownload: bool = False, close_after: str = "15:30",
+                       on_chunk: Callable[[pd.DataFrame], None] | None = None,
+                       chunk_codes: int = 0, **_) -> pd.DataFrame:
+    """**全市场单日** OHLC 增量（`/v1/market-kline`）：只写 1 天，绝不区间补齐。
+
+    为什么只写一天（2026-11-16 实测）：`/v1/market-kline` 一次 **500 credits**，
+    回 5571 只。补 2500 个交易日（10 年）= **125 万 credits = 池子的 2.5 倍**，补不起；
+    一天只花 500，一年 12.5 万（池子够 3.8 年）。**历史回补继续用同花顺 Fuyao 的
+    parquet**——它还自带复权事件，比这个端点值钱。
+
+    三道闸（少一道就会在某个周末白烧 500 credits）：
+    1. **该不该跑**：`force_date` 为空时，要求"今天是交易日且已过 `close_after`"，
+       否则直接跳过（周末/节假日/盘中 → 0 次调用）
+    2. **缺口多大**：与库里最大日期比，落后 **> 1 个交易日** → 警告并跳过，
+       **不自动补**（那是人工导 Fuyao 的事）
+    3. **有没有新数据**：落后 0 天 → 跳过
+
+    单位换算（wiki 明确）：端点 `volume` 是**手**、`amount` 是**元**；
+    而 `stock_daily.volume` 存**股**、`turnover` 存**成交额（元）** → volume ×100。
+    """
+    now = pd.Timestamp.now()
+    cal = _trade_calendar()
+    last = _max_date(table)
+    target = force_date or now.strftime("%Y-%m-%d")
+
+    if not force_date:
+        if cal is None:
+            print("  stock_daily 日更：交易日历拿不到，无法判断该不该跑，跳过"
+                  "（可显式传 force_date）")
+            return pd.DataFrame()
+        if now.normalize() not in cal:
+            print(f"  stock_daily 日更：{now.date()} 不是交易日，跳过")
+            return pd.DataFrame()
+        hh, mm = (int(x) for x in close_after.split(":"))
+        if (now.hour, now.minute) < (hh, mm):
+            print(f"  stock_daily 日更：还没收盘（{now:%H:%M} < {close_after}），跳过")
+            return pd.DataFrame()
+
+    if cal is not None and last and not redownload:
+        lag = int(((cal > pd.Timestamp(last)) & (cal <= pd.Timestamp(target))).sum())
+        if lag == 0:
+            print(f"  stock_daily 日更：库里已到 {last}，没有更新的交易日，跳过")
+            return pd.DataFrame()
+        if lag > 1:
+            print(f"  [警告] stock_daily 停在 {last}，距 {target} 落后 {lag} 个交易日——"
+                  f"**不自动补**（market-kline 一次 500 credits，补 10 年 = 池子的 2.5 倍）。"
+                  f"请用同花顺 Fuyao 的 parquet 补历史，之后本源自会从那天起日更。")
+            return pd.DataFrame()
+
+    res = api_get("/market-kline", date=target)
+    if is_quota_error(res) or quota_left("market-kline") == 0:
+        raise QuotaExhausted(f"market-kline 额度用完（{res.get('reason') or res.get('http')}）")
+    rows = [r for r in api_rows(res) if isinstance(r, dict)]
+    if not rows:
+        print(f"  stock_daily 日更：{target} 没有数据（非交易日或尚未发布）")
+        return pd.DataFrame()
+
+    out = pd.DataFrame({
+        "code": [_with_prefix(r.get("code")) for r in rows],
+        "date": str(target),
+        "open": [_num(r.get("open")) for r in rows],
+        "high": [_num(r.get("high")) for r in rows],
+        "low": [_num(r.get("low")) for r in rows],
+        "close": [_num(r.get("close")) for r in rows],
+        # ⚠️ 单位：`/v1/market-kline` 的 volume **已经是股**（2026-11-16 实测：
+        # 600519 回 4,177,980 股 vs 库里 Fuyao 4,177,984 股，差 4 股是两源取整）；
+        # `amount` 是交易额（元）→ 直接进 `turnover`（库里这一列就是成交额）。
+        # wiki 说的"volume 一律是手"适用于 `/v1/kline`，**不适用这个端点**。
+        "volume": [_num(r.get("volume")) for r in rows],
+        "turnover": [_num(r.get("amount")) for r in rows],
+    })
+    out = out.drop_duplicates(subset=["code", "date"], keep="last")
+    out = out.dropna(subset=["close"])
+    print(f"  stock_daily 日更：{target} 拉到 {len(out)} 只（{res.get('elapsed_ms')} ms）")
+    return out
 
 
 def ashare_shares(start: str = "", end: str = "", table: str = "",

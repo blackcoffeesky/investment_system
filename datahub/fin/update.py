@@ -38,6 +38,7 @@ INFRA_TABLES = ("metadata", "missing", "sync_log", "sqlite_sequence")
 
 # 自动建表时的元信息提示（不写的话会按日频猜测，过期判断会误报）
 FREQ_HINT = {
+    "stock_daily": ("D", "CN", 0),
     "retail_sales_mom": ("M", "NONE", 15),
     "world_tension": ("D", "US", 0),
     "gold_etf_holdings": ("M", "NONE", 40),
@@ -279,6 +280,15 @@ def run(start: str = "2000-01-01", end: str | None = None,
 
         try:
             obj = s.func(start=start, end=end, table=tables[0], **s.params)
+
+            # 源合法地"今天没数据"（未收盘 / 落后太多不补 / 已是最新）会返回空表。
+            # 这里必须兜住：往下走 `write_long` 会拿空 DataFrame 去要 code/date 列 → KeyError。
+            # **不写 sync_log**：留着重试。比如盘中跳过，收盘后再跑要能真的跑。
+            if obj is None or (hasattr(obj, "__len__") and len(obj) == 0):
+                print(f"  {tables[0]:22s} 跳过  本次无新数据  {s.func.__name__}")
+                results.append({"table": s.table, "status": "跳过", "rows": 0,
+                                "msg": "源返回空（未收盘 / 无新数据 / 落后太多不补）"})
+                continue
 
             if isinstance(obj, pd.DataFrame) and len(tables) > 1:
                 lack = [t for t in tables if t not in obj.columns]

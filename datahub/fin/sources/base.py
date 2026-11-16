@@ -79,3 +79,21 @@ def _existing_keys(table: str, key_of: Callable[[Any], Any]) -> set:
         return set()
     dates = df["date"] if "date" in df.columns else df.index
     return {key_of(x) for x in dates}
+
+
+def _max_date(table: str) -> str | None:
+    """库里这张表的最大日期，**只查 MAX、不把表读进内存**。
+
+    `stock_daily` 有上千万行，`_read_cached` 那种整表读法在这里要吃掉几百 MB。
+    """
+    from datahub.core.conn import connect
+
+    try:
+        con = connect()
+        try:
+            row = con.execute(f'SELECT MAX(date) FROM "{table}"').fetchone()
+        finally:
+            con.close()
+        return str(row[0]) if row and row[0] else None
+    except Exception:  # noqa: BLE001
+        return None

@@ -25,6 +25,7 @@ from datahub.fin.sources.base import Source, _with_prefix
 
 from datahub.fin.sources.ashare import (
     ashare_company,
+    ashare_daily_delta,
     ashare_financials,
     ashare_shares,
 )
@@ -115,6 +116,10 @@ SOURCES += [
     Source("shares_history", ashare_shares, shape="long", note="ashareapi /v1/snapshot"),
     # 季频财报：报告期 + 披露日，用于算 PE/PB/ROE
     Source("financials", ashare_financials, shape="long", note="ashareapi /v1/finance"),
+    # 日 K **增量**：只写 1 天（一次 500 credits）。历史回补用 Fuyao parquet，
+    # 本源自带三道闸（收盘后 / 落后>1 交易日不补 / 无新数据跳过），见函数 docstring。
+    Source("stock_daily", ashare_daily_delta, shape="long",
+           note="ashareapi /v1/market-kline；只日更、不补历史"),
 ]
 # 2026-11-14 删掉的源（表也一起删了，见 DESIGN §12）：
 # - `dividend_annual`（→ `derive.dividend_yield()`）

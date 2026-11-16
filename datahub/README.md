@@ -142,6 +142,12 @@ python -m datahub.fin.update --only vix,csi_all
 python -m datahub.fin.update --dry-run          # 只抓不写
 ```
 
+**日更（`stock_daily`）**：`stock_daily` 现在有一个只写**当天**的源（`market-kline`，
+1 次调用 / 5571 只 / 500 credits）。收盘后跑 `python -m datahub.fin.update --only stock_daily`
+即可；它自带三道闸（未收盘跳过 / 落后 >1 个交易日只警告不补 / 无新数据跳过）。
+**历史回补仍然用同花顺 Fuyao 的 parquet**（`python -m datahub.fin.intake.stock_daily`），
+复权事件 `adj_factor` 也只有 Fuyao 这一条路。细节见 DESIGN §15。
+
 数据源写在 `sources.py` 的 `SOURCES` 注册表里：
 
 ```python
