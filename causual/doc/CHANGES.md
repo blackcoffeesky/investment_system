@@ -2,6 +2,32 @@
 
 ---
 
+# v5.47（2026-11-16）：股息率改走 `series_map` 统一入口
+
+数据层把派生量统一登记进 `DERIVED` 注册表（`c595ed7` 之后），派生量的形态与普通表
+**完全同构**（`{名:列: Series}`）。所以 `cli.derived_series` 不再调专用方法：
+
+```python
+dy = port.dividend_yield()                          # 旧：只有派生量才有的专用方法
+got = port.series_map(["dividend_yield"])           # 新：跟普通表一个入口
+s = got["dividend_yield:yield_mcap_weighted"]
+```
+
+**为什么必须改**：`DataPort.breadth` / `dividend_yield` 这两个专用方法的存在本身就
+把"这是算出来的"暴露给了外部——而新设计的要求是**外部不该知道派生和原始的区别**。
+改完数据层才能删掉它们。
+
+| 项 | 结果 |
+|---|---|
+| 逐位比对 | `derived_series()` 返回的 Series **`Series.equals` = True**（同 index、同值）；面板 `DIVIDEND_YIELD` 2394 个非空值逐位相同 |
+| 卡片那一行 | 「股息率（市值加权）」`pos_value=2.1258`、`pos_pct=60%`、窗口 9 期、`asof` 全部不变 |
+| gold | 仍返回 `{}`（黄金不装配派生量） |
+| 引用清理 | `port.py` / `freshness.py` / `readme` / `PROBLEM` 里对 `DataPort.dividend_yield()` 的说明改成 `series_map`（`CHANGES` 里的历史条目保留不改） |
+
+`derived_series` 保留为 `CausalPort` 的接口（service 在调），只换内部实现。
+
+---
+
 # v5.46（2026-11-15）：面板列名统一为耦合层语义名（两套列名退场）
 
 ## 一、改了什么

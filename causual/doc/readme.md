@@ -194,7 +194,7 @@ regime（状态） / signal（边） / narrative（卡片）
 | 列 | 来源 |
 |---|---|
 | `SIZE_FLOW` / `ETF_DISPERSION` / `NATIONAL_ETF` / `NATIONAL_ETF_EVENT` | 由 `etf_shares` 现算 |
-| `DIVIDEND_YIELD` | `DataPort.dividend_yield()`（现算，不落表）；年度值对齐到**次年 1 月 1 日**，防前视 |
+| `DIVIDEND_YIELD` | 数据层现算（`series_map(["dividend_yield"])`，登记在 `DERIVED` 注册表，形态与表同构）；年度值对齐到**次年 1 月 1 日**，防前视 |
 | `CB_GOLD_BUY` | `cb_holdings.diff()` |
 | `ETF_FLOW` | `gold_etf_holdings.diff()` |
 
@@ -449,7 +449,7 @@ python -m causual.causual_core.cli regime --asset ashare   # 重拟状态模型
 python -m causual.causual_core.cli edges  --asset ashare   # 重估边 → 快照
 python -m causual.causual_core.cli audit  --asset ashare   # 方向一致性审计
 
-# 股息率：datahub 现算（DataPort.dividend_yield()，约 3.7 秒/次），
+# 股息率：数据层现算（series_map(["dividend_yield"])，约 3.7 秒/次），
 # 出卡时自动装配，没有单独的缓存命令了
 ```
 
@@ -546,4 +546,4 @@ python -m causual.causual_core.cli audit  --asset ashare   # 方向一致性审�
 
 ## 12. 版本
 
-当前 v5.46（2026-11-15）。逐版变更见 [`CHANGES.md`](CHANGES.md)。
+当前 v5.47（2026-11-16）。逐版变更见 [`CHANGES.md`](CHANGES.md)。

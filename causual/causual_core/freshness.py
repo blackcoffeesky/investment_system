@@ -60,7 +60,8 @@ MONTH_TABLES = (
 # 年频另放：`_period_end("Y")` 判得了过期，但归档月不能用它。
 #
 # `dividend_annual` 已从这里删除（v5.42）：causual 不再读那张表，
-# 股息率改由 `DataPort.dividend_yield()` 现算。数据层把它删了也不会有人疼。
+# 股息率改由数据层现算（`DERIVED["dividend_yield"]`，走 `series_map` 取）。
+# 数据层把它删了也不会有人疼。
 WATCH_MACRO = MONTH_TABLES
 
 

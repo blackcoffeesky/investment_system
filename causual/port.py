@@ -158,7 +158,8 @@ class CausalPort:
     def derived_series(self, asset: str, data) -> dict[str, pd.Series]:
         """面板需要的**派生量**（数据层现算、不落表的那种）。
 
-        目前只有 A 股的股息率（`data.dividend_yield()`）。CLI 与 service 共用
+        目前只有 A 股的股息率（走数据层的 `series_map`，派生量登记在
+        `DERIVED` 注册表里，形态与表同构）。CLI 与 service 共用
         这一个装配点——两边各自拼一份，必然漂移（一边有股息率、一边没有）。
 
         `data` 是 `DataPort`（由调用方传入）。返回的 Series 已按 `"表名:列名"`

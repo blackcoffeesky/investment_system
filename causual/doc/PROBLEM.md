@@ -290,7 +290,7 @@
 
   | 项 | 做法 |
   |---|---|
-  | 数据来源 | `DataPort.dividend_yield()`（现算、不落表），装配点在 `cli._load_series` |
+  | 数据来源 | 数据层现算，走 `series_map(["dividend_yield"])`（登记在 `DERIVED` 注册表）；装配点在 `cli.derived_series` |
   | 前视 | 年度值统一对齐到**次年 1 月 1 日**：年 Y 的除息日都在 Y 内，Y+1 才完整 |
   | 维度 | **只有位置，没有边际**（`pair_view(mom_col=None)`）；11 个年度点算 yoy 是伪量化 |
   | 分位窗口 | `freq="YE"` + `min_periods=8`，在**年度序列**上算（否则按月 resample 后窗口 60 期里只有 5 个不同值） |
