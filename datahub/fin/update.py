@@ -25,7 +25,8 @@ import pandas as pd
 
 from datahub import DB_PATH, ROOT
 from datahub.core.conn import connect
-from datahub.core.schema import DATA_DDL, migrate_data_tables, migrate_metadata
+from datahub.core.schema import (DATA_DDL, EAV_TABLES, migrate_data_tables,
+                                migrate_metadata)
 from datahub.fin.read import (LONG_SCHEMAS, STATIC_SCHEMAS,
                               _long_columns, _static_columns)
 from datahub.fin.sources import SOURCES, Source
@@ -172,6 +173,10 @@ def _ensure_meta(con: sqlite3.Connection) -> int:
         f" AND name NOT LIKE 'ops_%' AND name NOT LIKE 'sqlite_%'", INFRA_TABLES)]
     # 先纠正**已有表**的 market / lag：发布滞后和市场归属会变，
     # 但这段逻辑以前只在新表分支里跑，老表永远修不到（周末被当缺口的根因）。
+    # 登记为 EAV 的表：老库可能已被猜成 multi → 就地纠正（幂等）
+    for name in EAV_TABLES:
+        con.execute("UPDATE metadata SET kind='eav' WHERE name=? AND kind!='eav'", (name,))
+
     for name, (freq, market, lag) in FREQ_HINT.items():
         if name in have:
             con.execute("UPDATE metadata SET lag_days=?, market=?, freq=?"
@@ -182,7 +187,9 @@ def _ensure_meta(con: sqlite3.Connection) -> int:
         if name in have:
             continue
         cols = [r[1] for r in con.execute(f'PRAGMA table_info("{name}")')]
-        if name in LONG_SCHEMAS:
+        if name in EAV_TABLES:
+            kind = "eav"
+        elif name in LONG_SCHEMAS:
             kind = "long"
         elif name in STATIC_SCHEMAS:
             kind = "static"

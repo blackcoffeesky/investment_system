@@ -66,7 +66,7 @@ def expected_dates(freq: str, market: str, start: str, end: str) -> pd.DatetimeI
         return pd.DatetimeIndex(s.resample("W").apply(lambda x: x.index[-1] if len(x) else pd.NaT).dropna()).normalize()
     per = {"M": "M", "Q": "Q", "Y": "Y"}.get(freq, "M")
     return pd.DatetimeIndex(s.groupby(days.to_period(per)).apply(lambda x: x.index[-1]).dropna()).normalize()
-from datahub.core.schema import DATA_DDL
+from datahub.core.schema import DATA_DDL, EAV_TABLES
 
 
 def _conn(path: Path | None = None) -> sqlite3.Connection:
@@ -93,6 +93,51 @@ def ack(name: str, dates: list[str], reason: str = "", path: Path | None = None)
     return len(rows)
 
 
+
+def _eav_expected_period(today: "pd.Timestamp | None" = None) -> str:
+    """最近一期**已披露完成**的报告期：上一季度（`2026-11-17` → `2026-3`）。"""
+    t = today or pd.Timestamp.today()
+    q = (t.month - 1) // 3 + 1          # 当前季度
+    if q == 1:                          # Q1 的上一期是去年 Q4
+        return f"{t.year - 1}-4"
+    return f"{t.year}-{q - 1}"
+
+
+def _check_eav(con, name: str, spec: dict) -> tuple[dict, list[str]]:
+    """EAV 表的检查：**不 read**，直接按真实结构查。
+
+    2026-11-17 服务器事故：`finances`（EAV）被猜成 `multi`，`check` 去 `read` 它 →
+    `DatabaseError` → **validate 整条流水线被 block，卡片出不来**。
+    根因是"我能写进去"和"我能读出来"被混为一谈：写入路径给 EAV 用了，
+    `check` 却假设所有表都能 `read`。
+    """
+    pk = [str(c) for c in (spec.get("pk") or ())]
+    ent = str(spec.get("entity") or "")
+    per = str(spec.get("period") or "")
+    info: dict = {}
+    info["rows"] = int(con.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0])
+    if ent:
+        info["entities"] = int(con.execute(
+            f'SELECT COUNT(DISTINCT "{ent}") FROM "{name}"').fetchone()[0])
+    if per:
+        info["periods"] = int(con.execute(
+            f'SELECT COUNT(DISTINCT "{per}") FROM "{name}"').fetchone()[0])
+        info["latest"] = con.execute(f'SELECT MAX("{per}") FROM "{name}"').fetchone()[0]
+
+    issues: list[str] = []
+    if pk:
+        dup = con.execute(
+            f'SELECT COUNT(*) FROM (SELECT 1 FROM "{name}" GROUP BY '
+            + ", ".join(f'"{c}"' for c in pk) + " HAVING COUNT(*) > 1)").fetchone()[0]
+        if dup:
+            issues.append(f"主键重复 {dup} 组")
+    if per and info.get("latest"):
+        want = _eav_expected_period()
+        if str(info["latest"]) < want:
+            issues.append(f"最新报告期 {info['latest']} 落后于预期 {want}")
+    return info, issues
+
+
 def run(path: Path | None = None, recent_days: int = 90) -> pd.DataFrame:
     """返回问题清单。
 
@@ -115,6 +160,25 @@ def run(path: Path | None = None, recent_days: int = 90) -> pd.DataFrame:
     rows = []
     for m in meta.to_dict("records"):
         name = m["name"]
+        if str(m["kind"] or "") == "eav":
+            spec = EAV_TABLES.get(name)
+            if not spec:
+                rows.append({"name": name, "freq": "EAV",
+                             "issues": "eav 表没在 schema.EAV_TABLES 里登记"})
+                continue
+            con2 = _conn(path)
+            try:
+                info, issues = _check_eav(con2, name, spec)
+            finally:
+                con2.close()
+            if issues:
+                rows.append({"name": name, "freq": "EAV", "n": info.get("rows", ""),
+                             "issues": "；".join(issues)})
+            else:
+                print(f"  {name}: ok（eav，{info.get('rows'):,} 行 / "
+                      f"{info.get('entities', '?')} 只 / {info.get('periods', '?')} 期，"
+                      f"最新 {info.get('latest')}）")
+            continue
         try:
             obj = fin.read(name, path=path)
         except Exception as e:  # noqa: BLE001

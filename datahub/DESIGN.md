@@ -883,3 +883,37 @@ if r.status_code == 200:
 回填后与旧数据重叠的 227 行里，**只有 1 行变了**：`2026-11-05` 由 64 → 69。
 这是**源端修正了自己的历史值**（当天抓到的可能是临时分），不是我们写坏。
 这类差异要单独记：**"只增不改"防的是我们自己覆盖历史，不防源端修订**。
+
+## 20. 非标准形态的表要**登记**，不能靠列名猜（2026-11-17）
+
+**事故**：服务器状态机卡在 `validate`：
+
+```
+structural 数据不可用：finances：读取失败 DatabaseError
+```
+
+`finances` 是 EAV（`thscode, report, abilities, index_id, value`），但
+`_ensure_meta` 的分类是"列 == `["date","value"]` → single，否则 multi"，
+于是它被当成 `multi`；`check` 对所有表都调 `fin.read()` → `DatabaseError` →
+**validate 整个挂掉 → `generate_cards` 不跑 → 服务器出不了新卡**。
+
+**根因是"我能写进去"和"我能读出来"被混为一谈**：写入路径给了 EAV 一条
+`write_eav`，但检查路径假设所有表都能 `read`。
+
+### 规矩
+
+1. **形态登记在 `core/schema.EAV_TABLES`**（`pk` / `entity` / `period` 三样），
+   `_ensure_meta` **先查登记表**再兜底猜；老库的错 kind 会被就地纠正（幂等）。
+2. **`check` 遇到 `kind="eav"` 不调 `read`**，按真实结构验：
+   行数 / `COUNT(DISTINCT entity)` / `COUNT(DISTINCT period)` / 最新报告期 /
+   **主键唯一性**（`GROUP BY pk HAVING COUNT(*)>1`）。
+   报出来是 `ok（eav，4,096,812 行 / 5575 只 / 39 期，最新 2026-3）`，
+   **不再是"读取失败"**。
+3. **新鲜度按报告期比**：预期期 = 上一季度（`2026-11-17` → `2026-3`），
+   落后就报 `最新报告期 X 落后于预期 Y`。
+
+### 以后加表
+
+形态不是 `single` / `multi` / `long` / `static` 的（宽表转置、多层嵌套、EAV…），
+**先在 `EAV_TABLES` 这种登记处声明**，并让 `check` / `read` / 写路径都认它。
+**默认路径一定假设它是那四种之一**——猜错的下场是整条流水线被 block。

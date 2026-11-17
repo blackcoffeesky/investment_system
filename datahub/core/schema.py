@@ -13,6 +13,31 @@ from __future__ import annotations
 import sqlite3
 
 # ---------------------------------------------------------------- 金融数据
+#: **非标准形态的表在这里登记**，不要靠列名猜。
+#: 猜错过：`finances` 是 EAV（`thscode, report, abilities, index_id, value`），
+#: 因为列不等于 `["date","value"]` 被当成 `multi`，于是 `check` 去 `read` 它 →
+#: `DatabaseError` → **整条 validate 流水线被 block**（2026-11-17 服务器事故）。
+#:
+#: 加新表时：形态不是 single/multi/long/static 的，**先在这里登记**，
+#: 否则默认路径一定假设它可 `read`。
+EAV_TABLES: dict[str, dict[str, object]] = {
+    "finances": {
+        "pk": ("thscode", "report", "abilities", "index_id"),
+        "entity": "thscode",     # 覆盖度：有多少只
+        "period": "report",      # 覆盖度/新鲜度：报表期（"2026-3"）
+    },
+}
+
+# 老库补列（新库由 DATA_DDL 直接建好）。
+# 2026-11-16：`source` / `depends` 已**废弃**（派生量不进 metadata），改成"删列"，
+# 见 `METADATA_DROPS`。这里不再新增列。
+METADATA_MIGRATIONS: dict[str, str] = {}
+
+#: 要从老库里**删掉**的 metadata 列（幂等：列不在就跳过）。
+#: SQLite 3.35+ 支持 `ALTER TABLE ... DROP COLUMN`（本机 3.53）。
+METADATA_DROPS: tuple[str, ...] = ("source", "depends")
+
+
 DATA_DDL = """
 CREATE TABLE IF NOT EXISTS metadata (
     name        TEXT PRIMARY KEY,
@@ -53,15 +78,6 @@ CREATE TABLE IF NOT EXISTS "{name}" (
 );
 """
 
-
-# 老库补列（新库由 DATA_DDL 直接建好）。
-# 2026-11-16：`source` / `depends` 已**废弃**（派生量不进 metadata），改成"删列"，
-# 见 `METADATA_DROPS`。这里不再新增列。
-METADATA_MIGRATIONS: dict[str, str] = {}
-
-#: 要从老库里**删掉**的 metadata 列（幂等：列不在就跳过）。
-#: SQLite 3.35+ 支持 `ALTER TABLE ... DROP COLUMN`（本机 3.53）。
-METADATA_DROPS: tuple[str, ...] = ("source", "depends")
 
 # 数据表补列（列定义在 `fin/read.py` 的 LONG_SCHEMAS，这里只放"给老库补"的 DDL）
 DATA_MIGRATIONS: dict[str, dict[str, str]] = {
