@@ -160,8 +160,9 @@ def run(path: Path | None = None, recent_days: int = 90) -> pd.DataFrame:
     rows = []
     for m in meta.to_dict("records"):
         name = m["name"]
-        if str(m["kind"] or "") == "eav":
-            spec = EAV_TABLES.get(name)
+        # **登记表第一优先**：`metadata.kind` 是可被写坏的缓存（服务器上就还是 multi）
+        spec = EAV_TABLES.get(name)
+        if spec is not None or str(m["kind"] or "") == "eav":
             if not spec:
                 rows.append({"name": name, "freq": "EAV",
                              "issues": "eav 表没在 schema.EAV_TABLES 里登记"})

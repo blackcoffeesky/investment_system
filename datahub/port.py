@@ -114,6 +114,13 @@ class DataPort:
                     out[f"{t}:{c}"] = cast(pd.Series, got[c]).astype(float)
                 continue
             kind = kind_of(t)
+            if kind == "eav":
+                # EAV（如 `finances`）：没有 code/date 轴，不是时间序列。
+                # 和 static 一样**跳过并告警**，不把整个面板带崩；要取请按
+                # (实体, 期间) 直接查表。
+                print(f"[datahub] series_map 跳过 EAV 表 {t!r}：没有 code/date 轴，"
+                      f"不是时间序列（登记在 schema.EAV_TABLES）", file=sys.stderr)
+                continue
             if kind == "static":
                 print(f"[datahub] series_map 跳过 static 表 {t!r}：没有日期轴，"
                       f"不是时间序列", file=sys.stderr)

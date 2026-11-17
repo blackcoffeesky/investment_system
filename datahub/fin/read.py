@@ -48,6 +48,18 @@ def metadata(path: Path | None = None) -> pd.DataFrame:
 
 
 def kind_of(name: str, path: Path | None = None) -> str:
+    """表的形态。
+
+    **登记表第一优先，`metadata.kind` 只是缓存**（2026-11-17 服务器事故）：
+    老库里的 `kind` 可能是上个版本猜出来的（`finances` 被猜成 `multi`），
+    而纠正逻辑跑在 `update` 路径里——服务器只要没跑过 `update`，`check` 就会
+    拿着旧值去 `read`，直接 `DatabaseError` 把 `validate` 卡死。
+    """
+    from datahub.core.schema import EAV_TABLES
+
+    spec = EAV_TABLES.get(name)
+    if spec is not None:
+        return "eav"
     with _conn(path) as con:
         row = con.execute("SELECT kind FROM metadata WHERE name=?", (name,)).fetchone()
     return (row["kind"] if row else None) or "single"
@@ -63,6 +75,12 @@ def read(name: str, *, column: str | None = None,
     打到其它 kind 上会**打一行警告并忽略**——不能静默忽略，否则调用方会以为筛过了。
     """
     k = kind_of(name, path)
+    if k == "eav":
+        raise ValueError(
+            f"{name!r} 是 **EAV** 表（登记在 `datahub.core.schema.EAV_TABLES`），"
+            f"没有 `code`/`date` 轴，不能用 read()/read_long() 读。\n"
+            f"  按实体+期间取：SELECT * FROM {name} WHERE thscode=? AND report=?"
+            f"\n  看覆盖度：`python -m datahub.fin.check` 会给它单独一行")
     if k == "long":
         return read_long(name, start=start, end=end, codes=codes, path=path)
     if k == "static":

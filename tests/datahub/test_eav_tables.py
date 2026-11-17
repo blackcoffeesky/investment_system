@@ -14,10 +14,11 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 
 import pandas as pd
 
-from datahub.core.schema import EAV_TABLES
+from datahub.core.schema import DATA_DDL, EAV_TABLES
 from datahub.fin.check import _check_eav, _eav_expected_period
 
 
@@ -58,3 +59,36 @@ def test_check_eav_reports_coverage_and_no_issues():
     assert info["periods"] == 1
     assert issues == [], issues     # 2026-3 就是当前预期期
     con.close()
+
+
+def test_check_ignores_stale_kind_cache(tmp_path=None):
+    """**关键回归**：`metadata.kind` 是可被写坏的缓存，登记表才是真相。
+
+    2026-11-17 服务器事故：本地跑过 `update` → `_ensure_meta` 把 kind 改成 eav；
+    服务器没跑过 update → 还是 `multi` → `check` 信任存储值 → `read` → `DatabaseError`
+    → validate 卡死。**所以 check 必须查登记表，不能只信 metadata。**
+    """
+    import tempfile
+
+    from datahub.fin import check as C
+
+    db = Path(tempfile.gettempdir()) / "dh_eav_kind_cache.sqlite"
+    if db.exists():
+        db.unlink()
+    con = sqlite3.connect(str(db))
+    con.executescript(DATA_DDL)
+    con.execute("""CREATE TABLE finances (
+        thscode TEXT NOT NULL, report TEXT NOT NULL, abilities TEXT NOT NULL,
+        index_id TEXT NOT NULL, value TEXT,
+        PRIMARY KEY (thscode, report, abilities, index_id))""")
+    con.execute("INSERT INTO finances VALUES ('600519.SH','2026-3','growth','x','1')")
+    # 故意写坏缓存：kind 是上个版本猜出来的 multi
+    con.execute("INSERT INTO metadata(name, kind, freq) VALUES ('finances','multi','D')")
+    con.commit()
+    con.close()
+
+    rows = C.run(path=db)
+    names = set(rows["name"]) if len(rows) else set()
+    assert "finances" not in names, (
+        f"kind 缓存写着 multi 时 check 又去 read 它了：{rows.to_string() if len(rows) else ''}")
+    db.unlink()

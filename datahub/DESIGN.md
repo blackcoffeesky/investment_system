@@ -917,3 +917,36 @@ structural 数据不可用：finances：读取失败 DatabaseError
 形态不是 `single` / `multi` / `long` / `static` 的（宽表转置、多层嵌套、EAV…），
 **先在 `EAV_TABLES` 这种登记处声明**，并让 `check` / `read` / 写路径都认它。
 **默认路径一定假设它是那四种之一**——猜错的下场是整条流水线被 block。
+
+### 20.1 `kind` 是缓存，登记表才是真相（2026-11-17 二次修复）
+
+第一次修复只改了**写路径**（`_ensure_meta` 会把错 kind 纠正成 `eav`），
+但**读路径仍然信任存储值**：
+
+```
+本地 metadata:  ('finances', 'eav')     ← 本地跑过 update
+服务器 metadata: ('finances', 'multi')  ← 没跑过 update，还是旧值
+服务器 check:    finances 读取失败 DatabaseError
+```
+
+⇒ **纠正逻辑跑在 `update` 里，`check` 根本不经过 `update`。**
+
+改法：`kind_of()` **登记表第一优先**：
+
+```python
+spec = EAV_TABLES.get(name)
+if spec is not None:
+    return "eav"          # 不看 metadata
+```
+
+凡是按 kind 分派的地方都因此受益：
+
+| 位置 | 行为 |
+|---|---|
+| `read()` | 明确报错：**"是 EAV，没有 code/date 轴，不能用 read()"**（不是 `DatabaseError`——一个是"用法不对"，一个是"库坏了"） |
+| `series_map()` | **跳过并告警**（与 static 同待遇），不把整张面板带崩 |
+| `check` | 走 EAV 检查分支（登记表优先，其次才看 `metadata.kind`） |
+
+**回归测试**：把 `metadata.kind` 手动写回 `multi`，`check` 仍输出 `ok（eav…）`、
+`finances` 不进问题清单（`tests/datahub/test_eav_tables.py::test_check_ignores_stale_kind_cache`）。
+之前 3 条测试都在"kind 已经是 eav"的前提下过的，所以没抓到——**测试要造"缓存是坏的"这个前提**。
