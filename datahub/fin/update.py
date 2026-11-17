@@ -29,7 +29,7 @@ from datahub.core.schema import DATA_DDL, migrate_data_tables, migrate_metadata
 from datahub.fin.read import (LONG_SCHEMAS, STATIC_SCHEMAS,
                               _long_columns, _static_columns)
 from datahub.fin.sources import SOURCES, Source
-from datahub.fin.sources.ashare import QuotaExhausted, ashare_financials_single
+from datahub.fin.sources.ashare import QuotaExhausted
 
 MISSING_DIR = ROOT / "data" / "missing"
 
@@ -56,7 +56,6 @@ FREQ_HINT = {
     # 公司三表：低频 + 事件型
     "company": ("M", "CN", 0),          # 静态档案，每月刷
     "shares_history": ("Q", "CN", 0),   # 股本快照，季度刷
-    "financials": ("Q", "CN", 45),       # 财报披露滞后约 45 天
 }
 
 
@@ -395,16 +394,12 @@ def run(start: str = "2000-01-01", end: str | None = None,
     return pd.DataFrame(results)
 
 
-def backfill(table: str, *, chunk_calls: int = 10, single: bool = False,
-             **kw) -> dict:
-    """**逐批落库**地跑一个源（只对 `financials` 这类"一次抓一批"的源有意义）。
+def backfill(table: str, *, chunk_calls: int = 10, **kw) -> dict:
+    """**逐批落库**地跑一个源（只对"一次抓一批"的源有意义）。
 
     和 `run()` 的区别：`run()` 是"源函数全部返回后写一次"，中途被杀就颗粒无收
     （2026-11-14 一次 100 次调用、1000 只的尝试全白抓）。这里每落一批就
     `write_long` + `commit`，中断只丢最后不足一批的部分。
-
-    `single=True` 走**单只** `/v1/finance`（不消耗 `finance-batch` 日额度，
-    自适应退避）；否则走批量端点（100 次/日）。
 
     续跑不靠状态：源函数本身只抓"库里还没有的 code"，重跑自然接着补。
     `kw` 透传给源函数（如 `max_calls=` / `max_codes=` / `chunk_codes=`）。
@@ -435,11 +430,8 @@ def backfill(table: str, *, chunk_calls: int = 10, single: bool = False,
 
     try:
         try:
-            if single:
-                rest = ashare_financials_single(table=table, on_chunk=flush, **kw)
-            else:
-                rest = src.func(table=table, on_chunk=flush,
-                                chunk_calls=chunk_calls, **src.params, **kw)
+            rest = src.func(table=table, on_chunk=flush,
+                            chunk_calls=chunk_calls, **src.params, **kw)
             flush(rest)                      # 收尾：最后不足一批的行
         except QuotaExhausted as exc:
             # 额度用完是确定性的：不再重试、也不让异常冒出去，
@@ -527,22 +519,14 @@ if __name__ == "__main__":
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--force", action="store_true", help="忽略频率判断，强制更新")
     ap.add_argument("--backfill", default=None,
-                    help="逐批落库地回填这张表（如 financials）；配合 --max-calls")
+                    help="逐批落库地回填这张表；配合 --max-calls")
     ap.add_argument("--max-calls", type=int, default=100,
                     help="--backfill 时本轮最多打几次接口（默认 100 = 专业版日额度）")
     ap.add_argument("--chunk-calls", type=int, default=10,
                     help="--backfill 时每几次接口落一次库（默认 10）")
-    ap.add_argument("--single", action="store_true",
-                    help="--backfill 走**单只**接口（不占 finance-batch 日额度，自适应退避）")
-    ap.add_argument("--chunk-codes", type=int, default=50,
-                    help="--single 时每几只落一次库（默认 50）")
-    ap.add_argument("--max-codes", type=int, default=0,
-                    help="--single 时本轮最多处理几只（0 = 不设限，用于先跑 100 只验吞吐）")
     a = ap.parse_args()
     if a.backfill:
-        print(backfill(a.backfill, chunk_calls=a.chunk_calls, single=a.single,
-                       max_calls=a.max_calls,
-                       chunk_codes=a.chunk_codes, max_codes=a.max_codes))
+        print(backfill(a.backfill, chunk_calls=a.chunk_calls, max_calls=a.max_calls))
         raise SystemExit(0)
     df = run(start=a.start, end=a.end,
              only=[x.strip() for x in a.only.split(",")] if a.only else None,

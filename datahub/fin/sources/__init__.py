@@ -25,8 +25,6 @@ from datahub.fin.sources.base import Source, _with_prefix
 
 from datahub.fin.sources.ashare import (
     ashare_company,
-    ashare_daily_delta,
-    ashare_financials,
     ashare_shares,
 )
 from datahub.fin.sources.akshare import (
@@ -47,6 +45,7 @@ from datahub.fin.sources.akshare import (
     shibor3m,
     stock_market_cap,
 )
+from datahub.fin.sources import fuyao
 from datahub.fin.sources.other import (
     cot_gold_net,
     fred,
@@ -114,13 +113,18 @@ SOURCES += [
     Source("company", ashare_company, shape="static", note="ashareapi /v1/stocks"),
     # 当前股本快照：季度刷一次（历史变动靠事件推）
     Source("shares_history", ashare_shares, shape="long", note="ashareapi /v1/snapshot"),
-    # 季频财报：报告期 + 披露日，用于算 PE/PB/ROE
-    Source("financials", ashare_financials, shape="long", note="ashareapi /v1/finance"),
-    # 日 K **增量**：只写 1 天（一次 500 credits）。历史回补用 Fuyao parquet，
-    # 本源自带三道闸（收盘后 / 落后>1 交易日不补 / 无新数据跳过），见函数 docstring。
-    Source("stock_daily", ashare_daily_delta, shape="long",
-           note="ashareapi /v1/market-kline；只日更、不补历史"),
+    # 日 K **增量**：读 fuyao 的 **10 交易日 dump**（1.1 MB / 2 秒），
+    # 最多能补 10 个交易日（原来落后 >1 天就只能手工导 parquet）。
+    Source("stock_daily", fuyao.stock_daily_delta, shape="long",
+           note="fuyao dump daily-k-10d；覆盖最近 10 个交易日"),
+    # 除权事件：**不日更**（全市场 5,580 次调用 ≈ 30 分钟）。事件稀疏，
+    # 用 `--backfill adj_factor --max-calls N` 分批跑；口径已逐位对过 5 只票 141 个事件。
+    Source("adj_factor", fuyao.adj_factor_delta, shape="long", enabled=False,
+           note="fuyao corporate-actions/adjustment-factors；手动 backfill"),
 ]
 # 2026-11-14 删掉的源（表也一起删了，见 DESIGN §12）：
 # - `dividend_annual`（→ `derive.dividend_yield()`）
 # - `dividend`（→ 数据并入 `adj_factor`；要全市场分红就写新源直接进 adj_factor）
+# 2026-11-17 删掉的源：
+# - `ashare_financials`（`financials` 表）→ 改由同花顺 `finances`（EAV）承载
+# - `ashare_daily_delta`（ashareapi `/v1/market-kline`，500 credits/次）→ 换 fuyao dump
