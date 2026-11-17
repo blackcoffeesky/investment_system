@@ -698,11 +698,14 @@ INSERT INTO t (date, c1, c2) … ON CONFLICT(date) DO UPDATE SET c1=excluded.c1,
 若某列从 **> 50%** 掉到 **0** → 打 `[列熔断]` 到 stderr。整列被清空不可能是正常业务，
 只可能是源缺列/写路径错——**宁可吵**。这次的事故如果早有这条，会当场报出来。
 
-**已知环境限制（2026-11-16）**：本机 **eastmoney 的接口不通**
-（akshare `index_zh_a_hist` 报 `ProxyError` / `RemoteDisconnected`，有代理/无代理都试过）。
-所以 `csi_all` 缺的 3 天（11-11~11-13）是用 **ashareapi `/kline`（`sh000985`）** 补的：
+**环境限制（已过时，2026-11-17 更新）**：2026-11-16 本机 **eastmoney 不通**
+（akshare `index_zh_a_hist` 报 `ProxyError` / `RemoteDisconnected`，有代理/无代理都试过），
+所以 `csi_all` 缺的 3 天（11-11~11-13）当时用 **ashareapi `/kline`（`sh000985`）** 补的：
 `amount` 元 ÷ 1e8 = **亿元**（与腾讯口径一致，已对账）、`turnover` 直接用（%）。
-以后想用 akshare 补指数历史，得先解决网络，别再重试一遍。
+
+**2026-11-17 已恢复**：`index_zh_a_hist('000985')` 正常返回（11-17 成交额 1.394e12 元、
+换手 1.32），eastmoney 也回到 HTTP 200。⇒ **再遇到就当"临时故障"处理：先测连通性，
+通了就用 akshare（免费），别急着判定为环境限制、更别为此改口径。**
 
 ## 17. 取数入口的唯一性 + 进程内缓存（2026-11-16）
 
@@ -729,3 +732,48 @@ clear_cache()                                        # 数据变了就丢
 - **不做 TTL / mtime 校验**（后话）；返回的是**副本**，调用方改它不会污染缓存
 - **边界（知道比不知道好）**：多 worker 时**每个进程各一份**；**别的进程写库不会让它失效**
   （只有本进程的 `run_update` 会清）。看到"库里更新了、服务还读旧值"，第一嫌疑是这里
+
+## 18. 换源到 Fuyao（同花顺，2026-11-17）
+
+四个源迁到 Fuyao：**行情快照 / 10 年日 K dump / 财务指标 / 除权事件**。
+客户端在 `datahub/fin/sources/fuyao.py`（**所有 fuyao 调用只走它**）。
+
+| 用途 | 端点 / dump | 成本 |
+|---|---|---|
+| `stock_daily` 日更 | dump **`daily-k-10d`** | **1.1 MB / 2 秒**，一次覆盖最近 10 个交易日 |
+| 历史回补 | dump **`daily-k`** | **182.6 MB / 366 秒**，1,040 万行 / 5,580 只 / 10 年 |
+| 财务指标（`finances`） | `financials/indicators` | 一季 5,578 次 ≈ 31 分钟（**默认关**） |
+| 除权事件（`adj_factor`） | `corporate-actions/adjustment-factors` | 5,578 次 ≈ 30 分钟（**默认关**） |
+| 全市场行情快照 | `prices/snapshot` | ~56 页；**盘中实时，别当日线用** |
+
+**历史回补只用 dump，不要逐只抓**（`daily-k` 一次就是全市场 10 年）。
+日更走 `daily-k-10d`：它同时解决了原来"落后 >1 天就只能手工导 parquet"的问题。
+
+### 18.1 三个必须知道的坑（都实测踩过）
+
+1. **`date_ms` 是 UTC 毫秒戳**：`pd.to_datetime(ms, unit="ms")` 会得到**前一天**
+   （上海 00:00 = UTC 前一日 16:00）。必须 `tz_convert("Asia/Shanghai")`。
+   第一次没转，把 2026-11-13 的数据读成了 11-12。
+2. **`turnover` 是成交额（元）**，不是换手率（别处这个名字常指换手率）。
+3. **`thscode` 必须带交易所后缀**（`600519.SH`），库内是 `sh600519`。
+   转换只许有一份：`fuyao.to_thscode()` / `fuyao.to_raw_code()`。
+
+单位已与库里**逐字段对账**：2026-11-13 平安银行的
+open/high/low/close/volume/turnover **6 个字段与 dump 完全相同** ⇒ 可直接落。
+
+### 18.2 额度：不限累计调用，只限流
+
+**不要拿 ashareapi 的"额度/降级"思路套 fuyao**：它不限累计调用次数，
+只有限流（HTTP 429 / `code=4001`，按 1/2/4/8 秒退避即可）。
+所以"全市场逐只抓"（5,578 次）是可行的常态操作。
+
+⚠️ 一个反例：`code=3002`（"No adjustment events"）是**这票没有分红**，
+**不是错误**。2026-11-17 第一次回填时把它当异常抛，几百只"失败"全是这个原因。
+
+### 18.3 `finances` 是 EAV，不走 `read`
+
+`finances`（4,096,812 行 / 5,575 只 / 39 期 2017-1~2026-3）是 EAV 表：
+主键 **`(thscode, report, abilities, index_id)`**（注意是 4 列，同一指标名可能属于
+两个 ability），`value` 是 **TEXT**（接口返回字符串，原样入库避免浮点往返）。
+它没有 `code`/`date` 列 ⇒ **不能 `read` / `read_long`**；`metadata.kind` 自动猜成
+`multi` 只是显示，别当真。写入用 `update.write_eav()`。

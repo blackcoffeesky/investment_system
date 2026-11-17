@@ -254,3 +254,30 @@ def etf_shares(start: str, end: str, weeks: int | None = 8,
 
 
 ALL_ETFS = sorted({c for cs in INDEX_ETFS.values() for c in cs})
+
+
+def shares_from_spot() -> pd.DataFrame:
+    """全市场**股本**（`company.total_shares` / `float_shares`）。
+
+    akshare 的 `stock_zh_a_spot_em()` 直接给总市值/流通市值，除以最新价就是股本。
+    2026-11-17 与库里已有的 `company` 逐只对过：**中位相对误差 1.7e-11、
+    超过 1% 的占 0%**（说明现有值本来就是这么算的）⇒ 可以固化成本源。
+
+    ⚠️ 全市场要拉 59 页（**~75 秒**），季度跑一次足够。
+    """
+    ak = _ak()
+    d = ak.stock_zh_a_spot_em()
+    if d is None or d.empty:
+        return pd.DataFrame()
+    price = pd.to_numeric(d["最新价"], errors="coerce")
+    out = pd.DataFrame({
+        "code": [str(c) for c in d["代码"]],
+        "total_shares": pd.to_numeric(d["总市值"], errors="coerce") / price,
+        "float_shares": pd.to_numeric(d["流通市值"], errors="coerce") / price,
+    })
+    out = out.dropna(subset=["total_shares"])
+    # 裸 6 位 → 库内前缀（`_with_prefix` 在 ashare 里，这份是同一口径）
+    from datahub.fin.sources.ashare import _with_prefix
+
+    out["code"] = [_with_prefix(c) for c in out["code"]]
+    return out.drop_duplicates(subset=["code"], keep="last")

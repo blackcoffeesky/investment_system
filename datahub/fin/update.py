@@ -97,6 +97,27 @@ def _write(con: sqlite3.Connection, table: str, obj, end: str) -> int:
     return len(rows)
 
 
+def write_eav(con: sqlite3.Connection, table: str, df: pd.DataFrame) -> int:
+    """写 **EAV** 表（如 `finances`）：主键 `(thscode, report, abilities, index_id)`。
+
+    为什么不复用 `write_long`：long 的主键是 `(code, date)`，而 EAV 没有日期轴、
+    主键是 4 列；`value` 是 **TEXT**（接口返回的是字符串 `"89.12000000"`，
+    保持原样入库，避免浮点往返丢精度）。
+    """
+    cols = ["thscode", "report", "abilities", "index_id", "value"]
+    use = [c for c in cols if c in df.columns]
+    if "value" in use:
+        df = df.copy()
+        df["value"] = df["value"].astype(str)
+    sql = (f'INSERT INTO "{table}" ({", ".join(use)}) '
+           f'VALUES ({", ".join("?" * len(use))}) '
+           f'ON CONFLICT(thscode, report, abilities, index_id) DO UPDATE SET '
+           + ", ".join(f"{c}=excluded.{c}" for c in use[3:]))
+    con.executemany(sql, df[use].itertuples(index=False, name=None))
+    con.commit()
+    return len(df)
+
+
 def _column_counts(con: sqlite3.Connection, table: str,
                    cols: list[str]) -> dict[str, int]:
     """各列当前的非空行数（列不存在时记 0）。写前调用，用于"列熔断"。"""
@@ -352,7 +373,8 @@ def run(start: str = "2000-01-01", end: str | None = None,
                 continue
 
             if s.shape in ("long", "static"):
-                writer = write_long if s.shape == "long" else write_static
+                writer = (write_long if s.shape == "long"
+                          else write_eav if s.shape == "eav" else write_static)
                 if dry_run:
                     print(f"  [dry] {tables[0]:22s} {s.shape:6s} {len(obj):5d} 行  {s.func.__name__}")
                     results.append({"table": s.table, "status": "dry", "rows": len(obj), "msg": ""})

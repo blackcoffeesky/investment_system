@@ -121,6 +121,10 @@ SOURCES += [
     # 用 `--backfill adj_factor --max-calls N` 分批跑；口径已逐位对过 5 只票 141 个事件。
     Source("adj_factor", fuyao.adj_factor_delta, shape="long", enabled=False,
            note="fuyao corporate-actions/adjustment-factors；手动 backfill"),
+    # 财务指标（EAV）：**默认关**。一季 5,578 只 ≈ 31 分钟，财报季手动开：
+    #   python -m datahub.fin.update --only finances
+    Source("finances", fuyao.finances_delta, shape="eav", enabled=False,
+           note="fuyao financials/indicators；财报季手动开"),
 ]
 # 2026-11-14 删掉的源（表也一起删了，见 DESIGN §12）：
 # - `dividend_annual`（→ `derive.dividend_yield()`）

@@ -15,8 +15,13 @@
    `volume` = **股**、`turnover` = **成交额（元）**。
    ⚠️ `turnover` 这个名字在别处常指"换手率"，**fuyao 这里是成交额**。
 
-不限制累计调用次数，只有限流（429 / `code=4001`）——所以补历史用 dump，
-不要用"每只一次"的接口去凑全量。
+**不限累计调用次数，只限流**（HTTP 429 / `code=4001`）——所以"全市场逐只抓"是
+**可行**的（`adj_factor` 5,578 次、`finances` 一季 5,578 次），别被 ashareapi 那套
+"额度/降级"的思路带偏。限流按 1/2/4/8 秒退避即可。
+
+**`thscode` 必须带交易所后缀**（`600519.SH` / `000001.SZ` / `920000.BJ`），
+不接受纯 6 位码；而库里统一是 `sh600519` 格式。**转换只许有一份**：
+`to_thscode()` / `to_raw_code()` 就是它，别在调用处各写一遍 `code[2:]`。
 """
 
 from __future__ import annotations
@@ -33,6 +38,26 @@ ENV_FILE = Path(__file__).resolve().parents[3] / ".env"
 
 #: dump 三种：全市场 10 年日 K / 最近 10 交易日日 K / 全历史复权因子事件
 DUMP_KINDS = ("daily-k", "daily-k-10d", "adjustment-factors")
+
+#: 交易所前缀 → fuyao 后缀（`sh` → `SH`）
+_SUFFIX = {"sh": "SH", "sz": "SZ", "bj": "BJ"}
+
+
+def to_thscode(code: str) -> str:
+    """库里的 `sh600519` → fuyao 的 `600519.SH`。**全库唯一的转换入口**。"""
+    c = str(code).strip().lower()
+    if c[:2] in _SUFFIX:
+        return f"{c[2:]}.{_SUFFIX[c[:2]]}"
+    raise ValueError(f"不是带前缀的库内代码：{code!r}（应为 sh600519 这种）")
+
+
+def to_raw_code(thscode: str) -> str:
+    """fuyao 的 `600519.SH` → 库里的 `sh600519`。"""
+    t = str(thscode).strip().upper()
+    ticker, _, suffix = t.partition(".")
+    if suffix.lower() not in _SUFFIX:
+        raise ValueError(f"不认识的交易所后缀：{thscode!r}")
+    return suffix.lower() + ticker
 
 
 def api_key() -> str:
@@ -171,15 +196,11 @@ def stock_daily_delta(**_ignored) -> pd.DataFrame:
     覆盖 **最多 10 个交易日**的缺口——比原来"落后超过 1 天就拒绝"好：
     原来一旦漏跑就只能手工导 parquet。
     """
-    from datahub.fin.sources.ashare import _with_prefix
-
     df = dump_frame("daily-k-10d")
     if df.empty:
         return pd.DataFrame()
-    ths = df["thscode"].astype(str)
-    tickers = ths.str.split(".").str[0]
     out = pd.DataFrame({
-        "code": [_with_prefix(t) for t in tickers],
+        "code": [to_raw_code(t) for t in df["thscode"].astype(str)],
         "date": df["date"].astype(str),
         "open": pd.to_numeric(df["open_price"], errors="coerce"),
         "high": pd.to_numeric(df["high_price"], errors="coerce"),
@@ -195,6 +216,53 @@ def stock_daily_delta(**_ignored) -> pd.DataFrame:
     return out
 
 
+def finances_delta(*, table: str = "finances", reports: list[str] | None = None,
+                   codes: list[str] | None = None, max_codes: int = 0,
+                   on_chunk=None, **_ignored) -> pd.DataFrame:
+    """`finances` 源：逐只 × 逐报告期取财务指标（EAV 行）。
+
+    **默认 `enabled=False`，财报季手动开**：一季 5,578 只 ≈ 5,578 次调用
+    （≈ 31 分钟 @3 req/s）。库里已经有 **2017-1 ~ 2026-3**（4,096,812 行，
+    最新两期 5,560 / 5,572 只），所以**正常增量只需要当期**：
+
+        python -m datahub.fin.update --only finances -r 2027-1      # 下一期
+
+    `reports` 不传时只抓 `2026-4` 以来（下一期是年报）；已有行由
+    `ON CONFLICT … DO UPDATE` 覆盖，重复跑不会写重。
+    """
+    from datahub.fin.sources.ashare import _all_codes
+
+    want = reports or ["2026-4"]
+    todo = list(codes) if codes else _all_codes()
+    if max_codes:
+        todo = todo[:max_codes]
+    out: list[pd.DataFrame] = []
+    for i, code in enumerate(todo, 1):
+        ths = to_thscode(code)
+        for report in want:
+            try:
+                data = indicators(ths, report)
+            except Exception:  # noqa: BLE001
+                continue
+            ab = data.get("abilities") or []
+            if not ab:
+                continue
+            rows = [{"thscode": data.get("thscode") or ths,
+                     "report": data.get("report") or report,
+                     "abilities": a.get("ability"),
+                     "index_id": ind.get("index_id"),
+                     "value": ind.get("value")}
+                    for a in ab for ind in (a.get("indicators") or [])]
+            if rows:
+                out.append(pd.DataFrame(rows))
+        if on_chunk is not None and i % 200 == 0 and out:
+            on_chunk(pd.concat(out, ignore_index=True))
+            out = []
+        if i % 500 == 0:
+            print(f"  finances：已取 {i}/{len(todo)} 只")
+    return pd.concat(out, ignore_index=True) if out else pd.DataFrame()
+
+
 def adj_factor_delta(*, table: str = "adj_factor", max_codes: int = 0,
                      codes: list[str] | None = None,
                      on_chunk=None, **_ignored) -> pd.DataFrame:
@@ -208,15 +276,14 @@ def adj_factor_delta(*, table: str = "adj_factor", max_codes: int = 0,
     `enabled=False`，用 `--backfill adj_factor --max-calls N` 分批跑。
     事件是稀疏的（一只票一年 1~2 次），一周刷一次足够。
     """
-    from datahub.fin.sources.ashare import _all_codes, _exchange_of
+    from datahub.fin.sources.ashare import _all_codes
 
     todo = list(codes) if codes else _all_codes()
     if max_codes:
         todo = todo[:max_codes]
     out: list[pd.DataFrame] = []
     for i, code in enumerate(todo, 1):
-        # 库里的 code 是 `sh600519`；接口要 `600519.SH`
-        ths = f"{code[2:]}.{_exchange_of(code)}"
+        ths = to_thscode(code)
         try:
             df = adjustment_factors(ths, code)
         except Exception as exc:  # noqa: BLE001
@@ -242,12 +309,17 @@ def adjustment_factors(thscode: str, raw_code: str) -> pd.DataFrame:
     `dividend_per_share=28.02423` 与库里 `adj_factor.dividend` **逐位相同** ⇒ 单位一致。
     """
     body = api_get("/api/a-share/corporate-actions/adjustment-factors", thscode=thscode)
+    empty = pd.DataFrame(columns=["code", "date", "dividend", "bonus",
+                                  "allot_ratio", "allot_price"])
+    # `code=3002` = **这只票从来没有分红/送股**（实测 920011.BJ），是正常结果不是错误。
+    # 早先把它当异常抛，全市场回填时几百只"失败"其实就是这个（2026-11-17）。
+    if body.get("code") == 3002 or "No adjustment events" in str(body.get("message")):
+        return empty
     if body.get("code") != 0:
-        raise RuntimeError(f"{thscode} 除权事件取数失败：{body.get('message')}")
+        raise RuntimeError(f"{thscode} 除权事件取数失败：{body.get('code')} {body.get('message')}")
     rows = _rows(body)
     if not rows:
-        return pd.DataFrame(columns=["code", "date", "dividend", "bonus",
-                                     "allot_ratio", "allot_price"])
+        return empty
     df = pd.DataFrame(rows)
     out = pd.DataFrame({
         "code": raw_code,
