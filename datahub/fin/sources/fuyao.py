@@ -187,32 +187,99 @@ def indicators(thscode: str, report: str) -> dict[str, Any]:
 
 
 def stock_daily_delta(**_ignored) -> pd.DataFrame:
-    """`stock_daily` 的日更源：读 **10 交易日 dump**，返回 long 行。
+    """`stock_daily` 日更源：**全市场行情快照分页**（`prices/snapshot`）。
 
-    为什么不用 `prices/snapshot` 分页：快照是**盘中实时**的，收盘前跑会把半天的
-    成交量当日线写进去；dump 是官方日 K。而且 10 日 dump 只有 **1.1 MB / 2 秒**，
-    比逐页抓 56 页快、也不会写进半天数据。
+    为什么不用 dump：`daily-k-10d` 是 1.1 MB / 2 秒，而 snapshot 分页
+    **5,583 只 / 3 页（limit=2000）/ ~2 秒**，日更只需要当天，不用搬 10 天。
 
-    覆盖 **最多 10 个交易日**的缺口——比原来"落后超过 1 天就拒绝"好：
-    原来一旦漏跑就只能手工导 parquet。
+    五个必须做对的地方（都是踩过的）：
+
+    1. **交易日归属用 `data.timestamp`**，不用本机日期：它是毫秒戳（Asia/Shanghai），
+       决定这行属于哪一天。**只有"今天已收盘（≥15:30）且 timestamp 的日期 == 今天"
+       才写**——否则打印原因跳过（盘中写进去就是半天的量；周末跑 timestamp 是上个交易日，
+       那就是重复写）。
+    2. **单位**：`volume` = 股、`turnover` = **成交额（元）**（不是换手率）。
+       已与 `stock_daily` 全市场逐只对过（见 DESIGN §18.5），不是抽查一只。
+    3. **不复权**：snapshot 的价格是原始价，`stock_daily` 也是原始价（复权靠 `adj_factor`
+       现算）。`prev_price` 同样是未复权前收，本函数**不使用**它。
+    4. **分页边界**：本页条数 < limit 即到末尾；**空页要报错**（异常/全停牌不能被当成
+       "到末尾"静默退出）；另有 60 页上限防死循环。
+    5. dump 只作为**历史回补**手段保留（`daily-k` 10 年），**不在日更路径里**。
     """
-    df = dump_frame("daily-k-10d")
-    if df.empty:
+    from zoneinfo import ZoneInfo
+
+    now = pd.Timestamp.now(tz="Asia/Shanghai")
+
+    pages: list[pd.DataFrame] = []
+    offset, page_size, page = 0, 2000, 0
+    trade_date = None
+    while True:
+        body = api_get("/api/a-share/prices/snapshot", limit=page_size, offset=offset)
+        if body.get("code") != 0:
+            raise RuntimeError(f"snapshot 取数失败：{body.get('code')} {body.get('message')}")
+        data = body.get("data") or {}
+        items = data.get("item") or []
+        if not items:
+            raise RuntimeError(
+                f"snapshot 第 {page + 1} 页返回 0 条（offset={offset}）——"
+                f"是上游异常还是全市场停牌？不能当成'已到末尾'")
+        page += 1
+        # ① 交易日：全部以第一页的 timestamp 为准（同一次请求必然同一天）
+        stamp = pd.to_datetime(data["timestamp"], unit="ms", utc=True)
+        day = stamp.tz_convert(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
+        if trade_date is None:
+            trade_date = day
+        elif day != trade_date:
+            raise RuntimeError(f"分页途中交易日变了：{trade_date} → {day}（跨零点？）")
+        pages.append(pd.DataFrame(items))
+        if len(items) < page_size:
+            break
+        offset += page_size
+        if page >= 60:
+            raise RuntimeError("snapshot 超过 60 页仍未结束，疑似分页参数失效")
+
+    df = pd.concat(pages, ignore_index=True)
+    assert trade_date is not None
+
+    # ① 只在收盘后、且 timestamp 就是今天时才写
+    if trade_date != now.strftime("%Y-%m-%d"):
+        print(f"  stock_daily 日更：snapshot 的交易日是 {trade_date}，今天是 "
+              f"{now:%Y-%m-%d}（周末/节假日）→ 不写")
         return pd.DataFrame()
+    if now.hour * 60 + now.minute < 15 * 60 + 30:
+        print(f"  stock_daily 日更：现在 {now:%H:%M} 未收盘 → 不写（盘中数据是半天的量）")
+        return pd.DataFrame()
+
+    # 已有该交易日（重复跑 / 已经用 dump 补过）→ 直接跳过。
+    # ⚠️ 必须用 SQL `MAX(date)`，不能 `read("stock_daily")`——整表 1,040 万行读一次要 40 秒，
+    # 日更的意义就没了（2026-11-17 实测：改成 SQL 后 57s → 4s）。
+    try:
+        from datahub.core.conn import connect
+
+        con = connect()
+        try:
+            latest = con.execute("SELECT MAX(date) FROM stock_daily").fetchone()[0]
+        finally:
+            con.close()
+        if latest and str(latest)[:10] >= trade_date:
+            print(f"  stock_daily 日更：{trade_date} 已存在（最新 {latest}）→ 跳过")
+            return pd.DataFrame()
+    except Exception:  # noqa: BLE001
+        pass
+
     out = pd.DataFrame({
         "code": [to_raw_code(t) for t in df["thscode"].astype(str)],
-        "date": df["date"].astype(str),
+        "date": trade_date,
         "open": pd.to_numeric(df["open_price"], errors="coerce"),
         "high": pd.to_numeric(df["high_price"], errors="coerce"),
         "low": pd.to_numeric(df["low_price"], errors="coerce"),
-        "close": pd.to_numeric(df["close_price"], errors="coerce"),
-        # 单位已与库里逐字段对账：volume=股、turnover=成交额（元）
+        "close": pd.to_numeric(df["last_price"], errors="coerce"),
+        # 单位：volume=股、turnover=成交额（元）
         "volume": pd.to_numeric(df["volume"], errors="coerce"),
         "turnover": pd.to_numeric(df["turnover"], errors="coerce"),
     })
-    out = out.dropna(subset=["close"]).drop_duplicates(subset=["code", "date"], keep="last")
-    print(f"  stock_daily 日更（fuyao dump 10d）：{len(out)} 行，"
-          f"日期 {out['date'].min()} ~ {out['date'].max()}")
+    out = out.dropna(subset=["close"]).drop_duplicates(subset=["code"], keep="last")
+    print(f"  stock_daily 日更（fuyao snapshot · {page} 页）：{len(out)} 只 / {trade_date}")
     return out
 
 
