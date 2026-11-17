@@ -83,7 +83,7 @@ panel = get_data(state_assets.panel_of(asset))     # DataFrame，index=交易日
   这是 AGENTS §4'③ 的硬约束——传 dict 等于下游再拼一次，装配做两遍。
 - `config.REQUIRED_TABLES` **不参与取数**（`get_data` 按 adapter 自己的声明取），
   它是 `port.required_tables()` 的装配清单（service / causual cli 拿它做并集）。
-  `tests/test_state_features_fresh.py::test_required_tables_match_adapter` 把它与
+  `tests/state_layer/test_state_features_fresh.py::test_required_tables_match_adapter` 把它与
   `tables_of(Panel)` **钉成相等**——加表/删表只改一处，另一处会红。
 
 ---
@@ -156,7 +156,7 @@ features ──► extreme: 认领极端日，返回剩下的
 1. 建 `model/<name>/`，实现 `Model` 协议
 2. `model/__init__.py` 的 `MODELS` 登记一行
 3. 资产 `config.MODEL_CHAIN` 里加上它
-4. **补测试**：`tests/test_model_contract.py` 的 roundtrip + 链过滤
+4. **补测试**：`tests/state_layer/test_model_contract.py` 的 roundtrip + 链过滤
 
 候选：Student-t HMM（把协方差换成 t 分布，极端日更稳健）、HSMM（显式建模持续期）。
 
@@ -232,7 +232,7 @@ saved_models/<asset>/
   `config.FEATURES` 里从来没有宽度类特征，所以摘除**不影响模型、不需要重拟合**
 - **特征整列 NaN 是静默的**：HMM 的 `valid_index` 要求 `FEATURES` 全非空，一列整体失效就会
   一行都不认领——标签停更、卡片因「没有状态标签」被拒、页面 `transition` 缺 `stay_prob`，
-  全程不抛异常。`tests/test_state_features_fresh.py` 守着「每列最后有效日期不早于
+  全程不抛异常。`tests/state_layer/test_state_features_fresh.py` 守着「每列最后有效日期不早于
   `csi_all` 最近交易日 + 5 个交易日」
 - **欠账：黄金 `vol_z` 缺 `.replace(0, np.nan)`**（现在是 `/(rolling.std())`）→ 整段横盘
   会给 `±inf`，而 A 股的 `volume_z` 走 `rolling_z` 有这层保护。改它会动黄金特征

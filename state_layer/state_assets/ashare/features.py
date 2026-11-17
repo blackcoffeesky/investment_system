@@ -83,7 +83,7 @@ def build(df: pd.DataFrame) -> pd.DataFrame:
         out["etf_dispersion"] = df["ETF_DISPERSION"]
     else:
         print("[状态特征] 面板里没有 ETF_DISPERSION → etf_dispersion 整列 NaN；"
-              "HMM 会因此一天都不认领（tests/test_state_features_fresh.py 会红）",
+              "HMM 会因此一天都不认领（tests/state_layer/test_state_features_fresh.py 会红）",
               file=sys.stderr)
         out["etf_dispersion"] = pd.Series(np.nan, index=df.index)
     # 返回全部列：用哪几列由 config.FEATURES 决定（老模型据此仍可推理）

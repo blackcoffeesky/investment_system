@@ -8,9 +8,13 @@
 和 `+nan`（政策利率几个月没动 → 滚动标准差 0 → z 算不出）藏了很久。
 """
 
+
 from __future__ import annotations
 
 from pathlib import Path
+
+#: 运行超过 10 秒（`run_tests.py --fast` 会跳过）
+SLOW = True
 
 # 每个资产只生成一次，两条测试共用（生成一次要十几秒）
 _GENERATED: dict[str, tuple[Path, str, list[Path]]] = {}
@@ -24,6 +28,7 @@ def _generate(asset: str) -> tuple[Path, str, list[Path]]:
     顺手验证了 `macro_month(asset=...)` 算出来的月份就是实际落盘的位置
     （这正是黄金被 A 股的表拖到 10 月那个 bug 的检查点）。
     """
+
     from causual.causual_core import pipeline
     from causual.causual_core.cli import _load_panel
     from causual.port import get_port as causal_port

@@ -44,7 +44,7 @@ datahub（表 / 派生量）  →  shared/adapter.get_data()  →  DataFrame  �
 ```
 
 - `get_data()` 是**全系统唯一取数入口**，只在装配点调（`*/cli.py`、`*/web/routes.py`、`service/`）
-- `port.py` / `pipeline.py` / `features.py` / `analysis/` **只收 DataFrame**，不自己取数（`tests/test_layering.py` 静态钉住）
+- `port.py` / `pipeline.py` / `features.py` / `analysis/` **只收 DataFrame**，不自己取数（`tests/cross/test_layering.py` 静态钉住）
 - 原始表与派生量对调用方**没有区别**：`series_map(["csi_all", "breadth"])` 返回形态一致
 
 ```
@@ -75,7 +75,7 @@ service/      app.py registry.py ops/(状态机) templates/(共享骨架)
 | 模块内部 | 只能调自己的实现 |
 | `*/cli.py`、`*/web/routes.py` | 装配点：取数（`get_data`）、调别人的 port，把 DataFrame 喂给核心代码 |
 | `service/` | 框架层本身就是装配层 |
-| 任何模块 `import` 别人的内部实现 | **禁止**（`tests/test_decoupling.py` 会拦） |
+| 任何模块 `import` 别人的内部实现 | **禁止**（`tests/cross/test_decoupling.py` 会拦） |
 
 ---
 

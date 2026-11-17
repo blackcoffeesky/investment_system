@@ -65,7 +65,7 @@ LABEL_NAME = {
 
 # 本资产要哪些表（**不**描述面板怎么拼——面板由 `shared.adapter` 统一提供）。
 # `get_data` 自己按 adapter 的声明取数；这份是给 `port.required_tables()` 用的装配
-# 清单，`tests/test_state_features_fresh.py` 钉住它 == `tables_of(Panel.STATE_ASHARE)`。
+# 清单，`tests/state_layer/test_state_features_fresh.py` 钉住它 == `tables_of(Panel.STATE_ASHARE)`。
 REQUIRED_TABLES = (
     "csi_all",          # OHLCV 主价格
     "csi300",

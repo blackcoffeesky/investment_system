@@ -90,7 +90,7 @@ causual/output/{asset}/cards/
 
 判断标准一句话：**这列是"别人给的"还是"我算的"**。别人给的一律小写，我算的一律大写。
 混了就会出现"两套列名"——v5.46 花了一整轮才并掉，别再退回去。
-退役名由 `tests/test_causual_dead_columns.py::LEGACY_COLS` 拦住（只增不改）。
+退役名由 `tests/causual/test_causual_dead_columns.py::LEGACY_COLS` 拦住（只增不改）。
 
 ### 3.3 `PANEL_COLS` 是**模块声明**，不是抄来的清单
 
@@ -100,7 +100,7 @@ DERIVED_COLS = (...)   # 其中"耦合层算好、我只搬进来"的那几列
 ```
 
 两者都必须是 `COLUMNS[PANEL_KIND]` 的子集，由
-`tests/test_causual_panel_derived.py::test_panel_cols_are_declared_by_adapter` 钉住
+`tests/causual/test_causual_panel_derived.py::test_panel_cols_are_declared_by_adapter` 钉住
 （同一个形状还有 `REQUIRED_TABLES = tables_of(PANEL_KIND)`：**从耦合层推导，不手抄**）。
 
 - 运行期还有兜底：`panel[list(PANEL_COLS)]` 少列直接 `KeyError`，`_derived` 同样。
@@ -148,7 +148,7 @@ DERIVED_COLS = (...)   # 其中"耦合层算好、我只搬进来"的那几列
 它现在**不计算任何东西**，只是按 `DERIVED_COLS` 从 `base` 里取列（缺列 → `KeyError`）。
 留着是因为三件事：
 
-1. **它是测试的打桩点**：`tests/test_causual_panel_derived.py::test_guard_turns_red_when_derived_vanishes`
+1. **它是测试的打桩点**：`tests/causual/test_causual_panel_derived.py::test_guard_turns_red_when_derived_vanishes`
    把 `_derived` 打桩成 `lambda df, base: {}`，然后要求"派生列消失"被判定抓住。
    没有这个函数，那几条断言就只能证明"今天数据是好的"，证明不了"判定逻辑本身有效"。
 2. **它是列契约的落点**：六列由耦合层给，`PANEL_COLS` 里不重复列，装配关系只写在这一处。
@@ -265,8 +265,8 @@ python -m datahub.fin.check
 
 | 防线 | 位置 |
 |---|---|
-| **只有一套列名**：面板列 = 耦合层语义名（`close`/`vix`），退役的大写名由 `LEGACY_COLS` 拦住 | `pipeline.PANEL_COLS` + `tests/test_causual_dead_columns.py` |
-| 计数盘点：`REQUIRED_TABLES` 有数据 + 派生列新鲜 + 每条边的列都在面板里 + 列数钉死 | `tests/test_causual_panel_derived.py` / `test_causual_dead_columns.py` |
+| **只有一套列名**：面板列 = 耦合层语义名（`close`/`vix`），退役的大写名由 `LEGACY_COLS` 拦住 | `pipeline.PANEL_COLS` + `tests/causual/test_causual_dead_columns.py` |
+| 计数盘点：`REQUIRED_TABLES` 有数据 + 派生列新鲜 + 每条边的列都在面板里 + 列数钉死 | `tests/causual/test_causual_panel_derived.py` / `test_causual_dead_columns.py` |
 
 **监控清单也会静默失效**：`freshness.WATCH*` 里的表名一旦与数据层不一致，
 `check()` 就 `continue`，于是"没有过期表"这个结论永远成立。所以：
@@ -284,9 +284,9 @@ python -m datahub.fin.check
 （否则那张表会烂成永久豁免）。为什么必须这样：估计器对全 NaN / 零方差的控制变量
 是**静默跳过**的，配置上写着"控制了社融"、实际没控，卡片和快照都看不出来。
 
-守卫：`tests/test_causual_dead_columns.py`（有数据 / 声明有效 / 每个资产都得声明）。
+守卫：`tests/causual/test_causual_dead_columns.py`（有数据 / 声明有效 / 每个资产都得声明）。
 
-守卫：`tests/test_freshness_watchlist.py`（清单存在性 + freq 可判 + 行为验证 + 告警）。
+守卫：`tests/datahub/test_freshness_watchlist.py`（清单存在性 + freq 可判 + 行为验证 + 告警）。
 
 ### 8.2 行为变化记录（数字变动时先查这里）
 

@@ -71,7 +71,7 @@ class DataPort:
         ⚠️ **上层不要直接调我**：其他模块只通过 `shared.adapter.get_data` 声明自己要什么，
         而且只在 `cli.py` / `service/` / `web/routes.py` 这些**装配点**调；
         核心代码（`pipeline` / `features` / `analysis`）只接收传进来的 `DataFrame`。
-        这条有静态测试钉住（`tests/test_layering.py`）。
+        这条有静态测试钉住（`tests/cross/test_layering.py`）。
 
         - single → `{表名: Series}`
         - multi  → `{表名: 列名}`

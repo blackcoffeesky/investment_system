@@ -177,7 +177,7 @@ EXTRA_TABLES = ("etf_shares",)
 # 面板里**已知没有数据**的列：{列名: 原因}。
 #
 # 写在这里 = "我知道它是空的，并且打算接数据"。**没写在这里却整列 NaN，测试当场红**
-# （`tests/test_causual_dead_columns.py`）。
+# （`tests/causual/test_causual_dead_columns.py`）。
 # 数据接上之后**必须删掉对应条目**——测试反向检查这件事（声明了却已经有值 → 红），
 # 否则这张表会烂成"永久豁免清单"，跟没有测试一样。
 #

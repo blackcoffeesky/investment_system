@@ -5,7 +5,7 @@
 **`get_data` 是全系统唯一的取数入口**，而且**只在装配点调**：
 `*/cli.py`、`service/**`、`*/web/routes.py`（页面入口，等价于 CLI）。
 其余地方（`port.py` / `pipeline.py` / `features.py` / `analysis/*`）**一律不许调**——
-它们只接收传进来的 `DataFrame`。这条有静态测试钉住（`tests/test_layering.py`），
+它们只接收传进来的 `DataFrame`。这条有静态测试钉住（`tests/cross/test_layering.py`），
 不是"写在文档里就算"的约定。
 
 ## 为什么

@@ -297,7 +297,7 @@
   | 分组 | 「股东回报 / 估值」独立小节（不是「增长转化」），名字「股息率（市值加权）」 |
   | 依赖 | `dividend_annual` 已从 `REQUIRED_TABLES`（推导）与 `freshness.WATCH_MACRO` 移除 |
 
-  守卫：`tests/test_causual_panel_derived.py::test_dividend_annual_no_longer_required`
+  守卫：`tests/causual/test_causual_panel_derived.py::test_dividend_annual_no_longer_required`
   与 `::test_dividend_yield_reaches_panel`。
 
 ---

@@ -7,7 +7,7 @@
 import re
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 ALLOWED = {
     "causual/causual_core/cli.py",     # 命令行负责装配
     "state_layer/cli.py",

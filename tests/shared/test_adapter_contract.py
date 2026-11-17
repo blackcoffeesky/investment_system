@@ -23,7 +23,7 @@ import pandas as pd
 
 from shared.adapter import (COLUMNS, Panel, column_of, get_data, tables_of)
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 #: 面板最后一行允许落后"今天"的自然日数
 FRESH_DAYS = 5

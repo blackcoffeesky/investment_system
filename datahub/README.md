@@ -71,7 +71,7 @@ INSERT INTO t (date, c1, c2) … ON CONFLICT(date) DO UPDATE SET c1=excluded.c1,
 NULL**。`csi_all` 的源只回 5 列，于是每次刷新都把 `amount`/`turnover` 从 3503 清成 0，
 **没有任何测试响过**（state 层偶然看 `/state` 才发现）。这条现在是**契约**，不是实现细节：
 写路径的四个行为（等价 / 缺列不清空 / 主键语义不变 / single·long 不受影响）由
-`tests/test_write_upsert.py` 钉住。
+`tests/datahub/test_write_upsert.py` 钉住。
 
 **列熔断**：每次 multi 写入后比较各列非空数，某列从 **>50% 掉到 0** 就打
 `[列熔断] …` 到 stderr。整列被清空不可能是正常业务，只可能是源缺列/写路径错——宁可吵。

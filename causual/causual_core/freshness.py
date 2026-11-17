@@ -18,7 +18,7 @@
 
 ⚠ WATCH / WATCH_MACRO 里的名字**必须真实存在于 `DataPort.tables()`**，
 否则 `check()` 里 `if t not in idx.index: continue` 会静默跳过整张表：
-监控清单漂移 = 监控失效。`tests/test_freshness_watchlist.py` 守着这件事。
+监控清单漂移 = 监控失效。`tests/datahub/test_freshness_watchlist.py` 守着这件事。
 """
 
 from __future__ import annotations

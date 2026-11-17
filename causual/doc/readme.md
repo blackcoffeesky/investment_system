@@ -182,7 +182,7 @@ regime（状态） / signal（边） / narrative（卡片）
 ③ 将来真要在 causual 里算点什么（不从面板拿的），加在这里，别内联进 `load_raw`。
 
 `PANEL_COLS` / `DERIVED_COLS` 是**模块声明**，必须是 `COLUMNS[PANEL_KIND]` 的子集——
-由 `tests/test_causual_panel_derived.py::test_panel_cols_are_declared_by_adapter` 钉住。
+由 `tests/causual/test_causual_panel_derived.py::test_panel_cols_are_declared_by_adapter` 钉住。
 运行期的 `panel[list(PANEL_COLS)]` 只是兜底，别当唯一防线（卡片是定时任务，半夜崩没人看得见）。
 
 ### 4.2 面板契约
@@ -192,7 +192,7 @@ regime（状态） / signal（边） / narrative（卡片）
 - index = 该资产主价格表的交易日（A 股 `csi_all`，黄金 `gold_cny`）
 - 列 = 耦合层的**语义列名**（`open` / `close` / `vix` / `cb_holdings` …），
   `prepare()` 与 `config.py` 只认这一套；退役的大写名（`CLOSE`/`VIX`…）由
-  `tests/test_causual_dead_columns.py` 的 `LEGACY_COLS` 拦住，不许回流
+  `tests/causual/test_causual_dead_columns.py` 的 `LEGACY_COLS` 拦住，不许回流
 - **六列派生量也是面板列**（`etf_dispersion` / `size_flow` / `national_etf` /
   `national_etf_event` / `dividend_yield` / `cb_gold_buy` / `etf_flow`）——
   causual 不算它们，只是把列搬进来；**缺一列就 `KeyError`**（不静默 NaN）
@@ -231,7 +231,7 @@ adapter 落成面板列；causual 只读列，不再自己算：
 > `510300` 改成 `sh510300`，当时消费方按裸码字符串匹配 → 四列派生量整体消失且不报错
 > （详见 CHANGES v5.40）。现在归一逻辑只有一份，在 `datahub/fin/derive.py` 的
 > `bare_code`（分组知识归数据层），causual 不再碰代码格式。
-> `tests/test_causual_panel_derived.py` 盯着"列还在不在、新不新鲜"。
+> `tests/causual/test_causual_panel_derived.py` 盯着"列还在不在、新不新鲜"。
 
 > **坑：差分必须在原始频率上做。** 不能对日频 ffill 后的列再 `resample().diff()`——
 > 月末/季末落点依赖交易日，会错位一到两期（实测 ETF 流入相关性从 0.999 掉到 0.32）。
@@ -559,7 +559,7 @@ python -m causual.causual_core.cli audit  --asset ashare   # 方向一致性审�
 | 慢变量用固定期数摊销 | 真实滞后分布被压平 |
 | 结构层是人工文本 | 与供需层的实证可能互相矛盾，卡片不会自动调和 |
 | 状态模型靠外推 | 模型超过 2 个月没重训就会失真，卡片只标"龄期"不阻断 |
-| 新鲜度只看 `freshness.WATCH*` 里的表 | 不在清单里的表过期了没人报；清单里的名字与数据层不一致时**曾经静默失效**，现在会 stderr 告警并由 `tests/test_freshness_watchlist.py` 拦住 |
+| 新鲜度只看 `freshness.WATCH*` 里的表 | 不在清单里的表过期了没人报；清单里的名字与数据层不一致时**曾经静默失效**，现在会 stderr 告警并由 `tests/datahub/test_freshness_watchlist.py` 拦住 |
 | 新鲜度按 `lag_days` 判"该不该有" | `lag_days` 描述的是**发布节律**，判不出"连续 15 个月没更新"这类停更——只能靠卡片的"数据滞后"提示与 readme 第 4.5 节人工盯 |
 
 ## 11. 使用建议

@@ -1,11 +1,15 @@
 """模型契约测试：链上的每个模型都要满足 base.Model 的约定。"""
 
+
 import json
 
 import numpy as np
 import pandas as pd
 
 from state_layer.model import MODELS, make
+
+#: 运行超过 10 秒（`run_tests.py --fast` 会跳过）
+SLOW = True
 
 
 def _toy(n=600, seed=0):
@@ -20,6 +24,7 @@ def _toy(n=600, seed=0):
 
 def test_hmm_roundtrip_is_lossless():
     """to_dict → from_dict 后，后验必须逐位相同。"""
+
     feat = _toy()
     model = make("hmm", {"k": 3, "min_train": 200})
     model.fit(feat)

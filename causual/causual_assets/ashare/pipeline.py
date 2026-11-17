@@ -84,7 +84,7 @@ def _derived(df: pd.DataFrame, base: pd.DataFrame) -> dict[str, pd.Series]:
     causual **不再计算**（`shared.utils.features` 那套算法已迁走）。这里只剩装配，
     所以是"从 `base` 取列"，不是"算"。
 
-    ⚠️ 这个接缝**必须保留**：`tests/test_causual_panel_derived.py` 的反向验证打桩它
+    ⚠️ 这个接缝**必须保留**：`tests/causual/test_causual_panel_derived.py` 的反向验证打桩它
     （让它返回空 dict），那几条"派生列必须存在且新鲜"的断言必须变红。哪怕将来它
     退化成一个空实现，也别删——它是那几条测试唯一的着力点。
 

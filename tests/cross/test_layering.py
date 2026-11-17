@@ -26,7 +26,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 #: 这些目录不参与检查：测试与试验场本来就允许直接取数
 SKIP_PARTS = {".git", "task", "data", "__pycache__", ".venv", "node_modules",

@@ -58,10 +58,17 @@ from causual.causual_core.pipeline import run
 ## 3. 合并前必跑三件套
 
 ```bash
-python tests/run_tests.py                    # 必须全绿
+python tests/run_tests.py                    # 必须全绿（全部，约 3 分钟）
+python tests/run_tests.py --fast             # 开发中迭代用（跳过 4 个慢文件，约 16 秒）
+python tests/run_tests.py <组> [<组>…]        # 只跑自己的组，改谁跑谁
 pyright --project pyrightconfig_off.json     # 必须 0 error
-# test_decoupling 已包含在 run_tests 里：它扫 import，防止跨模块直连
 ```
+
+**测试按模块分目录**：`tests/{shared,datahub,state_layer,causual,service,cross}/`，详见 [`tests/README.md`](tests/README.md)。
+`tests/cross/` 放**跨模块规则**（解耦、分层），不归任何单个模块。
+`tests/run_tests.py` 也包含 `test_decoupling`：它扫 import，防止跨模块直连。
+
+**提交前跑全量，别只跑自己的组**——别人的红可能是你造成的。
 
 `pyrightconfig_off.json` 名字带 off，是因为平时要关掉（否则顶掉 Pylance）。
 **不要改名**，用 `--project` 指定即可。

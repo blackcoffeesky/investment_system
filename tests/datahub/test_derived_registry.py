@@ -14,12 +14,16 @@
 头部 23 行会与全量切片不同（低频列没有历史可 ffill）。
 """
 
+
 from __future__ import annotations
 
 import pandas as pd
 
 from datahub.fin.derive import DERIVED
 from datahub.port import get_port
+
+#: 运行超过 10 秒（`run_tests.py --fast` 会跳过）
+SLOW = True
 
 START, END = "2025-01-01", "2025-12-31"
 
@@ -41,6 +45,7 @@ def test_derived_window_invariance():
     **遍历整个注册表**，不写死名字——以后加派生量自动被这条测试覆盖
     （warmup 填错的典型症状就是"窗口第一行与全量切片不同"）。
     """
+
     for name, d in DERIVED.items():
         full = d.func()
         got = d.func(start=START, end=END)

@@ -56,7 +56,7 @@ LABEL_NAME = {
 }
 
 # 本资产要哪些表（**不**描述面板怎么拼——面板由 `shared.adapter` 统一提供）。
-# `tests/test_state_features_fresh.py` 钉住它 == `tables_of(Panel.STATE_GOLD)`。
+# `tests/state_layer/test_state_features_fresh.py` 钉住它 == `tables_of(Panel.STATE_GOLD)`。
 REQUIRED_TABLES = (
     "gold_cny",     # OHLCV 主价格
     "usdcny",       # → usdcny_vol_5d

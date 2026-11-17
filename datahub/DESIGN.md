@@ -585,7 +585,7 @@ ashareapi 那份只贡献 `report_end` / `plan` 两个字段，且已合并进 `
 一行都没写**（2026-11-15 踩过：100 次调用全白跑）。
 
 规则：**命令行主块永远放文件最后**；新增模块级函数时不要往它后面追加。
-`tests/test_datahub_update.py` 用一条结构性断言钉住这一点。
+`tests/datahub/test_datahub_update.py` 用一条结构性断言钉住这一点。
 
 ## 14. 额度与降级（2026-11-15 实测）
 
@@ -660,7 +660,7 @@ Fuyao 一旦断供，`stock_daily` 会处于"价格已更新、复权事件没�
 历史收益率**全是错的**。别把日更当成"数据全自动"。
 
 **`check` 的盲区**：`check` 不查"尾部停更"，漏跑只能靠
-`tests/test_adapter_contract.py::test_last_row_is_fresh_and_not_future`（阈值 5 天）抓。
+`tests/shared/test_adapter_contract.py::test_last_row_is_fresh_and_not_future`（阈值 5 天）抓。
 2026-11-16 实测 `csi_all / gold_cny / csi300 / csi1000 / shibor3m / margin_balance`
 全停在 11-06~11-10 → **日更管线整体没在跑**，不是单表问题。
 
@@ -684,7 +684,7 @@ INSERT OR REPLACE INTO t (date, c1, c2) …
 INSERT INTO t (date, c1, c2) … ON CONFLICT(date) DO UPDATE SET c1=excluded.c1, c2=excluded.c2
 ```
 
-**四条契约**（`tests/test_write_upsert.py` 钉住）：
+**四条契约**（`tests/datahub/test_write_upsert.py` 钉住）：
 
 1. **等价**：同一份数据写两次 == 写一次（实测 `csi_all` / `gold_cny` 两张 multi 表逐位相同）
 2. **缺列不清空**：先写全列、再只写 5 列 → `amount`/`turnover` 仍 3506 非空、值逐位未变
@@ -710,7 +710,7 @@ INSERT INTO t (date, c1, c2) … ON CONFLICT(date) DO UPDATE SET c1=excluded.c1,
 `service/**`。核心代码（`port.py` / `pipeline.py` / `features.py` / `analysis/*`）
 **只接收传进来的 DataFrame**。
 
-这条**有静态测试钉住**（`tests/test_layering.py`）：用 AST 扫
+这条**有静态测试钉住**（`tests/cross/test_layering.py`）：用 AST 扫
 "核心文件里有没有 `get_data(` 调用"，违反了直接红。为什么必须静态查——
 违反方式是静默的（`state_view` 里偷偷取一次数，测试全绿、行为也对，只是分层破了）。
 另有一条反向校验：定义处与至少一个装配点必须真的存在，否则检查器会"永远绿"。

@@ -1,4 +1,5 @@
 """端到端测试：从空库到出卡，验证整条链路。"""
+
 import shutil
 import sqlite3
 import tempfile
@@ -6,9 +7,13 @@ from pathlib import Path
 
 import pandas as pd
 
+#: 运行超过 10 秒（`run_tests.py --fast` 会跳过）
+SLOW = True
+
 
 def _seed(db: Path) -> None:
     """塞入最小可用的数据：价格 + 两条信号层用的序列。"""
+
     from datahub.core.conn import connect
     from datahub.core.schema import DATA_DDL
 
