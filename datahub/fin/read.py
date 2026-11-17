@@ -149,14 +149,7 @@ LONG_SCHEMAS: dict[str, dict[str, str]] = {
         "float_after": "REAL",
     },
     # 季频财报：报告期 + 披露日（用披露日算 lag，避免前视）
-    "financials": {
-        "publ_date": "TEXT",      # 披露日 YYYY-MM-DD
-        "revenue": "REAL",
-        "net_profit": "REAL",
-        "equity": "REAL",
-        "eps": "REAL",
-        "roe": "REAL",
-    },
+
 }
 
 STATIC_SCHEMAS: dict[str, dict[str, str]] = {

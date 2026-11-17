@@ -188,4 +188,22 @@ CREATE TABLE IF NOT EXISTS ops_snooze (
     created_at  TEXT NOT NULL,
     PRIMARY KEY (state, key)
 );
+
+-- 财务指标（Fuyao 同花顺，EAV 形态）：一行 = 一只股票 × 一个报告期 × 一个指标。
+-- ⚠️ **不走 `read` / `read_long`**：没有 `code`/`date` 列，读它要按
+-- (thscode, report) 或 (abilities, index_id) 直接查。`metadata.kind` 是自动猜的
+-- （会显示 multi），**不代表能 read**。
+-- 主键 4 列而不是 (thscode, report, index_id)：同一指标名可能出现在两个 ability 下。
+CREATE TABLE IF NOT EXISTS finances (
+    thscode    TEXT    NOT NULL,
+    report     TEXT    NOT NULL,
+    abilities  TEXT    NOT NULL,
+    index_id   TEXT    NOT NULL,
+    value      TEXT    DEFAULT NULL,
+    created_at TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT    NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (thscode, report, abilities, index_id)
+);
+CREATE INDEX IF NOT EXISTS idx_finances_stock_report ON finances (thscode, report);
+CREATE INDEX IF NOT EXISTS idx_finances_ability_index ON finances (abilities, index_id);
 """

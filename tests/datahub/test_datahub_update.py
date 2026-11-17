@@ -1,7 +1,7 @@
 """`datahub.fin.update` 的命令行契约。
 
 2026-11-15 的坑：`if __name__ == "__main__":` 块排在 `write_long` 定义**之前**。
-`python -m datahub.fin.update --backfill financials` 时主块先执行，
+`python -m datahub.fin.update --backfill <表>` 时主块先执行，
 `backfill()` 的 `flush` 去调 `write_long` → `NameError`。
 而 `--backfill` 是"先打 10 次接口再落库"，于是**100 次接口额度白烧、一行没写**。
 
