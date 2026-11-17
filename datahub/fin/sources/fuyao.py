@@ -327,7 +327,8 @@ def adjustment_factors(thscode: str, raw_code: str) -> pd.DataFrame:
         "dividend": pd.to_numeric(df.get("dividend_per_share"), errors="coerce"),
         "bonus": pd.to_numeric(df.get("per_share_bonus"), errors="coerce").fillna(0.0),
     })
-    # 库里这两列是 0.0 不是 NULL（配股信息本接口没有）
-    out["allot_ratio"] = 0.0
-    out["allot_price"] = 0.0
+    # ⚠️ **不要**输出 `allot_ratio` / `allot_price`：本接口只给分红与送股，
+    # 不含配股。2026-11-17 第一次回填时我把这两列写死 0.0，**覆盖掉了 985 行真实配股**
+    # （如 sz000001 1993-05-24 配股 0.1 股 @16 元 → 变成 0）。写路径只更新
+    # "返回了的列"，所以不返回 = 原值不动。**这里一次都不能多写**。
     return out.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
