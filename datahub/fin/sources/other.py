@@ -61,6 +61,44 @@ def us_cpi_surprise(start: str, end: str, **_) -> pd.Series:
     return _clip(sur, start, end)
 
 
+# 2026-11-17：Cloudflare 拦 `python-requests` 默认 UA —— 不带 UA 一律 403
+# （或返回挑战页后挂住 → ReadTimeout）。**一个常量，别在各处复制**。
+_BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+               "(KHTML, like Gecko) Chrome/131.0 Safari/537.36")
+
+
+def _get(url: str, *, params: dict | None = None, timeout: int = 30,
+         retries: int = 1) -> "requests.Response":
+    """带浏览器 UA 的 GET：**非 200 必须响**，超时重试一次（间隔 3 秒）。
+
+    为什么单独一个函数：`world_tension` 原先写的是
+
+        if r.status_code == 200: ...   # 否则什么都不做
+
+    → 403 被吞掉，最后只抛一句"没有返回任何数据"，**看不出是 403 还是真空**，
+    于是 `world_tension` 静默断了 12 天（库里停在 2026-11-05）。
+    这和 `INSERT OR REPLACE` 清空列、`fillna(0)` 伪造下跌是**同一类**：
+    **该响的地方没响**。
+    """
+    import time
+
+    import requests
+
+    for attempt in range(retries + 1):
+        try:
+            r = requests.get(url, params=params, timeout=timeout,
+                             headers={"User-Agent": _BROWSER_UA})
+        except requests.exceptions.Timeout:
+            if attempt < retries:
+                time.sleep(3)
+                continue
+            raise RuntimeError(f"GET {url} 超时 {timeout}s（重试 {retries} 次后仍失败）")
+        if r.status_code != 200:
+            raise RuntimeError(f"GET {url} → HTTP {r.status_code}：{r.text[:120]!r}")
+        return r
+    raise RuntimeError(f"GET {url} 不应到这里")
+
+
 def world_tension(start: str, end: str, index: str = "world_tension", **_) -> pd.Series:
     """World Tension Meter：地缘紧张指数（0–100）。CC BY 4.0，需注明出处。
 
@@ -73,15 +111,13 @@ def world_tension(start: str, end: str, index: str = "world_tension", **_) -> pd
     stop = pd.Timestamp(end)
     while cur <= stop:
         seg_end = min(cur + pd.Timedelta(days=365), stop)
-        r = requests.get("https://worldtensionmeter.com/api/v1/history",
-                         params={"index": index, "from": str(cur.date()),
-                                 "to": str(seg_end.date()), "format": "json"},
-                         timeout=30)
-        if r.status_code == 200:
-            pts = r.json().get("series") or []
-            if pts:
-                frames.append(pd.Series({pd.Timestamp(p["date"]): float(p["score"])
-                                         for p in pts}))
+        r = _get("https://worldtensionmeter.com/api/v1/history",
+                 params={"index": index, "from": str(cur.date()),
+                         "to": str(seg_end.date()), "format": "json"}, timeout=30)
+        pts = r.json().get("series") or []
+        if pts:
+            frames.append(pd.Series({pd.Timestamp(p["date"]): float(p["score"])
+                                     for p in pts}))
         cur = seg_end + pd.Timedelta(days=1)
     if not frames:
         raise RuntimeError("wtm 没有返回任何数据")
@@ -92,8 +128,7 @@ def xaus_gold(start: str, end: str, **_) -> pd.Series:
     """XAUS Gold Data API：伦敦金日频收盘（USD/oz），约 5 年历史，无需 key。"""
     import requests
 
-    r = requests.get("https://xaus.com/api/v1/history", timeout=30)
-    r.raise_for_status()
+    r = _get("https://xaus.com/api/v1/history", timeout=30)
     pts = r.json().get("points") or []
     if not pts:
         raise RuntimeError("xaus 返回空 points")
