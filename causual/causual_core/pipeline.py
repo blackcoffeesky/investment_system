@@ -215,17 +215,3 @@ def _write_fingerprint(freshness: list[dict] | None, path: Path, when,
     path.with_suffix(".meta.json").write_text(
         json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
-
-def console(asset: str, series: dict, meta: pd.DataFrame | None = None,
-            asof: str | None = None) -> str:
-    """命令行预览（不落盘）。"""
-    pkg = load_asset(asset)
-    df, spec = pkg.build_panel(asof, series=series, meta=meta, state=state)
-    models, _ = snapshot.load(asset, pkg.EDGES)
-    bundle = build_bundle(
-        df, models, pkg.EDGES, label_col=pkg.LABEL_COL,
-        treatment_col=pkg.TREATMENT_COL, target=pkg.C.TARGET,
-        signal_lag=pkg.SIGNAL_LAG)
-    bundle.label_signature = spec["data"]["label_signature"]
-    when = pd.Timestamp(asof) if asof else df.index[-1]
-    return build_console(df, when, models, bundle, pkg.EDGES, spec=spec)
