@@ -43,7 +43,9 @@ FREQ_HINT = {
     "stock_daily": ("D", "CN", 0),
     "retail_sales_mom": ("M", "NONE", 15),
     "world_tension": ("D", "US", 0),
-    "gold_etf_holdings": ("M", "NONE", 40),
+    # lag 20（2026-11-18 用户定）：WGC 月报 10 月数据 11-16 就能拿到；
+    # 40 天时"对齐日"和"新鲜度宽限"双双过晚，且月频 lag≥周期会让 overdue 永不可达。
+    "gold_etf_holdings": ("M", "NONE", 20),
     "cb_holdings": ("Q", "NONE", 45),
     # 美联储 H.10 周报：汇率与广义美元指数按周发布，落后 7~10 天是常态
     "usdcny": ("D", "US", 8),

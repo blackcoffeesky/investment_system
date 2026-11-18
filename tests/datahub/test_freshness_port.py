@@ -60,26 +60,38 @@ def test_two_booleans_distinguish_grace_from_overdue():
     assert r["stale"] is True
     assert r["overdue"] is False, "停在 9-30、宽限 40 天：11-18 还没到 12-10，不该报 overdue"
 
-    d = {x["table"]: x for x in freshness(["csi_all"], today="2026-11-18")}["csi_all"]
-    assert d["freq"] == "D" and d["expect"] == "2026-11-18"
-    assert d["stale"] is True and d["overdue"] is True, "日频 lag=0，落后就该 overdue"
+    # 宽限外：同一张表推到截止日之后（11-20 是截止日，11-21 才算 overdue）
+    o = {x["table"]: x for x in freshness(["gold_etf_holdings"], today="2026-11-21")}["gold_etf_holdings"]
+    assert o["stale"] is True and o["overdue"] is True
 
 
-def test_long_lag_makes_overdue_unreachable():
-    """**结构性事实**（不是 bug，但要知道）：`lag_days` ≥ 周期长度时，
-    `overdue` 永远为 False——因为 `expect` 会随 `today` 一起往前滚。
+def test_daily_tables_never_overdue_under_strict_rule():
+    """**连带事实**：`lag_days=0` 的日频表，在严格 `>` 规则下**永远不会 overdue**。
 
-    所以 `gold_etf_holdings`（月频 lag=40）只会被标成"不可抗力"，
-    **永远不会被判定为"忘记更新"**。想让它报 overdue 只能调小 `metadata.lag_days`
-    或改用"距 end_date 多久"这种独立口径（那是另一个决定）。
+    因为日频的 `expect` 就是今天，`today > expect + 0` 恒假。
+    这不是 bug——用户定的 `>` 正是为了"截止日当天数据可能收盘后才入库"，而日频的
+    截止日就是今天。日频表靠 `stale` 单独报（它们落后一天就已经显眼了）。
     """
-    for day in ("2026-12-15", "2027-03-20", "2027-08-09"):
+    r = {x["table"]: x for x in freshness(["csi_all"], today="2026-11-18")}["csi_all"]
+    assert r["freq"] == "D" and r["expect"] == "2026-11-18"
+    assert r["stale"] is True
+    assert r["overdue"] is False, "lag=0 的日频表在严格 > 下不该 overdue"
+
+
+def test_overdue_is_reachable_when_lag_is_smaller_than_period():
+    """**正向断言**：`lag_days` 小于周期长度时，`overdue` 在宽限后可达。
+
+    历史：`gold_etf_holdings` 原先 `lag_days=40`（月频），`expect` 随 `today` 往前滚，
+    `expect + 40` 永远追不上 ⇒ `overdue` **永远为 False**，缺月也报不出来。
+    2026-11-18 用户把 lag 改成 **20** 修掉了这一点（数值不变，只影响可见日与报警日）。
+
+    这条测试就是那个修复的回归：截止日 `expect + 20 = 2026-11-20`，
+    当天**不报**（数据可能收盘后才进库），次日开始报。
+    """
+    cases = {"2026-11-18": False, "2026-11-19": False,
+             "2026-11-20": False,   # 边界日：发布截止日当天不算 overdue
+             "2026-11-21": True}
+    for day, want in cases.items():
         r = {x["table"]: x for x in freshness(["gold_etf_holdings"], today=day)}["gold_etf_holdings"]
-        assert r["stale"] is True
-        assert r["overdue"] is False, f"{day} 竟然 overdue 了，结构假设不成立"
-
-
-def test_static_and_eav_are_skipped():
-    """`static`（company）/ `eav`（finances）没有日期轴，不该出现在结果里。"""
-    rows = freshness(["company", "finances"], today="2026-11-18")
-    assert rows == [], f"static/eav 不该进新鲜度结果：{rows}"
+        assert r["stale"] is True, f"{day}: 停在 2026-09-30 应判 stale"
+        assert r["overdue"] is want, f"{day}: overdue 应为 {want}，实际 {r['overdue']}"

@@ -324,7 +324,7 @@ def freshness(tables=None, *, today: str | pd.Timestamp | None = None,
     |---|---|---|---|
     | False | False | 已是最新 | 无 |
     | True  | False | **不可抗力**：源还没发布，仍在 `lag_days` 宽限内 | 等，**不用报警** |
-    | True  | True  | **忘记更新**：宽限已过还没到 | 报警 / 查管线 |
+    | True  | True  | **忘记更新**：宽限**已过**（严格大于截止日）还没到 | 报警 / 查管线 |
 
     原 causual 实现的写法是 `if today < expect + lag: continue` ——
     **"宽限内"那一支被直接吞掉了**，于是上层只看到"过期表"，
@@ -372,8 +372,11 @@ def freshness(tables=None, *, today: str | pd.Timestamp | None = None,
             continue
         actual = pd.Timestamp(str(actual_s))
         stale = bool(actual < expect)
-        # 宽限：`today >= expect + lag` 才算"该到了"（与原实现的 `today < expect+lag → 跳过` 互补）
-        overdue = bool(stale and now >= expect + pd.Timedelta(days=lag))
+        # 宽限：**严格大于**才算"该到了"。
+        # `expect + lag` 那天是**发布截止日**——数据可能当天收盘后才进库，
+        # 把截止日当天算 overdue，会在"数据其实已经到了、只是还没抓"时误报；
+        # 多宽限一天更稳（2026-11-18 用户定的）。
+        overdue = bool(stale and now > expect + pd.Timedelta(days=lag))
         behind = max(0, (expect - actual).days)
         if not stale:
             text = ""
