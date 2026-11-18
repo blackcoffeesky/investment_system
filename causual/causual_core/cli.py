@@ -77,11 +77,17 @@ def _load_panel(asset: str) -> pd.DataFrame:
     return get_data(load_asset(asset).PANEL_KIND)
 
 
-def _metadata():
-    """表的 end_date 清单——只给"新鲜度提示 / 月频归档月"用，不是面板数据。"""
-    from datahub.port import get_port
+def _freshness(asset: str, panel: pd.DataFrame, asof: str | None = None) -> list[dict]:
+    """新鲜度由**数据层**算（`shared.adapter.freshness`），本模块只挑行。
 
-    return get_port().metadata()
+    `today` 传**卡片日**（数据截止日 / `--asof`）而不是"真实今天"：这样
+    "这张卡出的时候数据到哪了"是可复现的，重跑历史 `--asof` 也不会因为过了几天
+    就凭空多出告警。
+    """
+    from shared.adapter import freshness as panel_freshness
+
+    when = str(asof)[:10] if asof else str(pd.DatetimeIndex(panel.index)[-1].date())
+    return panel_freshness(load_asset(asset).PANEL_KIND, today=when)
 
 
 def cmd_daily(args) -> int:
@@ -94,8 +100,8 @@ def cmd_daily(args) -> int:
     panel = _load_panel(args.asset)
     view = sp.state_view(args.asset, panel)
     try:
-        pipeline.run(args.asset, panel, meta=_metadata(), state=view,
-                     asof=args.asof, force=getattr(args, "force", False))
+        pipeline.run(args.asset, panel, freshness=_freshness(args.asset, panel, args.asof),
+                     state=view, asof=args.asof, force=getattr(args, "force", False))
     except pipeline.CardRejected as e:
         print(f"[拒绝] {e}")
         return 1

@@ -30,20 +30,19 @@ def _generate(asset: str) -> tuple[Path, str, list[Path]]:
     """
 
     from causual.causual_core import pipeline
-    from causual.causual_core.cli import _load_panel
+    from causual.causual_core.cli import _freshness, _load_panel
     from causual.port import get_port as causal_port
-    from datahub.port import get_port as data_port
     from state_layer.port import get_port as state_port
 
     sp = state_port()
     # 装配点取一次面板，喂给状态层和因果层（2026-11-16 起两边都只收 DataFrame）
     panel = _load_panel(asset)
     view = sp.state_view(asset, panel)
-    meta = data_port().metadata()
-    path = pipeline.run(asset, panel, meta=meta, state=view, quiet=True)
+    rows = _freshness(asset, panel)
+    path = pipeline.run(asset, panel, freshness=rows, state=view, quiet=True)
 
     d = path.stem.split("_", 1)[1]                       # 2026-11-10
-    month = causal_port().macro_month(meta, asset=asset)
+    month = causal_port().macro_month(rows)
     cards_dir = path.parent                              # …/cards/2026/11
     macro_dir = path.parents[2] / month[:4] / month[5:7]  # …/cards/YYYY/MM
     produced = [path,

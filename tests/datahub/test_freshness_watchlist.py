@@ -1,129 +1,87 @@
-"""新鲜度监控清单必须对得上真实表名——否则监控在"假装工作"。
+"""新鲜度**不能是"假装在工作"**：表名要真、频率要判得了、覆盖不能是空的。
 
 背景（2026-11-14 发现）
-----------------------
-`causual_core/freshness.py` 的 `WATCH_MACRO` 写着
-`cn_cpi / cn_ppi / cn_m2 / cn_exports / cn_social_fin`，
-但数据层的表名早就改成 `cpi_yoy / ppi_yoy / m1_yoy / m2_yoy / exports_yoy`：
+---------------------
+causual 手写的 `WATCH_MACRO` 写着 `cn_cpi / cn_ppi / cn_m2 / cn_exports`，
+而数据层的表名早就改成 `cpi_yoy / ppi_yoy / m1_yoy / m2_yoy`：
 
-    # check() 里
     if t not in idx.index:
         continue          ← 8 个名字只命中 3 个，剩下 5 个静默跳过
 
 后果**不是报错，是"没有过期表"这个结论永远成立**。你以为是有人在看，其实没有。
-同一份过期清单在 `pipeline._month_of()` 里还有一份副本（所以 `MONTH_TABLES`
-现在只有一处定义，两处都读它）。
+那份清单后来还漂过一次（`MONTH_TABLES` 也和 `_month_of()` 的副本对不上）。
 
-这批测试盯三件事：
-1. 清单里的名字**在 `DataPort.tables()` 里存在**（改名/删表要当场红）
-2. 清单里的表 `freq` 是 `_period_end()` 认得的（否则照样静默跳过）
-3. `check()` 真的能抓出过期表，且对认不出的名字**会出声**
+2026-11-18：**手写清单彻底删除**。`shared.adapter.freshness(panel)` 直接按
+`tables_of(panel)` 逐表算，`freq` / `lag_days` / `end_date` 全由数据层给，
+causual 只在装配点把它传给 `pipeline.run(freshness=...)`。
+
+所以这条测试改盯**新口径**（旧口径的三条断言跟着清单一起作废了）：
+
+1. 每个面板的 freshness 行里，表名都在 `DataPort.tables()` 里（不可能出现幽灵表）
+2. 每行 `freq` 都是判得了过期的 `D/M/Q/Y`（`W` / `SPARSE` 算不出"该有的期"）
+3. 覆盖**不是空的**（空 = 等于没监控）
 """
 
 from __future__ import annotations
 
-import io
-from contextlib import redirect_stderr
-
 import pandas as pd
 
-# 固定一个"今天"，避免测试随自然日漂移（也避免周末影响 D 频判定）
-TODAY = pd.Timestamp("2026-11-14")
+PANELS = ("CAUSUAL_ASHARE", "CAUSUAL_GOLD")
+
+#: 判得了"该有的期"的频率；`W` 周频与 `SPARSE` 不定期不在其中（有意不判）
+CHECKABLE_FREQS = frozenset({"D", "M", "Q", "Y"})
 
 
-def _meta(rows: list[tuple[str, str, int, str]]) -> pd.DataFrame:
-    return pd.DataFrame(rows, columns=["name", "freq", "lag_days", "end_date"])
+def _rows(panel_name: str, today: str | None = None) -> list[dict]:
+    from shared.adapter import Panel, freshness
+
+    return freshness(getattr(Panel, panel_name), today=today)
 
 
-def test_watchlist_names_exist_in_datahub():
-    """`WATCH` / `MONTH_TABLES` / `WATCH_MACRO` 里每个名字都得是真表。
+def test_freshness_tables_exist_in_datahub():
+    """新鲜度里的每张表都得是 `DataPort.tables()` 里的真表。
 
-    ⚠️ 这条在数据层删表时会红——**这是有意的**：删表就得把清单一起改，
-    不能让它退化成静默跳过。（`dividend_annual` 已于 v5.42 从清单移除：
-    causual 不再读那张表，股息率改由 `DataPort.dividend_yield()` 现算。）
+    表名对不上时，数据层**不会**报错——它只是拿不到 end_date，然后什么都不报。
+    这条红说明改名 / 删表没同步到面板的表清单。
     """
-    from causual.causual_core import freshness
     from datahub.port import get_port
 
     known = set(get_port().tables())
     assert known, "DataPort.tables() 是空的——数据库没建好？"
 
     bad: dict[str, list[str]] = {}
-    for label, names in (("WATCH", freshness.WATCH),
-                         ("MONTH_TABLES", freshness.MONTH_TABLES),
-                         ("WATCH_MACRO", freshness.WATCH_MACRO)):
-        missing = [t for t in names if t not in known]
+    for name in PANELS:
+        missing = [r["table"] for r in _rows(name) if r["table"] not in known]
         if missing:
-            bad[label] = missing
+            bad[name] = missing
+    assert not bad, f"新鲜度里有数据层不存在的表（改名/删表了？）：{bad}"
 
-    assert not bad, f"新鲜度清单里有数据层不存在的表（改名/删表了？）：{bad}"
+
+def test_freshness_freqs_are_checkable():
+    """频率必须是 `D/M/Q/Y`——`W` / `SPARSE` 算不出"该有的期"，等于不判。"""
+    bad: dict[str, dict[str, str]] = {}
+    for name in PANELS:
+        odd = {r["table"]: r["freq"] for r in _rows(name)
+               if r["freq"] not in CHECKABLE_FREQS}
+        if odd:
+            bad[name] = odd
+    assert not bad, f"这些表的 freq 判不了过期，会被静默跳过：{bad}"
 
 
-def test_watchlist_freqs_are_checkable():
-    """清单里的表，频率必须是 `_period_end()` 认得的 D/M/Q/Y。
+def test_freshness_covers_every_panel():
+    """两个面板都必须真的吐出新鲜度行，且行里字段齐全。
 
-    认不出的 freq（W / SPARSE）会让 `check()` 直接 `continue` —— 和名字写错
-    一样的静默失效。要把周频表加进清单，先给 `_period_end()` 补那一支。
+    "空清单"和"全部 fresh"看起来一样，但含义完全不同——空清单意味着**没有任何表
+    被监控**，所以这里连长度一起断言。
     """
-    from causual.causual_core.freshness import WATCH, WATCH_MACRO, _period_end
-    from datahub.port import get_port
-
-    meta = get_port().metadata().set_index("name")
-    skipped: dict[str, str] = {}
-    for t in tuple(WATCH) + tuple(WATCH_MACRO):
-        if t not in meta.index:
-            continue                      # 名字缺失由上面那条测试负责
-        freq = str(meta.loc[t, "freq"] or "D")
-        if _period_end(freq, TODAY) is None:
-            skipped[t] = freq
-
-    assert not skipped, f"这些表的 freq 判不了过期，会被静默跳过：{skipped}"
-
-
-def test_check_flags_stale_and_passes_fresh():
-    """行为验证：过期的报出来，没过期的不报。"""
-    from causual.causual_core.freshness import check, stale_only
-
-    meta = _meta([
-        ("stale_m", "M", 10, "2026-07-31"),      # 落后 3 个月，lag 10 早该发了
-        ("fresh_m", "M", 10, "2026-10-31"),      # 上月值，正常
-        ("stale_q", "Q", 45, "2025-12-31"),      # 季频落后一年
-        ("fresh_d", "D", 0, "2026-11-13"),       # 昨天
-    ])
-    tables = ("stale_m", "fresh_m", "stale_q", "fresh_d")
-
-    stale = {f.table for f in stale_only(meta, tables, TODAY)}
-    assert stale == {"stale_m", "stale_q"}, stale
-
-    all_items = {f.table: f for f in check(meta, tables, TODAY)}
-    assert all_items["fresh_m"].stale is False
-    assert all_items["stale_m"].days_behind > 0
-
-
-def test_check_handles_annual_tables():
-    """`freq="Y"` 不能返回 None——否则年频表（如分红）永远不被检查。"""
-    from causual.causual_core.freshness import check, stale_only
-
-    meta = _meta([
-        ("annual_old", "Y", 90, "2023-12-31"),   # 两年前的年度值
-        ("annual_ok", "Y", 90, "2025-12-31"),    # 上年末，去年年报已出
-    ])
-    tables = ("annual_old", "annual_ok")
-
-    stale = {f.table for f in stale_only(meta, tables, TODAY)}
-    assert stale == {"annual_old"}, stale
-    assert check(meta, tables, TODAY), "年频表一条都没检查 = 白名单形同虚设"
-
-
-def test_check_warns_when_watchlist_name_is_unknown():
-    """清单里写了 metadata 没有的表，必须**出声**（这条就是当年的 bug）。"""
-    from causual.causual_core.freshness import check
-
-    meta = _meta([("cpi_yoy", "M", 9, "2026-10-31")])
-    buf = io.StringIO()
-    with redirect_stderr(buf):
-        check(meta, ("cpi_yoy", "cn_cpi"), TODAY)
-
-    err = buf.getvalue()
-    assert "cn_cpi" in err, f"没有对不存在的表告警：{err!r}"
-    assert "新鲜度" in err, err
+    need = {"table", "freq", "expect", "actual", "lag_days",
+            "stale", "overdue", "days_behind", "text"}
+    for name in PANELS:
+        rows = _rows(name, today="2026-11-16")
+        assert rows, f"{name} 一条新鲜度都没有——监控等于关掉了"
+        for r in rows:
+            assert need <= set(r), f"{name} 的行缺字段：{sorted(need - set(r))}"
+            assert r["freq"] in CHECKABLE_FREQS, r
+            # expect / actual 都是可解析的日期串
+            pd.Timestamp(r["expect"])
+            pd.Timestamp(r["actual"])

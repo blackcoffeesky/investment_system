@@ -28,10 +28,10 @@ service/        服务层：统一入口 + 运维 + Web
 
 ```python
 state = {"labels", "label_name", "labels_order", "version", "spec", "line"}
-pipeline.run(asset, panel, meta=meta, state=state)   # meta 可选，只给新鲜度/归档月用
+pipeline.run(asset, panel, freshness=rows, state=state)   # rows 由装配点算好
 ```
 
-`panel`（DataFrame）与 `meta` 都由调用方装好——`causual_core` 里没有取数代码。
+`panel`（DataFrame）与 `freshness`（新鲜度行）都由调用方装好——`causual_core` 里既不取数，也不判断哪张表过期。
 
 卡片里的**市场状态只留一行**，画像与黏性在 `/state` 页（归状态层）。
 
@@ -120,7 +120,7 @@ DERIVED_COLS = (...)   # 其中"耦合层算好、我只搬进来"的那几列
 | `estimators.py` | DML / 分布滞后 / 事件研究 / OLS(HAC) 四类估计器 |
 | `signal_layer.py` | 读边快照 → 算当期 z → 剂量×敏感性 → 汇总 α |
 | `macro_layer.py` | 供需层：`pair_view`（位置 × 边际）、`describe_series`、结构层读取 |
-| `freshness.py` | 数据新鲜度：`WATCH`（日频）/ `MONTH_TABLES`（月季频）/ `WATCH_MACRO`；`scoped()` 按资产收窄；名字必须与数据层一致 |
+| ~~`freshness.py`~~ | **已删（2026-11-18）**：判定口径搬回数据层（见 §8.1）；本模块只剩 `pipeline._notes`（拼句子）与 `_month_of`（归档月） |
 | `narrative.py` | 渲染总览卡与详情卡（Markdown） |
 | `snapshot.py` | 边快照的读写（`causual/data/snapshots/`） |
 | `regime_fit.py` | 拟合 HMM 状态模型并落盘 |
@@ -268,16 +268,22 @@ python -m datahub.fin.check
 | **只有一套列名**：面板列 = 耦合层语义名（`close`/`vix`），退役的大写名由 `LEGACY_COLS` 拦住 | `pipeline.PANEL_COLS` + `tests/causual/test_causual_dead_columns.py` |
 | 计数盘点：`REQUIRED_TABLES` 有数据 + 派生列新鲜 + 每条边的列都在面板里 + 列数钉死 | `tests/causual/test_causual_panel_derived.py` / `test_causual_dead_columns.py` |
 
-**监控清单也会静默失效**：`freshness.WATCH*` 里的表名一旦与数据层不一致，
-`check()` 就 `continue`，于是"没有过期表"这个结论永远成立。所以：
+**新鲜度不再由本模块判断**（2026-11-18 起）：判定口径（期望期、`lag_days` 宽限、
+`stale` / `overdue`）全在数据层，由装配点 `shared.adapter.freshness(panel)` 算好、
+**当参数传给** `pipeline.run(freshness=...)`。本模块只做两件事：
 
-| 约定 | 为什么 |
-|---|---|
-| 清单里的名字必须真实存在于 `DataPort.tables()` | 名字漂移 = 监控失效 |
-| 清单里的表 `freq` 必须是 D/M/Q/Y | 其它频率 `_period_end()` 返回 None，同样静默跳过 |
-| 清单**只有一份** `MONTH_TABLES`，`pipeline._month_of()` 也读它 | 原先两处各抄一份，一起烂掉 |
-| `check()` 遇到认不出的名字要 **stderr 告警** | 别让"没报错"被当成"没问题" |
-| `scoped()` 按 `pkg.REQUIRED_TABLES` 收窄 | `metadata()` 是全局的，A 股卡不该报黄金表 |
+| 事 | 在哪 | 口径 |
+|---|---|---|
+| 挑行 + 拼句子 | `pipeline._notes(rows, freq=…, limit=…)` | 只报 `stale`；默认 `overdue_only=True`（= 旧行为），`False` 时给每句加"（宽限已过/源尚未发布）" |
+| 归档月 | `pipeline._month_of(freshness)` | 月/季频行 `actual` 的最大值所在月 |
+
+**为什么删掉自算**：`freshness.py` 里那份手写清单漂过两次——表名改掉后 8 个名字只命中 2 个，
+`continue` 把整张表吞掉，于是"没有过期表"这个结论永远成立；而且它只监控了 11 张日频表，
+`geopolitic_risk` / `gold_open_interest` / `xau_usd` 这些**面板真的在用**的列从来没人看。
+现在表清单 = `tables_of(panel)`，收窄是结构性的，不可能漂。
+
+守卫：`tests/datahub/test_freshness_port.py`（口径）+ `tests/datahub/test_freshness_watchlist.py`
+（表名真实、`freq` 可判、覆盖非空）+ `tests/causual/test_card_smoke.py`（真实面板出卡）。
 
 **空列也必须显式**：边用到的列要么有数据，要么写进 `config.NOT_CONNECTED`
 （`{列名: 原因}`）。没声明却整列 NaN → 测试红；声明了却已经有数据 → 也红
@@ -295,6 +301,7 @@ python -m datahub.fin.check
 | v5.45 | 黄金 `CB_GOLD_BUY` / `ETF_FLOW` 的落位日改成**发布可见日**（央行购金 +45 天、ETF 持仓 +40 天）；旧实现用数据所属日 = **前视** | 季度聚合显著变化：`CB_GOLD_BUY` 32/42 个季度变（例 `2026-03-31` 2.32 → 120.26）、`ETF_FLOW` 76/76 变（例 `2026-09-30` 211.17 → −69.05）。**黄金卡片供需段与季度分位会跟着变，不是回归**。完整对照表见 `CHANGES.md` v5.45 |
 | v5.46 | 面板列名改成语义名（`CLOSE`→`close`），三对同值列合并 | 面板列数变少（ashare 38→35/59→56，gold 20→19/29→28），**数值逐位不变**；详情卡「数据新鲜度」行名变 `fed_rate` 这种小写名 |
 | v5.48 | 六列派生量沉进耦合层（ETF 四列 + 股息率 + 黄金两条流量），causual **不再计算、只装配**；股息率缺列改 `KeyError`（不再"告警 + 整列 NaN"） | 列名变 `etf_dispersion` / `size_flow` / `national_etf` / `national_etf_event` / `dividend_yield` / `cb_gold_buy` / `etf_flow`；**列数与数值都不变**（逐位比对过）。`series: dict` 通道彻底删除，`load_raw` / `build_panel` / `run` / `port.generate` 全部收 `DataFrame` |
+| v5.51 | `freshness.py` 删除，判定搬回数据层；`run` / `port.*` 收 `freshness` 行，告警判据从"自算的 stale"换成数据层的 `overdue` | **日频卡多一条 ⚠ 行**：ashare 报 `geopolitic_risk`、gold 报 `geopolitic_risk` + `gold_open_interest`（旧手写清单漏了这三张，不是回归）。月频卡与归档月不变（`2026-10`）。文案格式逐字未改 |
 
 ---
 
@@ -307,11 +314,11 @@ causual 不直接对外提供服务。service 通过三样东西使用它：
 | `PANEL_KIND` / `PANEL_COLS` / `DERIVED_COLS` | `causual_assets/{asset}/pipeline.py` | 模块声明：要哪个面板、要哪些列（⊆ `COLUMNS[PANEL_KIND]`，等式测试钉住） | 装配点 / 测试 |
 | `load_raw(panel)` | `causual_assets/{asset}/pipeline.py` | **只装配不取数**：按 `PANEL_COLS` 选列，`_derived` 把耦合层算好的派生列搬进来（缺列 `KeyError`） | `build_panel` / 测试 |
 | `build_panel(asof=None, panel=None, state=None)` | `causual_assets/{asset}/pipeline.py` | `prepare(load_raw(panel))` + 贴状态标签 → `(df, spec)`；`panel is None` 直接报错（装配点漏传） | `pipeline.run` |
-| `pipeline.run(asset, panel, *, meta=None, state, asof, quiet)` | `causual_core/pipeline.py` | 出卡；**只吃数据，不取数**。`meta` 可选，只给新鲜度提示与月频归档月 | `causual.port.CausalPort` |
+| `pipeline.run(asset, panel, *, freshness=None, state, asof, quiet)` | `causual_core/pipeline.py` | 出卡；**只吃数据，不取数、不判断过期**。`freshness` 由装配点用 `shared.adapter.freshness(panel)` 算好 | `causual.port.CausalPort` |
 | `required_tables(asset)` | `causual/port.py` | 该资产要哪些表（纯声明，= `tables_of(PANEL_KIND)`） | CLI / service 装配点 |
 | `panel_kind(asset)` | `causual/port.py` | 该资产要哪个耦合层面板（纯查表，**不取数**）；装配点拿它 `get_data(...)` | CLI / service / web |
-| `macro_month(meta, *, asset=None)` | `causual/port.py` | 月频卡该覆盖的月份；`asset` 是**关键字参数**（传了就按该资产的表收窄） | service（`exists` 之前） |
-| `generate / generate_macro(asset, panel, *, month, date, state, meta)` | `causual/port.py` | 出卡；`panel` 由装配点取好 | service |
+| `macro_month(freshness)` | `causual/port.py` | 月频卡该覆盖的月份（月/季频行 `actual` 最大值所在月）。**不再收 `asset`**：freshness 本来就按本资产面板算 | service（`exists` 之前） |
+| `generate / generate_macro(asset, panel, *, date, month, state, freshness)` | `causual/port.py` | 出卡；`panel` / `freshness` 都由装配点取好 | service |
 | `list_cards / get_card / to_html` | `causual/port.py` | 卡片检索与 Markdown→HTML | `causual/web/routes.py` |
 | `register_module()` | `web/routes.py` | 返回 `Module`（router + templates + nav + port） | `service.registry.load()` |
 

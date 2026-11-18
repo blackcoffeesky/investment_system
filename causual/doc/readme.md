@@ -43,7 +43,7 @@ causual/
 │   ├── estimators.py            # DML / 分布滞后 / 事件研究
 │   ├── signal_layer.py          # 贡献 = 剂量 × β × z × gate × active × 纯度
 │   ├── macro_layer.py           # 结构层 + 供需层（位置 × 边际）
-│   ├── freshness.py             # 数据新鲜度（按 freq + lag_days 判过期）
+│   ├── (freshness.py 已删)       # 判过期搬到数据层：shared.adapter.freshness
 │   ├── regime_fit.py            # 状态模型拟合
 │   ├── regime_infer.py          # 今日后验 / 标签外推
 │   ├── pipeline.py              # 出卡编排：面板 → 信号 → 叙事 → 落盘
@@ -78,10 +78,10 @@ causual 不直接对外提供服务，而是暴露三样东西让 service 挂载
 |---|---|---|
 | `load_raw(panel)` | `causual_assets/{asset}/pipeline.py` | **只装配不取数**：按 `PANEL_COLS` 选列 + `_derived` 搬派生列（缺列 `KeyError`） |
 | `build_panel(asof=None, panel=None, state=None)` | `causual_assets/{asset}/pipeline.py` | `prepare(load_raw(panel))` + 贴状态标签；`panel` 没传直接报错 |
-| `pipeline.run(asset, panel, *, meta, state, asof=None, quiet=...)` | `causual_core/pipeline.py` | 出卡：**只吃数据，不取数**；`meta` 可选（新鲜度提示 / 月频归档月） |
+| `pipeline.run(asset, panel, *, freshness, state, asof=None, quiet=...)` | `causual_core/pipeline.py` | 出卡：**只吃数据，不取数、不判过期**；`freshness` 由装配点算好 |
 | `required_tables(asset)` / `panel_kind(asset)` | `port.py` | 装配用：要哪些表 / 要哪个耦合层面板（**都是纯声明，不取数**） |
 | `generate(asset, panel, ...)` / `generate_macro(asset, month, panel, ...)` | `port.py` | 出卡（`panel` 由装配点取好） |
-| `macro_month(meta, *, asset=None)` | `port.py` | 月频卡该覆盖的月份（`asset` 关键字参数，传了按该资产收窄） |
+| `macro_month(freshness)` | `port.py` | 月频卡该覆盖的月份（月/季频行 `actual` 最大值所在月） |
 | `list_cards(asset, start, end)` / `get_card(asset, date, kind)` / `to_html(md)` | `causual_cards.py` | 卡片检索与渲染 |
 | `register_module()` | `web.py` | 返回 `service.registry.Module`（路由 + 模板目录 + 导航） |
 
@@ -559,7 +559,7 @@ python -m causual.causual_core.cli audit  --asset ashare   # 方向一致性审�
 | 慢变量用固定期数摊销 | 真实滞后分布被压平 |
 | 结构层是人工文本 | 与供需层的实证可能互相矛盾，卡片不会自动调和 |
 | 状态模型靠外推 | 模型超过 2 个月没重训就会失真，卡片只标"龄期"不阻断 |
-| 新鲜度只看 `freshness.WATCH*` 里的表 | 不在清单里的表过期了没人报；清单里的名字与数据层不一致时**曾经静默失效**，现在会 stderr 告警并由 `tests/datahub/test_freshness_watchlist.py` 拦住 |
+| ~~新鲜度只看 `freshness.WATCH*` 里的表~~ | **2026-11-18 已修**：手写清单删除，改按 `tables_of(panel)` 全表判（口径在数据层）。旧清单只盯 11 张日频表，`geopolitic_risk` / `gold_open_interest` / `xau_usd` 过期了根本没人报（实测补上后 ashare / gold 卡片各多一条告警） |
 | 新鲜度按 `lag_days` 判"该不该有" | `lag_days` 描述的是**发布节律**，判不出"连续 15 个月没更新"这类停更——只能靠卡片的"数据滞后"提示与 readme 第 4.5 节人工盯 |
 
 ## 11. 使用建议

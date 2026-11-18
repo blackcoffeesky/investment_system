@@ -75,9 +75,11 @@ def regenerate(request: Request, asset: str, date: str):
     if asset not in ASSET_NAME:
         raise HTTPException(404, f"未知资产：{asset}")
     try:
+        from shared.adapter import freshness as panel_freshness
+
         panel = _panel_for(request, asset)
-        meta = request.app.state.services["datahub"].metadata()
-        get_port().regenerate(asset, date, panel, meta=meta)
+        rows = panel_freshness(get_port().panel_kind(asset), today=date)
+        get_port().regenerate(asset, date, panel, freshness=rows)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(500, f"重生成失败：{type(e).__name__}: {e}") from e
     return RedirectResponse(f"/card/{asset}/{date}", status_code=303)

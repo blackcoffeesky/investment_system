@@ -156,20 +156,16 @@ class CausalPort:
 
         return load_asset(asset).PANEL_KIND
 
-    def macro_month(self, meta=None, *, asset: str | None = None) -> str:
-        """月频卡该覆盖的月份（宏观表 end_date 的最大值所在月）。
+    def macro_month(self, freshness: list[dict] | None) -> str:
+        """月频卡该覆盖的月份（月/季频表 `actual` 的最大值所在月）。
 
-        `asset` 是**关键字参数**，不是位置参数——旧调用是
-        `macro_month(data.metadata())`，把 `asset` 放第一位会让 DataFrame
-        绑定到资产名上，静默退回自然月。传了就按该资产的表收窄
-        （不收窄的话黄金的归档月会被 A 股的表拖到 10 月）。
+        只吃装配点算好的新鲜度行（`shared.adapter.freshness(panel)`）——它本来就是
+        按**本资产的面板**算的，所以不需要再传 `asset` 收窄（旧的 `asset=` 关键字
+        参数已删；不删的话黄金仍可能被别的表拖走）。
         """
         from causual.causual_core.pipeline import _month_of
 
-        required = None
-        if asset is not None:
-            required = self.required_tables(asset)
-        return _month_of(meta, required=required)
+        return _month_of(freshness)
 
     def exists(self, asset: str, date: str, kind: str = "card") -> bool:
         return card_path(asset, date, kind).exists()
@@ -177,7 +173,7 @@ class CausalPort:
     def generate(self, asset: str, panel: pd.DataFrame,
                  date: str | None = None,
                  state: dict | None = None,
-                 meta: pd.DataFrame | None = None) -> Path:
+                 freshness: list[dict] | None = None) -> Path:
         if date is None:
             date = self.last_data_date(asset, panel)
         path = card_path(asset, date)
@@ -185,26 +181,27 @@ class CausalPort:
             return path
         from causual.causual_core import pipeline
 
-        return pipeline.run(asset, panel, meta=meta, state=state, asof=date, quiet=True)
+        return pipeline.run(asset, panel, freshness=freshness, state=state,
+                            asof=date, quiet=True)
 
     def generate_macro(self, asset: str, month: str, panel: pd.DataFrame,
                        state: dict | None = None,
-                       meta: pd.DataFrame | None = None) -> Path:
+                       freshness: list[dict] | None = None) -> Path:
         path = card_path(asset, month, "macro")
         if path.exists():
             return path
         from causual.causual_core import pipeline
 
-        pipeline.run(asset, panel, meta=meta, state=state, quiet=True)
+        pipeline.run(asset, panel, freshness=freshness, state=state, quiet=True)
         return card_path(asset, month, "macro")
 
     def regenerate(self, asset: str, date: str, panel: pd.DataFrame,
                    state: dict | None = None,
-                   meta: pd.DataFrame | None = None) -> Path:
+                   freshness: list[dict] | None = None) -> Path:
         path = card_path(asset, date)
         if path.exists():
             path.unlink()
-        return self.generate(asset, panel, date=date, state=state, meta=meta)
+        return self.generate(asset, panel, date=date, state=state, freshness=freshness)
 
 
 _INSTANCE: CausalPort | None = None

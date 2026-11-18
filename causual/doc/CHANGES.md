@@ -2,6 +2,59 @@
 
 ---
 
+# v5.51（2026-11-18）：删掉 `freshness.py`，新鲜度改成参数
+
+判定口径搬回数据层（`d4b4a6a`），`shared.adapter.freshness(panel, *, today=None)` 返回
+每行 `{table, freq, expect, actual, lag_days, stale, overdue, days_behind, text}`。
+`causual/causual_core/freshness.py` **整个删除**（176 行：`WATCH` / `MONTH_TABLES` /
+`WATCH_MACRO` / `_period_end` / `check` / `stale_only` / `scoped` / `summary`）。
+
+| 原来 | 现在 |
+|---|---|
+| `run(asset, panel, *, meta, …)` 里自己 `scoped` + `stale_only` + `summary` | `run(asset, panel, *, freshness=[...], …)`，只调 `_notes()` 挑行拼句子 |
+| `_month_of(meta, required)` 读手写 `MONTH_TABLES` | `_month_of(freshness)` 取月/季频行 `actual` 的最大值 |
+| `_write_fingerprint(meta, …)` 按 `WATCH*` 过滤 | `_write_fingerprint(freshness, …)` 按 `freq` 过滤 |
+| `macro_month(meta, *, asset=None)` | `macro_month(freshness)`（freshness 本来就按本资产面板算，`asset` 无用） |
+| `generate/generate_macro(…, meta=…)` | 同位置收 `freshness=` |
+
+## 判定用 `overdue` 而不是 `stale`（**与 lead 的口头指示不同，见 `_decisions.md`**）
+
+`stale` = 落后于"该有的期"；`overdue` = **超出 `lag_days` 宽限**。旧实现先要求
+`今天 >= 期望期 + lag_days` 才纳入告警，等价于 **`overdue`**。实测两者差别很大：
+
+| 口径 | ashare 日频 | ashare 月/季 | gold 日频 | gold 月/季 |
+|---|---|---|---|---|
+| 旧实现 | 0 条 | 5 条 | 0 条 | 0 条 |
+| `stale` | 6 条 | 11 条 | 7 条 | 1 条 |
+| **`overdue`（本版采用）** | **1 条** | **5 条** | **2 条** | **0 条** |
+
+用 `stale` 会把"美联储数据发布滞后 2 天"这类**不可抗力**也报成"数据滞后，解读要打折扣"。
+`_notes(..., overdue_only=False)` 保留了这个口径（每句后面加"（宽限已过，疑似未更新）/（源尚未发布）"），
+一行就能切。
+
+## 验证
+
+1. **文案逐字不变**：从 `git show HEAD:causual/causual_core/freshness.py` 把旧模块捞出来，
+   同一个 `today`、同一批行喂两份实现 → ashare/gold × 日频/月季频 **四组字符串完全相等**。
+2. **卡片**：只用旧清单口径的行 vs 用全量行各出一次卡（同一份面板）→ 6 张 Markdown 里
+   **4 张逐字相同**，2 张日频卡各多出**一条** ⚠ 行：
+   - ashare：`geopolitic_risk 停在 2026-10-19`
+   - gold：`geopolitic_risk` + `gold_open_interest 停在 2026-11-10`
+
+   这两张表旧清单里**根本没有**（`geopolitic_risk` 停更 30 天，面板一直在用它）——
+   差异就是这次要修的漏监控，不是回归。
+3. **归档月不变**：ashare / gold 都是 `2026-10`（新旧两种口径各算一次）。
+4. `tests/run_tests.py` **136/136**、pyright 0、`daily` 两个资产 exit 0。
+
+## 连带清理
+
+- `tests/service/test_ops.py` 里两条直接 `from causual.causual_core import freshness` 的测试删除
+  （被测模块没了；同口径断言在 `tests/datahub/test_freshness_port.py`）。
+- `tests/datahub/test_freshness_watchlist.py` 重写成新口径（表名真实 / `freq` 可判 / 覆盖非空）。
+- `tests/causual/test_card_smoke.py` 改传 `freshness=`。
+
+---
+
 # v5.50（2026-11-16）：列声明等式测试 + 文档补齐
 
 ## 一、`PANEL_COLS` 与 adapter 的 `COLUMNS` 钉成一条等式

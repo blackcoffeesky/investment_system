@@ -362,44 +362,12 @@ def test_all_settled_and_has_unacked_flags():
 
 
 # ---------------------------------------------------------------- 新鲜度 / 页面
-def test_freshness_uses_given_asof():
-    """新鲜度必须按传入的参考日判断，不能用"今天"。
-
-    11-03 的卡在 11-05 重建时，不应因为 11-04/11-05 的数据没到而报警。
-    """
-    import pandas as pd
-
-    from causual.causual_core import freshness
-
-    meta = pd.DataFrame([
-        {"name": "csi_all", "freq": "D", "lag_days": 0, "end_date": "2026-11-03"},
-        {"name": "vix", "freq": "D", "lag_days": 0, "end_date": "2026-11-03"},
-    ])
-    # 用 11-03 当参考：两张表都到齐
-    assert freshness.stale_only(meta, today=pd.Timestamp("2026-11-03")) == []
-    # 用 11-05 当参考：都落后了
-    late = freshness.stale_only(meta, today=pd.Timestamp("2026-11-05"))
-    assert len(late) == 2 and all(f.stale for f in late)
-
-
-def test_freshness_respects_lag_days():
-    """月频表在 lag 之内不该误报。"""
-    import pandas as pd
-
-    from causual.causual_core import freshness
-
-    meta = pd.DataFrame([
-        {"name": "cpi_yoy", "freq": "M", "lag_days": 9, "end_date": "2026-10-31"},
-    ])
-    # 11-05：上月末 10-31 + 9 天 = 11-09，还没到发布日 → 不报
-    assert freshness.stale_only(meta, tables=("cpi_yoy",),
-                                today=pd.Timestamp("2026-11-05")) == []
-    # 12-15：11 月数据应已发布（11-30 + 9 天 = 12-09），但表里还停在 10-31 → 报
-    stale = freshness.stale_only(meta, tables=("cpi_yoy",),
-                                 today=pd.Timestamp("2026-12-15"))
-    assert len(stale) == 1
-
-
+# 原 `test_freshness_uses_given_asof` / `test_freshness_respects_lag_days` 已于
+# 2026-11-18 删除：它们直接 import `causual.causual_core.freshness`，而那个模块
+# 已经删掉（判定口径搬回数据层）。等价的断言现在在
+# `tests/datahub/test_freshness_port.py`（`today=` 参考日、`lag_days` 宽限、
+# `stale` vs `overdue` 两个布尔量）。causual 侧只剩"挑行 + 拼句子"，
+# 由 `tests/causual/test_card_smoke.py` 用真实面板覆盖。
 def test_ops_page_renders_with_grouped_messages():
     """运维页有多条消息时按组渲染，不能 500。
 
