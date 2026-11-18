@@ -328,6 +328,24 @@ def run(start: str = "2000-01-01", end: str | None = None,
     end = end or str(pd.Timestamp.today().date())
     picked = [s for s in SOURCES if s.enabled]
     if only:
+        # **`--only` 里写错/写了手工表名，必须当场报错**。
+        # 以前是静默过滤成空集合 → 返回无列空表 → 调用方 `df["status"]` 炸出
+        # `KeyError: 'status'`，读起来像"源挂了"，实际是"这张表不归 update 管"
+        # （2026-11-17 `gold_etf_holdings` 就是这么绕了一圈）。
+        known = {t for s in SOURCES for t in s.table.split("|")}
+        known |= {s.table for s in SOURCES}
+        unknown = [t for t in only if t not in known]
+        if unknown:
+            from datahub.fin.intake.registry import hint_for
+
+            lines = []
+            for t in unknown:
+                hint = hint_for(t)
+                if hint:
+                    lines.append(f"  {t!r} 是**手工导入表**（不在 SOURCES 里）。{hint}")
+                else:
+                    lines.append(f"  {t!r} 不是已知表。当前 SOURCES：{sorted(known)}")
+            raise ValueError("update --only 里有无法更新的表：\n" + "\n".join(lines))
         picked = [s for s in picked if any(t in only for t in s.table.split("|"))]
 
     from datahub.core.conn import connect as _connect

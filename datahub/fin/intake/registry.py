@@ -26,3 +26,21 @@ SOURCES: dict[str, IntakeSource] = {
                      note="WGC ETF 月报：全球黄金 ETF 持仓（吨）；净流入=差分"),
     ]
 }
+
+
+#: 表名 → intake 源标识（一张表只该有一个导入入口）
+TABLE_TO_KEY: dict[str, str] = {s.table: s.key for s in SOURCES.values()}
+
+
+def hint_for(table: str) -> str | None:
+    """某张**手工导入表**该怎么更新（给 `update --only` 与新鲜度告警用）。
+
+    返回 `None` 表示不是手工表。返回的字符串是**可直接执行的命令**——
+    告警要能被执行才有用，否则用户只能去翻代码。
+    """
+    key = TABLE_TO_KEY.get(table)
+    if key is None:
+        return None
+    src = SOURCES[key]
+    return (f"{src.note}；需手工导入："
+            f"python -m datahub.fin.intake {key} <xlsx> --load")

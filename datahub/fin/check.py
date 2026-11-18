@@ -252,6 +252,13 @@ def run(path: Path | None = None, recent_days: int = 90) -> pd.DataFrame:
         if isinstance(obj, pd.Series) and obj.isna().any():
             issues.append(f"空值 {int(obj.isna().sum())}")
         if issues:
+            # 手工导入表（WGC 月报/季报）的提示要**可执行**：
+            # "已 48 天未更新" 只说明现象，用户还得去翻代码才知道怎么补。
+            from datahub.fin.intake.registry import hint_for
+
+            hint = hint_for(name)
+            if hint:
+                issues.append(hint)
             rows.append({"name": name, "freq": freq, "market": market,
                          "n": len(obj), "issues": "；".join(issues)})
     return pd.DataFrame(rows)

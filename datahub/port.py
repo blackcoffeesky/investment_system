@@ -189,6 +189,10 @@ class DataPort:
             from shared.adapter import clear_cache
 
             clear_cache()
+        # 空报告（没有任何源被选中 / 全部被过滤掉）不能炸：`df["status"]` 会 KeyError，
+        # 而那个报错读起来像"源挂了"（2026-11-17 gold_etf_holdings 的误导就是这么来的）。
+        if df is None or len(df) == 0 or "status" not in df.columns:
+            return UpdateReport(ok=0, failed=0, rows=0, details=[])
         ok = int((df["status"] == "ok").sum()) if len(df) else 0
         failed = int((df["status"] == "失败").sum()) if len(df) else 0
         rows = int(df.loc[df["status"] == "ok", "rows"].sum()) if len(df) else 0

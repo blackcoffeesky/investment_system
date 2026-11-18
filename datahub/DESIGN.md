@@ -950,3 +950,33 @@ if spec is not None:
 **回归测试**：把 `metadata.kind` 手动写回 `multi`，`check` 仍输出 `ok（eav…）`、
 `finances` 不进问题清单（`tests/datahub/test_eav_tables.py::test_check_ignores_stale_kind_cache`）。
 之前 3 条测试都在"kind 已经是 eav"的前提下过的，所以没抓到——**测试要造"缓存是坏的"这个前提**。
+
+### 21.1 `update --only` 写错表名：静默无操作比报错更贵（2026-11-17）
+
+**事故链（三个 bug 叠出一个误导性报错）**：
+
+```
+update --only gold_etf_holdings
+  → 它不在 SOURCES 里（是**手工导入表**，靠人上传 WGC xlsx）
+  → run() 静默过滤成空集合 → 返回无列空 DataFrame
+  → port.run_update 取 df["status"] → KeyError: 'status'
+  → 读起来像"WGC 源挂了"，实际是"这张表不归 update 管"
+```
+
+三条修法：
+
+1. **`--only` 里的未知表名当场报错**，并区分两类：
+   · 手工表 → 给出**可直接执行**的命令
+     （`python -m datahub.fin.intake wgc_etf <xlsx> --load`）
+   · 真不存在的表 → 列出当前 `SOURCES`
+2. **`run_update` 兜住空报告**（`df` 为空或无 `status` 列 → 返回空 `UpdateReport`），
+   不再 `KeyError`
+3. **手工表的"怎么更新"收在一处**：`intake.registry.hint_for(table)`，
+   `check` 里出问题时也会把它拼到 `issues` 末尾
+
+**"能被执行的告警才有用"**：`已 48 天未更新（期望 ≤62 天）` 只说明现象，
+用户还得翻代码才知道怎么补；加上命令才算闭环。
+
+⚠️ 注意分工：**尾部停更**的告警文案在 `service/ops/states/data.py::overdue_tables`
+（`check` 只查区间内缺口，不查尾部——见 §15 的已知盲区）。
+service 那条文案要带导入命令，需要它调 `hint_for()`（跨模块，由 orchestrator 安排）。
