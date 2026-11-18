@@ -76,17 +76,17 @@ class FakeCards:
     def exists(self, asset, date):
         return False
 
-    def generate(self, asset, panel, meta=None, date=None, state=None):
+    def generate(self, asset, panel, meta=None, date=None, state=None, freshness=None):
         if asset in self.fail:
             raise RuntimeError("假失败")
         return Path(f"/tmp/{asset}_{date}.md")
 
-    def generate_macro(self, asset, month, panel, meta=None, state=None):
+    def generate_macro(self, asset, month, panel, meta=None, state=None, freshness=None):
         if asset in self.fail:
             raise RuntimeError("假失败")
         return Path(f"/tmp/{asset}_{month}.md")
 
-    def macro_month(self, meta=None, *, asset=None):
+    def macro_month(self, freshness=None):
         return "2026-11"
 
     def exists(self, asset, date, kind="card"):

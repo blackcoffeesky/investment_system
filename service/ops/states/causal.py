@@ -12,6 +12,19 @@ from service.ops.messages import Message, MessageLevel, StateResult
 ASSETS = ("ashare", "gold")
 
 
+def _freshness(cards, asset: str, *, date=None):
+    """该资产面板的表新鲜度（数据层算，装配点转手）。
+
+    `date` 给了就按那个日期判（卡片日），没给就用今天。
+    """
+    from shared.adapter import freshness as panel_freshness
+
+    kind = cards.panel_kind(asset)
+    if kind is None:        # 假端口（测试）不取真数据
+        return []
+    return panel_freshness(kind, today=None if date is None else str(date))
+
+
 def _load_panel(cards, asset: str):
     """取该资产的面板（耦合层唯一入口）。
 
@@ -50,15 +63,17 @@ class GenerateMacroState(BaseState):
         made, skipped, failed = [], [], []
         for asset in ASSETS:
             try:
-                month = cards.macro_month(data.metadata(), asset=asset)
+                st = ctx.services["state"]
+                panel = _load_panel(cards, asset)
+                # 新鲜度按**本资产面板**算：metadata 是全局的，不收窄会把黄金表报进 A 股卡
+                rows = _freshness(cards, asset, date=None)
+                month = cards.macro_month(rows)
                 if cards.exists(asset, month, kind="macro"):
                     skipped.append(f"{asset} {month}")
                     continue
-                st = ctx.services["state"]
-                panel = _load_panel(cards, asset)
                 view = st.state_view(asset, panel)
                 cards.generate_macro(asset, month, panel,
-                                     meta=data.metadata(), state=view)
+                                     state=view, freshness=rows)
                 made.append(f"{asset} {month}")
             except Exception as e:  # noqa: BLE001
                 failed.append((asset, f"{type(e).__name__}: {e}"))
@@ -119,7 +134,10 @@ class GenerateCardsState(BaseState):
                     skipped.append(f"{asset} {date}")
                     continue
                 view = st.state_view(asset, panel)
-                cards.generate(asset, panel, date=date, state=view, meta=meta)
+                # 新鲜度按**卡片日**算（不是今天）：重跑历史 --asof 不会凭空多出告警
+                rows = _freshness(cards, asset, date=date)
+                cards.generate(asset, panel, date=date, state=view,
+                               freshness=rows)
                 made.append(f"{asset} {date}")
             except Exception as e:  # noqa: BLE001
                 failed.append((asset, f"{type(e).__name__}: {e}"))
