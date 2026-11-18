@@ -110,7 +110,11 @@ _ASHARE_MACRO: dict[str, Any] = {
     "usd_index": "usd_index",
     "fed_rate": "fed_rate",
     "real_yield_10y": "real_yield_10y",
-    "geopolitic_risk": "geopolitic_risk",
+    # 地缘风险：2026-11-18 起用 `world_tension`（WTM，0–100）**替换**
+    # `geopolitic_risk`（GPRC，50–450）。**这是换测量、不是换数据源**：量级差 4 倍、
+    # 重叠 139 天相关 0.41，**没做任何缩放**。WTM 只从 2026-03-23 起有数据 →
+    # 面板里那一段 **NaN 是预期**，不要拿 GPRC 去补（会造出两段不同尺子的拼接序列）。
+    "world_tension": "world_tension",
     # A 股宏观 / 供给
     "pmi": "pmi",
     "insider_net": "insider_net",
@@ -144,7 +148,11 @@ _GOLD_MACRO: dict[str, Any] = {
     "usd_index": "usd_index",
     "fed_rate": "fed_rate",
     "real_yield_10y": "real_yield_10y",
-    "geopolitic_risk": "geopolitic_risk",
+    # 地缘风险：2026-11-18 起用 `world_tension`（WTM，0–100）**替换**
+    # `geopolitic_risk`（GPRC，50–450）。**这是换测量、不是换数据源**：量级差 4 倍、
+    # 重叠 139 天相关 0.41，**没做任何缩放**。WTM 只从 2026-03-23 起有数据 →
+    # 面板里那一段 **NaN 是预期**，不要拿 GPRC 去补（会造出两段不同尺子的拼接序列）。
+    "world_tension": "world_tension",
     "xau_usd": "xau_usd",
     "cb_holdings": "cb_holdings",
     "gold_etf_holdings": "gold_etf_holdings",
@@ -251,7 +259,7 @@ _WARMUP: dict[str, Mapping[str, int]] = {
     },
     "ashare_macro": {
         **{c: 10 for c in ("vix", "usdcny", "usd_index", "fed_rate",
-                           "real_yield_10y", "geopolitic_risk")},
+                           "real_yield_10y", "world_tension")},
         # 月频：45 天 = 1 个月 + 公布滞后余量
         **{c: 45 for c in ("pmi", "cpi_yoy", "ppi_yoy", "retail_sales",
                            "retail_sales_mom", "industrial_yoy", "exports_yoy",
@@ -265,7 +273,7 @@ _WARMUP: dict[str, Mapping[str, int]] = {
     },
     "gold_macro": {
         **{c: 10 for c in ("usd_index", "fed_rate", "real_yield_10y",
-                           "geopolitic_risk", "xau_usd", "gold_open_interest",
+                           "world_tension", "xau_usd", "gold_open_interest",
                            "gold_cot_net_long", "gold_cpi_surprise")},
         "gold_etf_holdings": 45,               # 月频 + 40 天公布滞后
         "cb_holdings": 130,                    # 季频 + 45 天公布滞后
