@@ -46,7 +46,7 @@ SHARED: dict[str, Node] = {
     USD_INDEX: Node(USD_INDEX, "D", "natural", "fast", 0, "美元指数"),
     REAL_YIELD: Node(REAL_YIELD, "D", "natural", "fast", 1, "美国 10 年期实际收益率（%）"),
     VIX: Node(VIX, "D", "natural", "fast", 1, "VIX 波动率指数"),
-    GEOPOLITIC_RISK: Node(GEOPOLITIC_RISK, "D", "natural", "fast", 0, "地缘政治风险指数（GPR）"),
+    GEOPOLITIC_RISK: Node(GEOPOLITIC_RISK, "D", "natural", "fast", 0, "世界紧张度指数（WTM，0–100）"),
     USDCNY: Node(USDCNY, "D", "asset", "fast", 0, "美元兑人民币"),
     XAU_USD: Node(XAU_USD, "D", "natural", "fast", 0, "COMEX 金价（美元/盎司）"),
 }

@@ -301,6 +301,7 @@ python -m datahub.fin.check
 | v5.45 | 黄金 `CB_GOLD_BUY` / `ETF_FLOW` 的落位日改成**发布可见日**（央行购金 +45 天、ETF 持仓 +40 天）；旧实现用数据所属日 = **前视** | 季度聚合显著变化：`CB_GOLD_BUY` 32/42 个季度变（例 `2026-03-31` 2.32 → 120.26）、`ETF_FLOW` 76/76 变（例 `2026-09-30` 211.17 → −69.05）。**黄金卡片供需段与季度分位会跟着变，不是回归**。完整对照表见 `CHANGES.md` v5.45 |
 | v5.46 | 面板列名改成语义名（`CLOSE`→`close`），三对同值列合并 | 面板列数变少（ashare 38→35/59→56，gold 20→19/29→28），**数值逐位不变**；详情卡「数据新鲜度」行名变 `fed_rate` 这种小写名 |
 | v5.48 | 六列派生量沉进耦合层（ETF 四列 + 股息率 + 黄金两条流量），causual **不再计算、只装配**；股息率缺列改 `KeyError`（不再"告警 + 整列 NaN"） | 列名变 `etf_dispersion` / `size_flow` / `national_etf` / `national_etf_event` / `dividend_yield` / `cb_gold_buy` / `etf_flow`；**列数与数值都不变**（逐位比对过）。`series: dict` 通道彻底删除，`load_raw` / `build_panel` / `run` / `port.generate` 全部收 `DataFrame` |
+| v5.52 | 因果层的 `GEOPOLITIC_RISK` 节点**换测量**：列从 `geopolitic_risk`(GPRC) 改成 `world_tension`(WTM)。节点名**不变**（改名字会牵动已落盘的边快照索引） | `GEO_CHG` 只剩 2026-03-24 起的 159 个观测（之前全 NaN，**没做缩放、没拿旧序列补空档**）；`GEO→GOLD_CNY` 样本从 ~2400 天掉到 ~160，CI 变宽、z 变动 → 该边实测**未激活**（z=-0.93）。两张卡里 `world_tension` 不再触发 ⚠ 滞后告警（数据到 11-17） |
 | v5.51 | `freshness.py` 删除，判定搬回数据层；`run` / `port.*` 收 `freshness` 行，告警判据从"自算的 stale"换成数据层的 `overdue` | **日频卡多一条 ⚠ 行**：ashare 报 `geopolitic_risk`、gold 报 `geopolitic_risk` + `gold_open_interest`（旧手写清单漏了这三张，不是回归）。月频卡与归档月不变（`2026-10`）。文案格式逐字未改 |
 
 ---

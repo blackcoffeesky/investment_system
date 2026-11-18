@@ -250,7 +250,7 @@ python -m datahub.fin.check                        # 完整性（按交易日历
 | 变量 | 问题 |
 |---|---|
 | `industrial_yoy`、`exports_yoy` | akshare 只有财经日历接口，停在 2025-08 |
-| `geopolitic_risk` | 源已停更，旧序列冻结；新数据改用 `world_tension`（2026-03 起） |
+| `world_tension`（替代 `geopolitic_risk`） | 2026-11-18 换源：GPRC 停更（冻结在 2026-10-19），改用世界紧张度指数 WTM（0–100）。**只有 2026-03-23 起**，之前全 NaN；两段重叠 139 天、相关 0.41，**没有做缩放**——是换测量不是换源 |
 | `cb_holdings` | 2026Q2 有 23/87 国 `AWAITED`，按 Q1 补齐 —— 结果是**低估** |
 | `gold_cpi_surprise` | 标准 AR(1) 配方与旧序列相关性 0.75（同源不同参数） |
 
@@ -313,7 +313,7 @@ causual/
 
 ### 4.1 三层节点
 
-- **外生**：`FED_RATE` `CPI_SURPRISE` `USD_INDEX` `GEOPOLITIC_RISK` `CB_GOLD_BUY`
+- **外生**：`FED_RATE` `CPI_SURPRISE` `USD_INDEX` `GEOPOLITIC_RISK`（列 = `world_tension`）`CB_GOLD_BUY`
 - **中间**：`REAL_YIELD_10Y` `VIX` `USDCNY` `ETF_FLOW` `COMEX_INVENTORY`
   `MINE_SUPPLY` `JEWELRY_DEMAND` `OPEN_INTEREST` `ETF_PREMIUM`
 - **终端**：`GOLD_CNY`
@@ -553,7 +553,7 @@ python -m causual.causual_core.cli audit  --asset ashare   # 方向一致性审�
 | 限制 | 影响 |
 |---|---|
 | `industrial_yoy` / `exports_yoy` 停在 2025-08 | 卡片第 3.3 节这两行是陈数据 |
-| `geopolitic_risk` 源已停更 | 旧序列冻结；新数据用 `world_tension`（2026-03 起，仅 7 个月） |
+| `GEOPOLITIC_RISK` 只有 8 个月历史 | GPRC 停更后换 WTM（2026-03-23 起，约 160 个观测）；`GEO→GOLD_CNY` 这条边样本从 10 年掉到 8 个月，CI 宽、容易掉出激活——这是换测量的真实代价，不调参 |
 | `cb_holdings` 2026Q2 有 23/87 国 `AWAITED` | 按 Q1 补齐 → 净购金**低估** |
 | 季频供需只有 ~42 个季度观测 | 央行购金的置信区间宽，单条边难以显著 |
 | 慢变量用固定期数摊销 | 真实滞后分布被压平 |

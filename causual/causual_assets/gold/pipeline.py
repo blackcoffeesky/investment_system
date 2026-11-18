@@ -36,7 +36,7 @@ PANEL_COLS: tuple[str, ...] = (
     "xau_usd", "cb_holdings", "gold_etf_holdings",
     "gold_open_interest", "gold_cot_net_long", "gold_cpi_surprise",
     # 共享宏观
-    "vix", "usdcny", "usd_index", "fed_rate", "real_yield_10y", "geopolitic_risk",
+    "vix", "usdcny", "usd_index", "fed_rate", "real_yield_10y", "world_tension",
 )
 
 # 由**耦合层算好**的派生列（存量 → 流量的差分，落在发布**可见日**）。
@@ -111,7 +111,7 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
     df["RY_CHG_BP"] = dp.diff_bp(df["real_yield_10y"])
     df["VIX_CHG"] = df["vix"].diff()
     df["USDX_CHG"] = df["usd_index"].diff()
-    df["GEO_CHG"] = df["geopolitic_risk"].diff()
+    df["GEO_CHG"] = df["world_tension"].diff()
     df["FED_CHG_BP"] = dp.diff_bp(df["fed_rate"])
     oi = df["gold_open_interest"].replace(0, np.nan)
     df["OI_CHG_PCT"] = dp.pct_change_pct(oi).clip(-50, 50)

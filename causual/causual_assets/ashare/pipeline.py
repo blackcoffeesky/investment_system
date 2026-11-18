@@ -41,7 +41,7 @@ PANEL_COLS: tuple[str, ...] = (
     "m1_yoy", "m2_yoy", "m1_level", "m2_level",
     "total_shares", "total_mktcap", "equity_fin_monthly",
     # 共享宏观
-    "vix", "usdcny", "usd_index", "fed_rate", "real_yield_10y", "geopolitic_risk",
+    "vix", "usdcny", "usd_index", "fed_rate", "real_yield_10y", "world_tension",
 )
 
 # 由**耦合层算好**的派生列（datahub 的 `DERIVED` 注册表 → adapter 落成面板列）。

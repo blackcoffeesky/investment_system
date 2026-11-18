@@ -2,6 +2,39 @@
 
 ---
 
+# v5.52（2026-11-18）：`GEOPOLITIC_RISK` 从 GPRC 换成世界紧张度（WTM）
+
+数据层把 `geopolitic_risk`（GPRC，2383 行、2016-12 → 2026-10-19、50–450 分制）换成了
+`world_tension`（WTM，239 行、2026-03-23 起、0–100 分制）。causual 侧四处跟着换：
+
+| 位置 | 改动 |
+|---|---|
+| `gold/config.py`（`TREATMENT_COL` / `SOURCE_COL`） | `"GEOPOLITIC_RISK": "geopolitic_risk"` → `"world_tension"` |
+| `gold/pipeline.py` `PANEL_COLS` / `prepare()` | 必需列改名；`GEO_CHG = df["world_tension"].diff()` |
+| `ashare/pipeline.py` `PANEL_COLS` | 同上（ashare 没有 GEO 边，只是面板列跟着换） |
+| `nodes.py` | 描述 `地缘政治风险指数（GPR）` → `世界紧张度指数（WTM，0–100）`；**节点名 `GEOPOLITIC_RISK` 不变**（改名会牵动已落盘的边快照索引） |
+
+## 三条红线（照做了）
+
+1. **不做缩放**：没拿重叠期把 WTM 映射到 GPRC 的量级——那是给两个不同的测量伪造连续性。
+2. **不拿旧序列补空档**：2026-03-23 之前就是 NaN。
+3. **不为了保住边调参**：样本从 ~2400 天掉到 ~160，CV/CI 变宽是这次决定的真实代价。
+
+## 换完的实测
+
+| 项 | 值 |
+|---|---|
+| 面板列 | ashare 40 / gold 19（1:1 换名，列数不变；raw 35 / 19，prep 56 / 28 也不变） |
+| `world_tension` | ashare 159 个非空（03-23 → 11-13）、gold 160 个（03-23 → 11-16） |
+| `GEO_CHG` | **159 个非空，2026-03-24 → 2026-11-16**，范围 −21 ~ +27，中位数 0 |
+| 空档边界 | `world_tension` 首个非空那天（03-23）`GEO_CHG` 是 NaN —— `diff()` 的首值，正常 |
+| `GEO→GOLD_CNY` 边 | 卡片读数 `z=-0.93`、**未激活**、贡献 +0bp、纯度 0.52（⚠ 机制不显著） |
+
+⚠️ 边快照还是旧快照估的（`n_obs=144`，按 GPRC 估）。也就是说现在卡片上是
+**"WTM 的 z × GPRC 的 β"的混合态**，等 lead 重估两条资产的边之后才一致。
+
+---
+
 # v5.51（2026-11-18）：删掉 `freshness.py`，新鲜度改成参数
 
 判定口径搬回数据层（`d4b4a6a`），`shared.adapter.freshness(panel, *, today=None)` 返回
