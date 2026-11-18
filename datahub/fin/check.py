@@ -18,6 +18,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import argparse
 import sqlite3
 from pathlib import Path
@@ -276,3 +278,115 @@ if __name__ == "__main__":
     df = run()
     print(f"\n问题表数 {len(df)}")
     print(df.to_string(index=False) if len(df) else "全部通过")
+
+
+# ======================================================================
+# 新鲜度：两个布尔量，别把它们合成一个
+# ======================================================================
+# 2026-11-18 从 `causual/causual_core/freshness.py` 搬回数据层：
+# 那个模块自己读 `metadata` 判过期，是 causual 与数据层的耦合，又拿不到适配层。
+# 语义照搬（`_period_end` 的四个分支 + 只判 D/M/Q/Y），但**多给一个布尔量**。
+
+
+def _period_end(freq: str, today: pd.Timestamp) -> pd.Timestamp | None:
+    """最近一个"已结束的周期"的期末；不判过期的频率返回 None。
+
+    语义与原 causual 实现逐条一致（搬过来时没改口径）：
+
+    - `D` → 上一工作日（周末不判过期）
+    - `M` → 上月月末
+    - `Q` → 上季末
+    - `Y` → 上年末
+    - `W` / `SPARSE` / 其它 → `None`（"该有了"没有定义，**有意不判**）
+    """
+    if freq == "D":
+        d = today
+        while d.weekday() >= 5:
+            d -= pd.Timedelta(days=1)
+        return d
+    if freq == "M":
+        return (today.replace(day=1) - pd.Timedelta(days=1)).normalize()
+    if freq == "Q":
+        q_end = today.to_period("Q").start_time - pd.Timedelta(days=1)
+        return pd.Timestamp(q_end).normalize()
+    if freq == "Y":
+        return pd.Timestamp(year=today.year - 1, month=12, day=31)
+    return None
+
+
+def freshness(tables=None, *, today: str | pd.Timestamp | None = None,
+              path: Path | None = None) -> list[dict]:
+    """每张表一行：**是否过期（stale）** 与 **是否超出宽限（overdue）**。
+
+    两个布尔量是**不同的事**，不要合成一个：
+
+    | stale | overdue | 含义 | 该做什么 |
+    |---|---|---|---|
+    | False | False | 已是最新 | 无 |
+    | True  | False | **不可抗力**：源还没发布，仍在 `lag_days` 宽限内 | 等，**不用报警** |
+    | True  | True  | **忘记更新**：宽限已过还没到 | 报警 / 查管线 |
+
+    原 causual 实现的写法是 `if today < expect + lag: continue` ——
+    **"宽限内"那一支被直接吞掉了**，于是上层只看到"过期表"，
+    分不清"源还没发"和"我们忘了跑"。这里把它显式化成 `overdue`。
+
+    返回值每行：`table / freq / expect / actual / lag_days / stale / overdue /
+    days_behind / text`。`freq` 必须带——下游（如月频卡的归档月）靠它筛
+    `freq in ("M","Q")`，不要再去维护一份手写清单。
+
+    - `tables=None` → `metadata` 里全部表
+    - 表名不在 `metadata` 里 → **打印告警**（清单漂移 = 监控失效，2026-11 踩过）
+    - `static` / `eav`（没有日期轴）→ 跳过
+    - `today` 可指定（测试用固定日期，不依赖真实今天）
+    """
+    from datahub.fin.read import kind_of
+
+    con = _conn(path)
+    try:
+        meta = pd.read_sql("SELECT name, freq, lag_days, end_date, kind FROM metadata", con)
+    finally:
+        con.close()
+    if meta is None or not len(meta):
+        return []
+    now = pd.Timestamp(today).normalize() if today is not None else pd.Timestamp.today().normalize()
+    idx = meta.set_index("name")
+    names = list(tables) if tables is not None else [str(n) for n in idx.index]
+
+    out: list[dict] = []
+    for t in names:
+        if t not in idx.index:
+            print(f"[新鲜度] 监控清单里的 {t!r} 不在 metadata 里（改名/删表了？"
+                  f"这张表的新鲜度没人看）", file=sys.stderr)
+            continue
+        # static / eav 没有日期轴：不是"过期"，是"没有期"这个维度
+        if str(idx.loc[t].get("kind") or "") in ("static", "eav"):
+            continue
+        row = idx.loc[t]
+        freq = str(row.get("freq") or "D")
+        lag = int(row.get("lag_days") or 0)
+        expect = _period_end(freq, now)
+        if expect is None:                      # W / SPARSE：有意不判
+            continue
+        actual_s = row.get("end_date")
+        if not actual_s:
+            continue
+        actual = pd.Timestamp(str(actual_s))
+        stale = bool(actual < expect)
+        # 宽限：`today >= expect + lag` 才算"该到了"（与原实现的 `today < expect+lag → 跳过` 互补）
+        overdue = bool(stale and now >= expect + pd.Timedelta(days=lag))
+        behind = max(0, (expect - actual).days)
+        if not stale:
+            text = ""
+        elif overdue:
+            text = (f"{t} 停在 {actual.date()}，期望至少 {expect.date()}"
+                    f"（已超宽限 {lag} 天）")
+        else:
+            text = (f"{t} 停在 {actual.date()}，期望至少 {expect.date()}"
+                    f"（源可能还没发布，在 {lag} 天宽限内）")
+        out.append({
+            "table": t, "freq": freq, "expect": str(expect.date()),
+            "actual": str(actual.date()), "lag_days": lag,
+            "stale": stale, "overdue": overdue,
+            "days_behind": behind, "text": text,
+        })
+    return out

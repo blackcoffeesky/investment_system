@@ -11,6 +11,8 @@
 """
 
 from shared.adapter.datahub_adapter import (COLUMNS, Panel, clear_cache,
-                                            column_of, get_data, tables_of)
+                                            column_of, freshness, get_data,
+                                            tables_of)
 
-__all__ = ["Panel", "get_data", "clear_cache", "COLUMNS", "column_of", "tables_of"]
+__all__ = ["Panel", "get_data", "freshness", "clear_cache", "COLUMNS",
+           "column_of", "tables_of"]

@@ -396,6 +396,21 @@ COLUMNS: dict[Panel, dict[str, str]] = {p: columns_of(p) for p in _BUILD}
 _CACHE: dict[tuple[Panel, str | None, str | None], pd.DataFrame] = {}
 
 
+def freshness(panel: Panel, *, today: str | None = None) -> list[dict]:
+    """该面板涉及的表的新鲜度（每行带 `freq` / `stale` / `overdue` / `text`）。
+
+    装配点（`cli.py` / `service/`）用它，**消费方靠参数接收结果**——
+    和 `get_data` 一样是"只在装配点调"的接口，核心代码不要自己调。
+
+    用 `tables_of(panel)`：`static` / `eav` 表会自动跳过（没有日期轴）。
+    `freq` 一定在结果里——下游（月频卡的归档月）靠它筛 `freq in ("M","Q")`，
+    不需要再维护一份手写表名清单（那份清单已经漂过两次）。
+    """
+    from datahub.port import get_port
+
+    return get_port().freshness(tables_of(panel), today=today)
+
+
 def clear_cache() -> None:
     """清空面板缓存。**数据写入后必须调**（`DataPort.run_update` 已自动调）。"""
     _CACHE.clear()

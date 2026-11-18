@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import cast
+from typing import Sequence, cast
 
 import pandas as pd
 
@@ -146,6 +146,20 @@ class DataPort:
                 else:
                     out[t] = cast(pd.Series, s)
         return out
+
+    def freshness(self, tables: Sequence[str], *,
+                  today: str | None = None) -> list[dict]:
+        """每张表的**新鲜度**：`stale`（是否过期）与 `overdue`（是否超出宽限）。
+
+        两个布尔量含义不同（见 `fin.check.freshness` 的 docstring）：
+        `stale & ~overdue` = 源还没发布（正常）；`stale & overdue` = 忘记更新（报警）。
+
+        `today=None` → 用今天；传固定日期便于测试。
+        表名不在 `metadata` 里会**打印告警**（清单漂移 = 监控失效）。
+        """
+        from datahub.fin.check import freshness as _freshness
+
+        return _freshness(tables, today=today)
 
     def tables(self) -> list[str]:
         import datahub.fin as fin

@@ -980,3 +980,50 @@ update --only gold_etf_holdings
 ⚠️ 注意分工：**尾部停更**的告警文案在 `service/ops/states/data.py::overdue_tables`
 （`check` 只查区间内缺口，不查尾部——见 §15 的已知盲区）。
 service 那条文案要带导入命令，需要它调 `hint_for()`（跨模块，由 orchestrator 安排）。
+
+## 22. 新鲜度搬回数据层：`stale` 与 `overdue` 是两个布尔量（2026-11-18）
+
+`causual/causual_core/freshness.py` 原来自己读 `metadata` 判过期——**消费方直接读数据层内部**，
+又拿不到适配层。现在逻辑搬进 `datahub/fin/check.py::freshness()`，
+由 `DataPort.freshness()` → `shared.adapter.freshness(panel)` 转手。
+
+### 22.1 两个布尔量
+
+| stale | overdue | 含义 | 该做什么 |
+|---|---|---|---|
+| False | False | 已是最新 | 无 |
+| True  | False | **不可抗力**：源还没发布，仍在 `lag_days` 宽限内 | 等，**不用报警** |
+| True  | True  | **忘记更新**：宽限已过还没到 | 报警 / 查管线 |
+
+原实现的 `if today < expect + lag: continue` 把"宽限内"**直接吞掉了**，
+上层只看到"过期"，分不清"源还没发"和"我们忘了跑"。现在显式化成 `overdue`。
+
+### 22.2 一条结构性事实（不是 bug，但必须知道）
+
+**`lag_days` ≥ 周期长度时，`overdue` 永远为 False**——因为 `expect` 随 `today` 往前滚：
+
+```
+月频 lag=40：expect=11-30 → 可判定日 = 12-10，但到那天 expect 已经变成 12-31
+⇒ 永远追不上
+```
+
+所以 `gold_etf_holdings`（月频 lag=40）只会被标成"不可抗力（源还没发）"，
+**永远不会被判定为"忘记更新"**——它缺了 10/11 月这件事，`freshness` 报不出来
+（原来是 service 的 `overdue_tables` 用"距 end_date 多久"这个独立口径抓到的）。
+
+要让这类表也能报 overdue，有两条路（**都属决定，没做**）：
+1. 调小 `metadata.lag_days`；
+2. 改用"距 `end_date` 多少天"这个独立口径（与"该有的期"解耦）。
+
+### 22.3 契约
+
+```python
+DataPort.freshness(tables, *, today=None) -> list[dict]
+adapter.freshness(panel, *, today=None) -> list[dict]
+```
+
+每行：`table / freq / expect / actual / lag_days / stale / overdue / days_behind / text`。
+**`freq` 必须带**——下游（月频卡的归档月）靠 `freq in ("M","Q")` 筛，
+不要再维护手写清单（`MONTH_TABLES` 已经漂过两次）。
+`static` / `eav` 跳过；`W` / `SPARSE` 不判（"该有了"没有定义）；
+表名不在 `metadata` 里**打印告警**（清单漂移 = 监控失效）。
