@@ -54,6 +54,21 @@ def stale_tables(meta: pd.DataFrame, covered: set[str],
     return out
 
 
+def _intake_hint(table: str) -> str:
+    """手工导入表返回"怎么更新"的一句话；不是手工表就返回空串。
+
+    数据层的 intake 注册表是唯一真相——这里只做一处转手，别在 service 复制文案。
+    """
+    try:
+        from datahub.fin.intake.registry import hint_for
+    except Exception:  # noqa: BLE001  数据层没这个接口时不要让 ops 崩
+        return ""
+    try:
+        return hint_for(table) or ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def overdue_tables(meta: pd.DataFrame, today: pd.Timestamp) -> list[dict]:
     """哪些手工表已经超过期望更新周期。
 
@@ -75,8 +90,14 @@ def overdue_tables(meta: pd.DataFrame, today: pd.Timestamp) -> list[dict]:
             continue
         gap = (today - pd.Timestamp(end)).days
         if gap > days:
+            # 手工导入表（WGC 月报等）要给出**可执行**的更新方式，
+            # 否则用户只能去翻代码才知道这张表根本不归 update 管。
+            text = f"{table} 已 {gap} 天未更新（期望 ≤{days} 天）"
+            hint = _intake_hint(table)
+            if hint:
+                text += f"（{hint}）"
             out.append({"table": table, "end_date": str(end), "gap": gap,
-                        "text": f"{table} 已 {gap} 天未更新（期望 ≤{days} 天）"})
+                        "text": text})
     return out
 
 
