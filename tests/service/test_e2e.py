@@ -213,6 +213,32 @@ def test_state_page_renders():
     assert "各状态画像" in r.text and "观测矩阵" in r.text
 
 
+def test_regenerate_card_returns_303():
+    """「重新生成卡片」按钮真的能跑通（2026-11-18 用户点了 500 的那个）。
+
+    失败时的报错是 `RuntimeError: ashare 缺少状态模型的 spec`——路由只传了
+    `panel` / `freshness`，**漏了 `state`**（`build_panel` 要 `state["spec"]`）。
+    这类漏参数不会在 import 期暴露，只能靠"真发一次 POST"。
+
+    只断言不 500 + 重定向，不比对内容：内容是数据/模型的函数，比对会随数据漂。
+    （逐字对账另做：同一份数据下重生成的卡与原卡一致，只有 `generated_at` 不同。）
+    """
+    from fastapi.testclient import TestClient
+
+    from causual.port import get_port
+    from service.app import app
+
+    latest = get_port().latest("ashare")
+    assert latest is not None, "没有已生成的卡可重生成"
+    date = latest.date
+
+    r = TestClient(app, follow_redirects=False).post(
+        f"/card/ashare/{date}/regenerate")
+    assert r.status_code == 303, f"重生成失败：{r.status_code} {r.text[:400]}"
+    assert r.headers.get("location") == f"/card/ashare/{date}"
+    assert get_port().exists("ashare", date), "重生成后卡不见了"
+
+
 def test_state_excludes_causual_inputs():
     """诊断层不许读 causual 的信号输入（两套系统输入不相交）。"""
     from state_layer.analysis import observations

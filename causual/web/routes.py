@@ -72,6 +72,20 @@ def _panel_for(request: Request, asset: str) -> pd.DataFrame:
 
 @router.post("/card/{asset}/{date}/regenerate")
 def regenerate(request: Request, asset: str, date: str):
+    """重生成某一天的卡（不改结论，只重跑同一条链路）。
+
+    **必须把 `state` 一起装配**（`state_view(asset, panel)`）：`build_panel` 要
+    `state["spec"]`（状态模型参数）和 `state["labels"]`，少了它直接
+    `RuntimeError: 缺少状态模型的 spec`——2026-11-18 用户点按钮就是这个 500。
+
+    ⚠️ 用的是**最新**的 `state_view`，不是"回到 date 那一刻"的状态：
+    - `asof=date` 已经决定卡片渲染哪一天（`when = asof`），标签本身是全历史序列，
+      历史日期能取到当天的标签；
+    - 这也正是当初生成那张卡的路径（`daily` 用当时的全量面板 + 同一个 state），
+      所以"重生成"= 逐字重跑，不引入新结论；
+    - 真要"以 date 为 asof 重算状态"，得 `state_view(asset, panel.loc[:date])` 再外推，
+      那是另一种产品语义（会得到不同的卡），不归这个按钮。
+    """
     if asset not in ASSET_NAME:
         raise HTTPException(404, f"未知资产：{asset}")
     try:
@@ -79,7 +93,8 @@ def regenerate(request: Request, asset: str, date: str):
 
         panel = _panel_for(request, asset)
         rows = panel_freshness(get_port().panel_kind(asset), today=date)
-        get_port().regenerate(asset, date, panel, freshness=rows)
+        view = request.app.state.services["state"].state_view(asset, panel)
+        get_port().regenerate(asset, date, panel, state=view, freshness=rows)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(500, f"重生成失败：{type(e).__name__}: {e}") from e
     return RedirectResponse(f"/card/{asset}/{date}", status_code=303)
