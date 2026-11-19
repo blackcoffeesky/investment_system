@@ -77,12 +77,34 @@ def vol_bucket(m: pd.DataFrame) -> pd.Series:
     return out
 
 
-def episodes(labels: pd.Series) -> pd.Series:
-    """每段连续相同标签的长度，广播回原索引（只对非空行）。"""
+def run_stats(labels: pd.Series) -> pd.DataFrame:
+    """按**游程**统计（不是按天）。
+
+    返回列：`days`（该状态总交易日）、`runs`（独立游程数）、
+    `median`（游程长度的中位数）、`mean`、`max`。
+
+    ⚠️ 2026-11-19 修的两个 bug，都是"按天 vs 按游程"混用：
+    1. 原来报的"中位持续"是**按天加权**的中位数（把游程长度广播回每一天再取中位），
+       长游程会把它抬得很高（震荡-低波 52 vs 真实的 8）。
+    2. 原来的"游程数"用 `广播值 != shift()` 数变化——**两个等长的游程会被并成一个**。
+    正确做法：先按游程聚合，再按游程统计。
+    """
     s = labels.dropna()
-    run = (s != s.shift()).cumsum()
-    size = s.groupby(run).transform("size")
-    return size
+    if s.empty:
+        return pd.DataFrame(columns=["days", "runs", "median", "mean", "max"])
+    run_id = (s != s.shift()).cumsum()
+    sizes = s.groupby(run_id).size()          # 每个游程的长度
+    name = s.groupby(run_id).first()          # 每个游程属于哪个格子
+    rows = []
+    for cell_name, grp in name.groupby(name):
+        durs = sizes.loc[grp.index]
+        rows.append({"格子": cell_name,
+                     "days": int(durs.sum()),
+                     "runs": int(len(durs)),
+                     "median": float(durs.median()),
+                     "mean": float(durs.mean()),
+                     "max": int(durs.max())})
+    return pd.DataFrame(rows).set_index("格子")
 
 
 def build_table(m: pd.DataFrame, fwd: int = 20) -> tuple[pd.DataFrame, pd.Series]:
@@ -92,19 +114,21 @@ def build_table(m: pd.DataFrame, fwd: int = 20) -> tuple[pd.DataFrame, pd.Series
     cell = tr.astype(object) + "-" + vo.astype(object)
     cell = cell.where(tr.notna() & vo.notna())
 
-    epi = episodes(cell)
+    stats = run_stats(cell)
     fwd_ret = (close.shift(-fwd) / close - 1.0) * 100.0
 
     rows = []
-    for name, grp in cell.dropna().groupby(cell.dropna()):
-        idx = grp.index
+    for name, st in stats.iterrows():
+        idx = cell[cell == name].index
         r = fwd_ret.reindex(idx).dropna()
         rows.append({
             "格子": name,
-            "交易日": len(idx),
-            "游程数": int(epi.reindex(idx).pipe(lambda x: (x != x.shift()).sum())),
-            "中位持续": float(epi.reindex(idx).median()),
-            "占比%": round(len(idx) / len(cell.dropna()) * 100, 1),
+            "交易日": int(st["days"]),
+            "游程数": int(st["runs"]),
+            "中位持续": float(st["median"]),
+            "均值持续": round(float(st["mean"]), 1),
+            "最长": int(st["max"]),
+            "占比%": round(int(st["days"]) / len(cell.dropna()) * 100, 1),
             "未来20日均值%": round(float(r.mean()), 2) if len(r) else np.nan,
             "胜率%": round(float((r > 0).mean()) * 100, 1) if len(r) else np.nan,
             "p05": round(float(r.quantile(0.05)), 2) if len(r) else np.nan,
@@ -113,6 +137,7 @@ def build_table(m: pd.DataFrame, fwd: int = 20) -> tuple[pd.DataFrame, pd.Series
             "p75": round(float(r.quantile(0.75)), 2) if len(r) else np.nan,
             "p95": round(float(r.quantile(0.95)), 2) if len(r) else np.nan,
         })
+    assert int(stats["days"].sum()) == len(cell.dropna()), "各格交易日之和必须等于有效日总数"
     order = [f"{t}-{v}" for t in ("上行", "震荡", "下行") for v in ("低波", "中波", "高波")]
     tab = pd.DataFrame(rows).set_index("格子").reindex(order).dropna(how="all")
     return tab, fwd_ret
