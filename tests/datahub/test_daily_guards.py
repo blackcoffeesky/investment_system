@@ -90,3 +90,15 @@ def test_trading_days_between_is_monotone_weekdays():
     days = F.trading_days_between("2026-11-16", "2026-11-20")
     assert days == sorted(days) and len(days) >= 1
     assert all(pd.Timestamp(d).weekday() < 5 for d in days)
+
+
+def test_guard_blocks_non_trading_day_even_if_date_is_today():
+    """**周六事故的回归**：快照在非交易日仍回 `timestamp=今天`，值却是上一交易日收盘。
+
+    2026-11-21（周六）实测：只判"日期==今天"的守卫放行了，结果把 11-20 的
+    5,572 行整份标成 11-21 写进库（逐字段相同，已删除）。
+    """
+    assert F._is_trading_day("2026-11-21") is False, "周六不是交易日"
+    reason = F.daily_write_guard("stock_daily", "2026-11-21",
+                                 now=_now("2026-11-21 23:00"))
+    assert reason and "不是交易日" in reason, reason

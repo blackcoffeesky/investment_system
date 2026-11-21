@@ -240,6 +240,21 @@ def historical_batch(thscodes: list[str], start: str, end: str, *,
     return out.dropna(subset=["close"]).drop_duplicates(subset=["code", "date"], keep="last")
 
 
+
+def _is_trading_day(day: str) -> bool:
+    """这天是不是交易日。拿不到日历就退回"工作日"（周六周日一定不是）。"""
+    d = pd.Timestamp(str(day)[:10])
+    try:
+        from datahub.fin.sources.ashare import _trade_calendar
+
+        cal = _trade_calendar()
+        if cal is not None and len(cal):
+            return d in pd.DatetimeIndex(cal)
+    except Exception:  # noqa: BLE001
+        pass
+    return d.weekday() < 5
+
+
 def daily_write_guard(table: str, trade_date: str, *,
                       now: pd.Timestamp | None = None) -> str | None:
     """日更守卫：**能不能把 `trade_date` 这天的数据写进 `table`**。
@@ -264,6 +279,12 @@ def daily_write_guard(table: str, trade_date: str, *,
                 f"（周末/节假日）→ 不写")
     if now.hour * 60 + now.minute < 15 * 60 + 30:
         return f"{table}：现在 {now:%H:%M} 未收盘 → 不写（盘中数据是半天的量）"
+    # ⚠️ **非交易日**必须拦：2026-11-21（周六）实测 —— 快照仍返回
+    # `timestamp = 今天`，但 values 是**周五收盘**。只判"日期==今天"会把周五数据
+    # 整份标成周六写进库（5,572 行与 11-20 逐字段相同，已删除并补此守卫）。
+    if not _is_trading_day(str(trade_date)[:10]):
+        return (f"{table}：{trade_date} 不是交易日（快照仍回 timestamp=今天，"
+                f"但值是上一交易日的收盘）→ 不写")
     con = connect()
     try:
         latest = con.execute(f'SELECT MAX(date) FROM "{table}"').fetchone()[0]
