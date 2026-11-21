@@ -41,7 +41,7 @@ from plotly.subplots import make_subplots
 
 from experiment.state_lab.matrix import _index_panel
 from experiment.hmm_state.features import LONG_DEFAULT, build_groups, order_col_for, agreement
-from experiment.hmm_state.final import K_OF, fit_dim, grid
+from experiment.hmm_state.final import K_OF, MODEL, fit_dim, grid
 from experiment.hmm_state.money import load_signals, buckets, coverage, SIGNALS
 
 pd.set_option("display.width", 160)
@@ -50,6 +50,7 @@ px.defaults.template = "plotly_white"
 px_panel = _index_panel()
 print("长期窗口:", LONG_DEFAULT, "| 状态数:", K_OF)
 groups = build_groups(px_panel, LONG_DEFAULT)
+groups = {n: f for n, f in groups.items() if n in MODEL}   # 中长期不建波动模型
 
 fitted = {}
 for name, feats in groups.items():
@@ -230,13 +231,10 @@ def build() -> nbf.NotebookNode:
         code("plot_states('短波动').show()"),
         md("## 三、长价格（Student-t, K=2）"),
         code("plot_states('长价格').show()"),
-        md("## 四、长波动（Gaussian, K=2）"),
-        code("plot_states('长波动').show()"),
         md("## 五、短/长维度的区分度"),
         code('print(f"短价格 vs 长价格 一致率 = '
              '{agreement(fitted[\'短价格\'][\'states\'], fitted[\'长价格\'][\'states\']):.1%}")\n'
-             'print(f"短波动 vs 长波动 一致率 = '
-             '{agreement(fitted[\'短波动\'][\'states\'], fitted[\'长波动\'][\'states\']):.1%}")'),
+             'print("（中长期不再建波动模型，所以没有波动维度的一致性）")'),
         md("## 六、四个维度的画像与占比"),
         code("""for name, r in fitted.items():
     print(f"=== {name}（{r['model']}, K={K_OF[name]}）NLL={r['nll']:.4f} 熵={r['entropy']:.3f} ===")
@@ -246,21 +244,20 @@ def build() -> nbf.NotebookNode:
         md("## 七、短周期九宫格（3×3）"),
         code("plot_grid('短价格', '短波动', '短周期').show()"),
         code("plot_animation('短价格', '短波动', '短周期').show()"),
-        md("## 八、中长期四宫格（2×2）"),
-        code("plot_grid('长价格', '长波动', '中长期').show()"),
-        code("plot_animation('长价格', '长波动', '中长期').show()"),
-        md("## 九、两套格子的风险画像"),
+        md("""## 八、中长期只有价格一维（K=2）
+
+60–120 窗口下的"波动率状态"两个档位在图上几乎重合，没有可视化意义；
+资金分析也只在短周期做。所以中长期不建波动模型，也就没有九宫格。
+"""),
+        md("## 九、短周期九宫格的风险画像"),
         code("""from experiment.hmm_state.stage1 import risk_by, nonoverlap_check
 
-for label, (pk, vk) in {"短周期": ("短价格", "短波动"), "中长期": ("长价格", "长波动")}.items():
-    cell = cells(pk, vk)
-    print(f"=== {label} ===")
-    display(risk_by(cell, px_panel))
-    print("非重叠复核:", nonoverlap_check(cell, px_panel))
-    print()"""),
+cell = cells("短价格", "短波动")
+display(risk_by(cell, px_panel))
+print("非重叠复核:", nonoverlap_check(cell, px_panel))"""),
         md("""## 十、资金变量
 
-四类信号：期货基差（态度）、期货持仓（分歧度）、ETF 份额（中长期资金）、
+四类信号：期货基差（态度）、期货持仓（参与度/敞口，**不叫分歧度**）、ETF 份额、
 两融（杠杆）、成交额（活跃度）。全部滚动 z 归一化，避免高波动期天然数值偏大。
 """),
         code(MONEY),
@@ -271,12 +268,8 @@ for label, (pk, vk) in {"短周期": ("短价格", "短波动"), "中长期": ("
 
 先把 9 格 / 4 格的编号和各资金 z 并起来，看哪几个信号值得进条件转移分析。
 """),
-        code("""for label, (pk, vk) in {"短周期": ("短价格", "短波动"), "中长期": ("长价格", "长波动")}.items():
-    cell = cells(pk, vk)
-    d = pd.DataFrame({"格": cell}).join(z, how="inner")
-    print(f"=== {label}：各格子的资金 z 均值 ===")
-    display(d.groupby("格").mean().round(2))
-    print()"""),
+        code("""d = pd.DataFrame({"格": cells("短价格", "短波动")}).join(z, how="inner")
+display(d.groupby("格").mean().round(2))"""),
     ]
     nb.metadata["kernelspec"] = {"display_name": "Python 3", "language": "python",
                                  "name": "python3"}

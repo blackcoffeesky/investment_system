@@ -33,11 +33,13 @@ K = 3
 NU = 5.0
 
 #: 维度 → 发射分布
-MODEL = {"短价格": "t", "短波动": "g", "长价格": "t", "长波动": "g"}
+#: 中长期只保留价格维度：60–120 窗口下的波动率状态既没有可视化意义，
+#: 也没有资金分析价值（用户 2026-11-21 决定），所以不建长波动模型。
+MODEL = {"短价格": "t", "短波动": "g", "长价格": "t"}
 
 #: 维度 → 状态数。长期用 2：60–120 窗口下第三态只占 1.7%~5.1%，
 #: 并且长期状态比短期少本身也合理（窗口越长，可分辨的regime越少）。
-K_OF = {"短价格": 3, "短波动": 3, "长价格": 2, "长波动": 2}
+K_OF = {"短价格": 3, "短波动": 3, "长价格": 2}
 
 
 def _prep(feats: pd.DataFrame):
@@ -112,6 +114,8 @@ def main() -> int:
 
     px = _index_panel()
     groups = build_groups(px, LONG_DEFAULT)
+    # 只保留 MODEL 里有的维度（中长期不建波动模型）
+    groups = {n: f for n, f in groups.items() if n in MODEL}
 
     fitted = {name: fit_dim(name, feats, order_col_for(name, LONG_DEFAULT),
                             k=K_OF[name])
@@ -129,8 +133,7 @@ def main() -> int:
     print(pd.DataFrame(rows).to_string(index=False))
     print()
 
-    for label, (pk, vk) in {"短周期": ("短价格", "短波动"),
-                            "中长期": ("长价格", "长波动")}.items():
+    for label, (pk, vk) in {"短周期": ("短价格", "短波动")}.items():
         cell = grid(fitted[pk]["states"], fitted[vk]["states"])
         rt = risk_by(cell, px)
         yr = yearly_robust(cell, px)

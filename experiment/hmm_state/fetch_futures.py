@@ -37,8 +37,10 @@ OUT = ROOT / "data" / "股指期货基差与持仓.csv"
 
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                     "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"}
-#: 品种 → 本地库里的现货表（缺的品种会被跳过）
+#: 品种 → 本地库里的现货表（缺的走 akshare 腾讯源，见 `spot_series`）
 SPOT_LOCAL = {"IF": "csi300", "IM": "csi1000", "IC": None, "IH": None}
+#: 本地库没有的品种 → akshare 腾讯源代码
+SPOT_TX = {"IC": "sh000905", "IH": "sh000016", "IF": "sh000300", "IM": "sh000852"}
 COL_MAP = {"合约代码": "symbol", "今开盘": "open", "最高价": "high", "最低价": "low",
            "成交量": "volume", "成交金额": "turnover", "持仓量": "open_interest",
            "持仓变化": "oi_chg", "今收盘": "close", "今结算": "settle",
@@ -75,8 +77,22 @@ def fetch_month(ym: str, retries: int = 3) -> pd.DataFrame:
     return pd.DataFrame()
 
 
+def _tx_spot(code: str) -> pd.Series:
+    """akshare 腾讯源日线。**必须先清代理**：规则模式会把东方财富/新浪转到国外节点。"""
+    import os
+
+    for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
+              "ALL_PROXY", "all_proxy"):
+        os.environ.pop(k, None)
+    import akshare as ak
+
+    df = ak.stock_zh_index_daily_tx(symbol=code)
+    df["date"] = pd.to_datetime(df["date"])
+    return df.set_index("date")["close"].astype(float).sort_index()
+
+
 def spot_series() -> dict[str, pd.Series]:
-    """本地库里的现货收盘（只取有表的品种）。"""
+    """现货收盘：本地库优先，缺的走 akshare 腾讯源并缓存到 `data/spot_index.csv`。"""
     from datahub.port import get_port
 
     port = get_port()
@@ -89,9 +105,21 @@ def spot_series() -> dict[str, pd.Series]:
             if isinstance(s, pd.DataFrame):
                 s = s.iloc[:, 0]
             out[variety] = s.astype(float).rename("spot_close")
-            print(f"  现货 {variety} ← {table}（{len(s)} 行）")
+            print(f"  现货 {variety} ← 本地 {table}（{len(s)} 行）")
         except Exception as e:  # noqa: BLE001
-            print(f"  现货 {variety} 不可用：{type(e).__name__}")
+            print(f"  现货 {variety} 本地不可用：{type(e).__name__}")
+
+    cache = ROOT / "data" / "spot_index.csv"
+    for variety, code in SPOT_TX.items():
+        if variety in out or code not in ("sh000905", "sh000016"):
+            continue
+        try:
+            s = _tx_spot(code)
+            out[variety] = s.rename("spot_close")
+            print(f"  现货 {variety} ← akshare 腾讯 {code}（{len(s)} 行）")
+            s.rename("close").to_csv(cache, encoding="utf-8-sig")
+        except Exception as e:  # noqa: BLE001
+            print(f"  现货 {variety} 腾讯源失败：{type(e).__name__} {str(e)[:60]}")
     return out
 
 
