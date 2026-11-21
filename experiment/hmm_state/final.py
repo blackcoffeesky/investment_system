@@ -35,6 +35,10 @@ NU = 5.0
 #: 维度 → 发射分布
 MODEL = {"短价格": "t", "短波动": "g", "长价格": "t", "长波动": "g"}
 
+#: 维度 → 状态数。长期用 2：60–120 窗口下第三态只占 1.7%~5.1%，
+#: 并且长期状态比短期少本身也合理（窗口越长，可分辨的regime越少）。
+K_OF = {"短价格": 3, "短波动": 3, "长价格": 2, "长波动": 2}
+
 
 def _prep(feats: pd.DataFrame):
     df = feats.dropna()
@@ -109,12 +113,13 @@ def main() -> int:
     px = _index_panel()
     groups = build_groups(px, LONG_DEFAULT)
 
-    fitted = {name: fit_dim(name, feats, order_col_for(name, LONG_DEFAULT))
+    fitted = {name: fit_dim(name, feats, order_col_for(name, LONG_DEFAULT),
+                            k=K_OF[name])
               for name, feats in groups.items()}
 
     rows = []
     for name, r in fitted.items():
-        rows.append({"维度": name, "发射分布": r["model"],
+        rows.append({"维度": name, "K": K_OF[name], "发射分布": r["model"],
                      "OOS NLL": round(r["nll"], 4),
                      "熵": round(r["entropy"], 3), "最大后验": round(r["maxp"], 3),
                      "状态占比": str(r["share"])})
