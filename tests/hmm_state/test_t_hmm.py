@@ -72,3 +72,26 @@ def test_em_loglik_monotone_and_positive_definite() -> None:
         _chol(cov)                      # 非正定会抛异常
         assert np.all(np.isfinite(cov))
     assert fit["iters"] >= 2
+
+
+def test_filtered_is_point_in_time() -> None:
+    """**截断不变性**：只用前 t 天算出的第 t 天状态，必须等于用全部数据算出的第 t 天状态。
+
+    这条是"图上每个状态只用了过去数据"的机器证明。若实现里混进了后向递推
+    （平滑）或任何全局归一化，这里会立刻失败。
+    """
+    from experiment.hmm_state.stage3_t import filtered_predict
+
+    rng = np.random.default_rng(3)
+    n, k = 120, 3
+    a = np.array([[0.9, 0.05, 0.05], [0.1, 0.8, 0.1], [0.05, 0.15, 0.8]])
+    log_b = rng.normal(size=(n, k))
+    prior0 = np.array([0.5, 0.3, 0.2])
+
+    post_full, ll_full = filtered_predict(log_b, a, prior0)
+
+    for t in (1, 7, 40, n - 1):
+        post_cut, ll_cut = filtered_predict(log_b[: t + 1], a, prior0)
+        assert np.allclose(post_cut[t], post_full[t], atol=1e-12), (
+            f"第 {t} 天的过滤概率依赖了未来数据：\n{post_cut[t]}\n{post_full[t]}")
+        assert np.isclose(ll_cut[t], ll_full[t], atol=1e-12)
