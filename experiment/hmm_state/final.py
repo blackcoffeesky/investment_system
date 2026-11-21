@@ -44,7 +44,7 @@ def _prep(feats: pd.DataFrame):
     return ((tr - mu) / sd).dropna(), ((te - mu) / sd).dropna(), tr, te
 
 
-def fit_dim(name: str, feats: pd.DataFrame, order_col: str) -> dict:
+def fit_dim(name: str, feats: pd.DataFrame, order_col: str, k: int = K) -> dict:
     """按 `MODEL[name]` 选发射分布。状态顺序只在**训练集画像**上定。"""
     from experiment.hmm_state.run import fit_hmm
     from experiment.hmm_state.stage3_t import (filtered_predict, fit_t_hmm,
@@ -53,25 +53,25 @@ def fit_dim(name: str, feats: pd.DataFrame, order_col: str) -> dict:
     xtr_df, xte_df, tr, te = _prep(feats)
     xtr, xte = xtr_df.to_numpy(), xte_df.to_numpy()
 
-    g = fit_hmm(xtr, K)          # 高斯解：既是基线，也是 t 的初始化
+    g = fit_hmm(xtr, k)          # 高斯解：既是基线，也是 t 的初始化
     lb_tr_g = np.column_stack([gauss_logpdf(xtr, g.means_[i], g.covars_[i])
-                               for i in range(K)])
+                               for i in range(k)])
     post_tr_g, _ = filtered_predict(lb_tr_g, g.transmat_, g.startprob_)
     lb_te_g = np.column_stack([gauss_logpdf(xte, g.means_[i], g.covars_[i])
-                               for i in range(K)])
+                               for i in range(k)])
     post_te_g, ll_g = filtered_predict(lb_te_g, g.transmat_, post_tr_g[-1] @ g.transmat_)
 
     if MODEL[name] == "g":
         post_tr, post_te, ll = post_tr_g, post_te_g, ll_g
         used = "Gaussian"
     else:
-        t = fit_t_hmm(xtr, K, init={"means": g.means_, "covars": g.covars_,
+        t = fit_t_hmm(xtr, k, init={"means": g.means_, "covars": g.covars_,
                                     "pi": g.startprob_, "a": g.transmat_})
         lb_tr_t = np.column_stack([t_logpdf(xtr, t["means"][i], t["covars"][i], t["nu"])
-                                   for i in range(K)])
+                                   for i in range(k)])
         post_tr, _ = filtered_predict(lb_tr_t, t["a"], t["pi"])
         lb_te_t = np.column_stack([t_logpdf(xte, t["means"][i], t["covars"][i], t["nu"])
-                                   for i in range(K)])
+                                   for i in range(k)])
         post_te, ll = filtered_predict(lb_te_t, t["a"], post_tr[-1] @ t["a"])
         used = f"Student-t(ν={t['nu']:.0f})"
 
@@ -100,16 +100,17 @@ def main() -> int:
     from pathlib import Path
 
     from experiment.state_lab.matrix import _index_panel
-    from experiment.hmm_state.stage1 import (ORDER_COL, build_groups, nonoverlap_check,
-                                             risk_by, yearly_robust)
+    from experiment.hmm_state.features import LONG_DEFAULT, build_groups, order_col_for
+    from experiment.hmm_state.stage1 import nonoverlap_check, risk_by, yearly_robust
 
     out = Path(__file__).resolve().parents[1] / "out" / "hmm_state"
     out.mkdir(parents=True, exist_ok=True)
 
     px = _index_panel()
-    groups = build_groups(px)
+    groups = build_groups(px, LONG_DEFAULT)
 
-    fitted = {name: fit_dim(name, feats, ORDER_COL[name]) for name, feats in groups.items()}
+    fitted = {name: fit_dim(name, feats, order_col_for(name, LONG_DEFAULT))
+              for name, feats in groups.items()}
 
     rows = []
     for name, r in fitted.items():

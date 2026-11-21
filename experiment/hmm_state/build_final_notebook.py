@@ -38,18 +38,20 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 
 from experiment.state_lab.matrix import _index_panel
-from experiment.hmm_state.stage1 import build_groups, ORDER_COL
+from experiment.hmm_state.features import (LONG_DEFAULT, build_groups,
+                                           order_col_for, agreement)
 from experiment.hmm_state.final import fit_dim, grid, MODEL
 
 pd.set_option("display.width", 160)
 px.defaults.template = "plotly_white"
 
 px_panel = _index_panel()
-groups = build_groups(px_panel)
+print("长期窗口:", LONG_DEFAULT)
+groups = build_groups(px_panel, LONG_DEFAULT)
 
 fitted = {}
 for name, feats in groups.items():
-    fitted[name] = fit_dim(name, feats, ORDER_COL[name])
+    fitted[name] = fit_dim(name, feats, order_col_for(name, LONG_DEFAULT))
     print(f"{name:6s} {fitted[name]['model']:14s} NLL={fitted[name]['nll']:.4f} "
           f"熵={fitted[name]['entropy']:.3f} 占比={fitted[name]['share']}")
 """
@@ -190,20 +192,27 @@ def build() -> nbf.NotebookNode:
         code("plot_states('长价格').show()"),
         md("## 四、长波动（Gaussian）"),
         code("plot_states('长波动').show()"),
-        md("## 五、四个维度的画像与占比"),
+        md("""## 五、短/长维度的区分度
+
+两个尺度是不是真的不同，看同一日期两个状态序列的一致率。
+一致率高说明两个窗口切出来的东西差不多（那就没有"多尺度"的意义）。
+"""),
+        code("""print(f"短价格 vs 长价格 一致率 = {agreement(fitted['短价格']['states'], fitted['长价格']['states']):.1%}")
+print(f"短波动 vs 长波动 一致率 = {agreement(fitted['短波动']['states'], fitted['长波动']['states']):.1%}")"""),
+        md("## 六、四个维度的画像与占比"),
         code("""for name, r in fitted.items():
     print(f"=== {name}（{r['model']}）NLL={r['nll']:.4f} 熵={r['entropy']:.3f} "
           f"最大后验={r['maxp']:.3f} ===")
     display(r["profile"])
     print("占比:", r["share"])
     print()"""),
-        md("## 六、短周期九宫格（短价格 × 短波动）"),
+        md("## 七、短周期九宫格（短价格 × 短波动）"),
         code("plot_grid('短价格', '短波动', '短周期').show()"),
         code("plot_animation('短价格', '短波动', '短周期').show()"),
-        md("## 七、中长期九宫格（长价格 × 长波动）"),
+        md("## 八、中长期九宫格（长价格 × 长波动）"),
         code("plot_grid('长价格', '长波动', '中长期').show()"),
         code("plot_animation('长价格', '长波动', '中长期').show()"),
-        md("## 八、两套九宫格的风险画像"),
+        md("## 九、两套九宫格的风险画像"),
         code("""from experiment.hmm_state.stage1 import risk_by, nonoverlap_check
 
 for label, (pk, vk) in {"短周期": ("短价格", "短波动"),
