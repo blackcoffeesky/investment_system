@@ -60,9 +60,10 @@ for name, feats in grids.items():
 
 COLORS = r"""
 PALETTE = ["#2E86C1", "#27AE60", "#C0392B", "#8E44AD", "#D68910", "#17A589"]
-CELL_COLORS = ["#D6EAF8", "#5DADE2", "#1B4F72",   # 低波：浅→深蓝
-               "#F9E79F", "#F4D03F", "#B7950B",   # 中波：浅→深黄
-               "#FADBD8", "#E74C3C", "#7B241C"]   # 高波：浅→深红
+# 按「波动档」分色系、按「价格档」调明暗：蓝=低波 / 橙黄=中波 / 红=高波
+CELL_COLORS = ["#AED6F1", "#5499C7", "#1A5276",   # 低波：浅蓝→深蓝
+               "#F9E79F", "#E67E22", "#A04000",   # 中波：浅黄→深橙
+               "#F5B7B1", "#CB4335", "#641E16"]   # 高波：浅红→深红
 CELL_ORDER = [f"{p}-{v}" for v in range(3) for p in range(3)]
 """
 
@@ -108,7 +109,10 @@ PLOT_GRID = r"""
 def build_grid(pkey: str, vkey: str) -> pd.DataFrame:
     sp, sv = fitted[pkey]["states"], fitted[vkey]["states"]
     g = pd.DataFrame({"价格": sp, "波动": sv}).dropna()
-    g["格"] = g["价格"].astype(str) + "-" + g["波动"].astype(str)
+    # 状态是 numpy int，但 DataFrame 会退成 float，astype(str) 会得到 "0.0"，
+    # 和 CELL_ORDER 里的 "0" 对不上 → 第九章一个色块都画不出来。必须先转 int。
+    g["格"] = (g["价格"].astype(int).astype(str) + "-"
+               + g["波动"].astype(int).astype(str))
     g["年份"] = g.index.year
     return g
 
@@ -136,9 +140,11 @@ def plot_grid(pkey: str, vkey: str, title: str) -> go.Figure:
         mask = g["格"] == cell
         if not mask.any():
             continue
+        seg = close.where(mask)          # 非本格子的日子置 NaN → 线段只在格内连
         fig.add_trace(go.Scatter(
-            x=close.index[mask], y=close.values[mask], mode="markers",
-            marker=dict(size=5, color=CELL_COLORS[i]),
+            x=seg.index, y=seg.values, mode="lines+markers",
+            line=dict(color=CELL_COLORS[i], width=2.5),
+            marker=dict(size=4, color=CELL_COLORS[i]),
             name=f"{cell}（{int(mask.sum())} 天，{share[cell]:.1f}%）"), row=1, col=1)
 
     # 每格累计收益（相对首日）
