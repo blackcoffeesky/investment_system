@@ -46,103 +46,140 @@ D_MAX_CAP = 120
 # ---------------------------------------------------------------- 持续时间
 
 
-def duration_pmf(train_states: pd.Series, d_max: int) -> tuple[np.ndarray, np.ndarray]:
-    """训练集上每个状态的持续时间经验分布 f_k(d)，以及对数风险率。
+def duration_pmf(train_states: pd.Series, d_max: int,
+                 fallback_stay: np.ndarray | None = None) -> tuple[np.ndarray, dict]:
+    """训练集上每个状态的持续时间分布 `f_k(d)`，**索引 0 对应持续 1 天**。
 
-    右删失处理：**最后一个游程是删失的**（还没结束），不计入持续时间分布。
+    ⚠️ 三处修正（2026-11-21 用户指出）：
+
+    1. **索引偏移**：原实现用 `pmf[k, length] += 1`，而 `hz[:, 0]` 对应"已持续 1 天"，
+       等于整体错开一格。现在统一：索引 `d` ↔ 持续 `d+1` 天。
+    2. **首尾删失都要丢**：训练集第一个游程可能是从更早延续过来的（左删失），
+       最后一个还没结束（右删失）。原实现只丢了右边。
+    3. **样本太少的状态不用经验分布**：游程数 < 5 时退回几何分布
+       （用 HMM 自己的对角概率 `A_ii` 推），否则经验分布就是几个点凑出来的。
     """
     s = train_states.to_numpy()
     runs: list[tuple[int, int]] = []
-    cur, length = s[0], 1
+    cur, length = int(s[0]), 1
     for v in s[1:]:
         if v == cur:
             length += 1
         else:
-            runs.append((int(cur), length))
+            runs.append((cur, length))
             cur, length = int(v), 1
-    # 最后一段是删失，丢掉
-    pmf = np.zeros((K, d_max + 1))
-    for k, length in runs:
-        if k < K:
-            pmf[k, min(length, d_max)] += 1
-    # 平滑 + 归一化（避免某状态样本极少时出现零风险率）
-    pmf += 1e-3
+    runs.append((cur, length))
+    # 丢首（左删失）与尾（右删失）
+    trimmed = runs[1:-1] if len(runs) > 2 else []
+
+    k_count = int(fallback_stay.shape[0]) if fallback_stay is not None else (int(s.max()) + 1)
+    pmf = np.zeros((k_count, d_max))
+    counts = np.zeros(k_count, dtype=int)
+    for k, length in trimmed:
+        if 0 <= k < k_count:
+            pmf[k, min(length, d_max) - 1] += 1
+            counts[k] += 1
+
+    info = {"runs": len(runs), "used": len(trimmed), "per_state": counts.tolist()}
+    for k in range(k_count):
+        if counts[k] < 5:
+            # 退回几何：P(D=d) = (1-p) p^(d-1)，p = 自转移概率
+            p = float(fallback_stay[k]) if fallback_stay is not None else 0.9
+            p = min(max(p, 1e-3), 1 - 1e-3)
+            pmf[k] = (1 - p) * p ** np.arange(d_max)
+            info.setdefault("fallback", []).append(k)
+    pmf = np.clip(pmf, 1e-9, None)
     pmf /= pmf.sum(axis=1, keepdims=True)
-    return pmf, runs
+    return pmf, info
 
 
 def hazard(pmf: np.ndarray) -> np.ndarray:
-    """风险率 h_k(d) = f_k(d) / S_k(d)，S = 存活函数。"""
-    surv = 1.0 - np.cumsum(pmf, axis=1)           # S(d) = P(D > d)
-    surv = np.clip(surv, 1e-6, None)
-    return np.clip(pmf / surv, 1e-6, 1 - 1e-6)
+    """离散风险率 `h_k(d) = P(D=d | D>=d) = f(d) / Σ_{u>=d} f(u)`。
+
+    分母必须是**从 d 开始的尾部概率**（含 d 自身），不是 `P(D>d)`。
+    最后一档是"≥ d_max"的合并档，其风险率 = f/f = 1（到上限必然离开），
+    这一点在报告里注明——它不代表真实风险率，是合并档的端点。
+    """
+    surv_ge = np.cumsum(pmf[:, ::-1], axis=1)[:, ::-1]     # Σ_{u>=d}
+    surv_ge = np.clip(surv_ge, 1e-12, None)
+    return np.clip(pmf / surv_ge, 1e-9, 1 - 1e-9)
 
 
-# ---------------------------------------------------------------- 前向
+def embedded_transmat(a: np.ndarray) -> np.ndarray:
+    """嵌入转移矩阵：对角线清零后按行归一。
 
-def hmm_forward(log_b: np.ndarray, A: np.ndarray, pi: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """普通 HMM 前向：返回 (过滤状态概率, 每步的一步预测对数似然)。"""
+    HSMM 里"是否离开"由风险率决定，所以离开之后**不能再回到原状态**
+    （否则等于绕开持续时间模型重新开始计数）。原实现直接用完整 `A`，
+    对角线会把状态送回自身，这是错的。
+    """
+    emb = a.astype(float).copy()
+    np.fill_diagonal(emb, 0.0)
+    row = emb.sum(axis=1, keepdims=True)
+    bad = (row <= 0).ravel()
+    if bad.any():
+        emb[bad] = 1.0
+        np.fill_diagonal(emb, 0.0)
+        row = emb.sum(axis=1, keepdims=True)
+    return emb / np.where(row <= 0, 1.0, row)
+
+
+def _log_emission(model, x: np.ndarray, k: int) -> np.ndarray:
+    from scipy.stats import multivariate_normal
+    return np.column_stack([
+        multivariate_normal.logpdf(x, mean=model.means_[i], cov=model.covars_[i],
+                                   allow_singular=True) for i in range(k)])
+
+
+def hmm_forward(log_b: np.ndarray, a: np.ndarray,
+                init_state: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """HMM 前向。`init_state` 是**第一个观测之前**的状态分布（可来自训练集末尾）。"""
     n = len(log_b)
-    alpha = np.exp(log_pi(pi) + log_b[0])
-    pred = np.full(n, np.nan)
-    out = np.empty((n, A.shape[0]))
-    s = alpha.sum()
-    out[0] = alpha / s
-    for t in range(1, n):
-        un = (out[t - 1] @ A) * np.exp(log_b[t])
+    out = np.empty((n, a.shape[0]))
+    pred = np.empty(n)
+    state = init_state
+    for t in range(n):
+        prior = state @ a
+        un = prior * np.exp(log_b[t])
         s = un.sum()
         pred[t] = np.log(max(s, 1e-300))
-        out[t] = un / s
+        state = un / s
+        out[t] = state
     return out, pred
 
 
-def hsmm_forward(log_b: np.ndarray, A: np.ndarray, pi: np.ndarray,
-                 hz: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """HSMM 前向：状态空间 (k, d)，d = 已持续天数。
+def hsmm_forward(log_b: np.ndarray, a_emb: np.ndarray, hz: np.ndarray,
+                 init_joint: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """HSMM 前向。状态空间 (k, d)，`init_joint[k, d]` 是第一个观测之前的联合分布。
 
-    `hz[k, d]` 是风险率 h_k(d)。d 超过上限后并入最后一格（不再延长）。
+    离开用风险率 `h_k(d)`，落到 `a_emb`（无自转移）；留下则 d → d+1。
     """
     n = len(log_b)
     k, dmax = hz.shape
-    a = np.zeros((k, dmax))
-    b0 = np.exp(log_b[0] - log_b[0].max())
-    a[:, 0] = pi * b0
-    a /= a.sum()
-
-    pred = np.full(n, np.nan)
+    a = init_joint.astype(float).copy()
+    a /= max(a.sum(), 1e-300)
     out = np.empty((n, k))
-    out[0] = a.sum(axis=1)
-    for t in range(1, n):
+    pred = np.empty(n)
+    for t in range(n):
         shift = float(np.max(log_b[t]))
-        b = np.exp(log_b[t] - shift)      # 只为数值稳定；算似然时补回 shift
-        # 转移质量：从 (i,d) 按风险率离开 → 落到 (j,1)
-        leave = (a * hz[:, :dmax]).sum(axis=1)          # (k,)
-        new = np.zeros_like(a)
-        # 落到各状态的 d=1
-        new[:, 0] = (leave @ A) * b
-        # 未离开的：d → d+1
+        b = np.exp(log_b[t] - shift)
+        leave = (a * hz).sum(axis=1)                 # (k,) 离开质量
         stay = a * (1.0 - hz)
-        # d → d+1（保持同一状态），形状：(k, dmax)
-        new[:, 1:] = stay[:, :-1] * b[:, None]
-        # d 到上限后并入最后一格（不再继续延长）
-        new[:, -1] += stay[:, -1] * b
-        # 用未归一化的预测质量算一步预测似然
-        pred[t] = np.log(max(new.sum(), 1e-300)) + shift
-        a = new / new.sum()
+        new = np.zeros_like(a)
+        new[:, 0] = (leave @ a_emb) * b               # 落到其它状态的 d=1
+        new[:, 1:] = stay[:, :-1] * b[:, None]        # 留在原状态，d→d+1
+        new[:, -1] += stay[:, -1] * b                 # 合并档吸收
+        tot = new.sum()
+        pred[t] = np.log(max(tot, 1e-300)) + shift
+        a = new / max(tot, 1e-300)
         out[t] = a.sum(axis=1)
     return out, pred
-
-
-def log_pi(pi: np.ndarray) -> np.ndarray:
-    return np.log(np.clip(pi, 1e-12, None))
 
 
 # ---------------------------------------------------------------- 单组对照
 
 
 def run_group(name: str, feats: pd.DataFrame, order_col: str, px: pd.DataFrame) -> dict:
-    from scipy.stats import multivariate_normal
-
+    """训练集拟合 → 训练集末尾的分布作为 OOS 先验 → 各自前向打分。"""
     from experiment.hmm_state.run import fit_hmm, filtered_proba, sort_states_by_risk
 
     df = feats.dropna()
@@ -154,25 +191,32 @@ def run_group(name: str, feats: pd.DataFrame, order_col: str, px: pd.DataFrame) 
 
     model = fit_hmm(xtr.to_numpy(), K)
     A, pi = model.transmat_, model.startprob_
+    a_emb = embedded_transmat(A)
 
-    # 训练集状态（用于估持续时间）
-    ptr = filtered_proba(model, xtr.to_numpy())
-    tr_states = pd.Series(ptr.argmax(axis=1), index=xtr.index)
-    pmf, runs = duration_pmf(tr_states, D_MAX_CAP)
+    # ---- 训练集：HMM 前向，拿末尾状态分布
+    lb_tr = _log_emission(model, xtr.to_numpy(), K)
+    p_tr, _ = hmm_forward(lb_tr, A, pi)
+    init_state = p_tr[-1]                     # 训练集最后一天的过滤分布
+
+    # ---- 持续时间分布：用**Viterbi 路径**（比 argmax 噪声小），首尾删失都丢
+    vit = pd.Series(model.predict(xtr.to_numpy()), index=xtr.index)
+    pmf, dur_info = duration_pmf(vit, D_MAX_CAP, fallback_stay=np.diag(A))
     hz = hazard(pmf)
 
-    # 发射对数似然（OOS）
-    x = xte.to_numpy()
-    log_b = np.column_stack([
-        multivariate_normal.logpdf(x, mean=model.means_[i], cov=model.covars_[i],
-                                   allow_singular=True) for i in range(K)])
+    # ---- 训练集：HSMM 前向，拿末尾的 (状态, 持续天数) 联合分布
+    joint0 = np.zeros((K, hz.shape[1]))
+    joint0[:, 0] = pi
+    p_tr_h, _ = hsmm_forward(lb_tr, a_emb, hz, joint0)
+    # 重跑一次拿联合（上面只返回边缘），这里显式重建
+    init_joint = _train_tail_joint(lb_tr, a_emb, hz, pi)
 
-    # HMM vs HSMM 的一步预测
-    p_hmm, ll_hmm = hmm_forward(log_b, A, pi)
-    p_hsmm, ll_hsmm = hsmm_forward(log_b, A, pi, hz)
+    # ---- OOS 打分
+    lb = _log_emission(model, xte.to_numpy(), K)
+    p_hmm, ll_hmm = hmm_forward(lb, A, init_state)
+    p_hsmm, ll_hsmm = hsmm_forward(lb, a_emb, hz, init_joint)
 
-    score_hmm = float(np.nanmean(-ll_hmm[1:]))
-    score_hsmm = float(np.nanmean(-ll_hsmm[1:]))
+    score_hmm = float(np.mean(-ll_hmm))
+    score_hsmm = float(np.mean(-ll_hsmm))
 
     def states_of(p):
         st = pd.Series(p.argmax(axis=1), index=xte.index)
@@ -181,11 +225,29 @@ def run_group(name: str, feats: pd.DataFrame, order_col: str, px: pd.DataFrame) 
 
     s_hmm, s_hsmm = states_of(p_hmm), states_of(p_hsmm)
 
-    return {"name": name, "model": model, "pmf": pmf, "runs": runs,
+    return {"name": name, "model": model, "pmf": pmf, "dur_info": dur_info,
             "score_hmm": score_hmm, "score_hsmm": score_hsmm,
             "states_hmm": s_hmm, "states_hsmm": s_hsmm,
             "profile_hmm": te.loc[xte.index].groupby(s_hmm).mean().round(2),
             "profile_hsmm": te.loc[xte.index].groupby(s_hsmm).mean().round(2)}
+
+
+def _train_tail_joint(log_b, a_emb, hz, pi) -> np.ndarray:
+    """训练集最后一天的 (状态, 已持续天数) 联合分布。"""
+    k, dmax = hz.shape
+    a = np.zeros((k, dmax))
+    a[:, 0] = pi
+    a /= a.sum()
+    for t in range(len(log_b)):
+        b = np.exp(log_b[t] - np.max(log_b[t]))
+        leave = (a * hz).sum(axis=1)
+        stay = a * (1.0 - hz)
+        new = np.zeros_like(a)
+        new[:, 0] = (leave @ a_emb) * b
+        new[:, 1:] = stay[:, :-1] * b[:, None]
+        new[:, -1] += stay[:, -1] * b
+        a = new / max(new.sum(), 1e-300)
+    return a
 
 
 def _worst_year(states: pd.Series, px: pd.DataFrame) -> float:
