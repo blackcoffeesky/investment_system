@@ -113,10 +113,11 @@ SOURCES += [
     Source("company", ashare_company, shape="static", note="ashareapi /v1/stocks"),
     # 当前股本快照：季度刷一次（历史变动靠事件推）
     Source("shares_history", ashare_shares, shape="long", note="ashareapi /v1/snapshot"),
-    # 日 K **增量**：读 fuyao 的 **10 交易日 dump**（1.1 MB / 2 秒），
-    # 最多能补 10 个交易日（原来落后 >1 天就只能手工导 parquet）。
-    Source("stock_daily", fuyao.stock_daily_delta, shape="long",
-           note="fuyao dump daily-k-10d；覆盖最近 10 个交易日"),
+    # 日 K：**先补历史（historical-batch）再取最新（snapshot）**。
+    # 只靠 snapshot 的话错过一天就永远补不回来（2026-11-21 服务器缺 11-19 就是这么来的）；
+    # 缺口检测按"最近 20 个交易日里库里缺哪几天"，**不是**只看 MAX(date)（洞看不出来）。
+    Source("stock_daily", fuyao.stock_daily_sync, shape="long",
+           note="fuyao snapshot + historical-batch 补缺"),
     # 除权事件：**不日更**（全市场 5,580 次调用 ≈ 30 分钟）。事件稀疏，
     # 用 `--backfill adj_factor --max-calls N` 分批跑；口径已逐位对过 5 只票 141 个事件。
     Source("adj_factor", fuyao.adj_factor_delta, shape="long", enabled=False,

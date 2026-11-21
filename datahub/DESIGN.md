@@ -1106,3 +1106,38 @@ adapter.freshness(panel, *, today=None) -> list[dict]
 
 `world_tension` 首个非空 = **2026-03-23**（两个面板一致）；`tables_of(panel)` 同步含它；
 `freshness(CAUSUAL_*)` 里不再出现 `geopolitic_risk`。
+
+## 24. 日更：先补历史、再取最新（2026-11-21）
+
+**事故**：服务器上 `stock_daily` **独缺 2026-11-19**（11-18 和 11-20 都在）。
+fuyao 的快照接口只有"当前"——错过一天就**永远补不回来**，所以那天的 5,573 行数据
+就此丢失，只能事后用历史接口补。
+
+### 24.1 三条改动
+
+| 函数 | 作用 |
+|---|---|
+| `historical_batch(codes, start, end)` | 批量历史 K 线（个股 `/prices/historical-batch`、指数 `/index/prices/historical-batch`），**单次 ≤10 码**；`date_ms` 是 UTC 毫秒，已转 Asia/Shanghai |
+| `daily_write_guard(table, trade_date)` | 日更三条守卫**抽成一份**：①`trade_date` 就是今天（周末/节假日接口回上一个交易日）②已收盘（≥15:30）③库里没有该日或更新的日期。返回 `None`=可写，否则返回跳过原因 |
+| `stock_daily_sync()` | 日更入口：**查缺口（含中间的洞）→ 补历史 → 再取当天** |
+
+### 24.2 为什么不能只看 `MAX(date)`
+
+`stock_daily` 的洞是"11-18 有、11-19 没有、11-20 有"——`MAX(date)=11-20` 完全看不出来。
+所以 `stock_daily_sync` 按 **"最近 20 个交易日里库里缺哪几天"** 来找：
+
+```python
+recent = trading_days_between(target - 20 天, target)
+missing = [d for d in recent if d not in 库里已有的日期]
+```
+
+实测在服务器上正确地找出了 `['2026-11-19']`。
+
+### 24.3 守卫抽出来共用
+
+`stock_daily_delta` 原先自带一套守卫（收盘后 + 交易日==今天 + `latest >= trade_date` 跳过），
+现在改为调 `daily_write_guard()`。**这套逻辑一旦被抄第二份就会漂**——凡是"把当前快照
+当日线写"的入口都必须走它。
+
+⚠️ **边界是 `>=`**：库里最新 >= `trade_date` 就跳过 ⇒ 同一天重复跑不会写重，
+也不会把更旧的 snapshot 盖到更新的行上。

@@ -186,6 +186,193 @@ def indicators(thscode: str, report: str) -> dict[str, Any]:
     return body.get("data") or {}
 
 
+# ======================================================================
+# 历史补数（historical-batch）+ 日更守卫（**只有这一份**）
+# ======================================================================
+def _ms(date: str | pd.Timestamp) -> int:
+    """`2026-11-19` → Asia/Shanghai 的毫秒时间戳（接口只认毫秒）。"""
+    return int(pd.Timestamp(str(date)[:10], tz="Asia/Shanghai").timestamp() * 1000)
+
+
+def historical_batch(thscodes: list[str], start: str, end: str, *,
+                     interval: str = "1d", adjust: str = "none",
+                     is_index: bool = False) -> pd.DataFrame:
+    """批量历史 K 线（**单次 ≤10 个代码**）→ long 行。
+
+    个股走 `/api/a-share/prices/historical-batch`，指数走
+    `/api/a-share-index/prices/historical-batch`（两个端点的返回结构一样）。
+
+    返回列：`code / date / open / high / low / close / volume / turnover`
+    （`code` 是库内的 `sh600519` 形式；`date` 已按 Asia/Shanghai 转好——
+    `date_ms` 是 UTC 毫秒，不转会整体少一天）。
+    """
+    if len(thscodes) > 10:
+        raise ValueError(f"historical-batch 单次最多 10 个代码，收到 {len(thscodes)}")
+    path = ("/api/a-share-index/prices/historical-batch" if is_index
+            else "/api/a-share/prices/historical-batch")
+    body = api_get(path, thscodes=",".join(thscodes), interval=interval,
+                   adjust=adjust, start=_ms(start), end=_ms(end))
+    if body.get("code") != 0:
+        raise RuntimeError(f"historical-batch 失败：{body.get('code')} {body.get('message')}")
+    blocks = (body.get("data") or {}).get("item") or []
+    rows: list[pd.DataFrame] = []
+    for blk in blocks:
+        items = blk.get("item") or []
+        if not items:
+            continue
+        df = pd.DataFrame(items)
+        df["code"] = to_raw_code(str(blk.get("thscode")))
+        rows.append(df)
+    if not rows:
+        return pd.DataFrame(columns=["code", "date", "open", "high", "low",
+                                     "close", "volume", "turnover"])
+    df = pd.concat(rows, ignore_index=True)
+    out = pd.DataFrame({
+        "code": df["code"],
+        "date": _ms_to_date(df["date_ms"]),
+        "open": pd.to_numeric(df["open_price"], errors="coerce"),
+        "high": pd.to_numeric(df["high_price"], errors="coerce"),
+        "low": pd.to_numeric(df["low_price"], errors="coerce"),
+        "close": pd.to_numeric(df["close_price"], errors="coerce"),
+        "volume": pd.to_numeric(df["volume"], errors="coerce"),
+        "turnover": pd.to_numeric(df["turnover"], errors="coerce"),
+    })
+    return out.dropna(subset=["close"]).drop_duplicates(subset=["code", "date"], keep="last")
+
+
+def daily_write_guard(table: str, trade_date: str, *,
+                      now: pd.Timestamp | None = None) -> str | None:
+    """日更守卫：**能不能把 `trade_date` 这天的数据写进 `table`**。
+
+    返回 `None` = 可以写；返回字符串 = **跳过原因**（调用方打印后 return 空表）。
+
+    三条判断（`stock_daily` 原来写死在函数里，现在抽成公共的一份）：
+
+    1. `trade_date` 必须就是今天 —— 非交易日/节假日接口会回**上一个交易日**的
+       `timestamp`，照写就是把旧数据当新数据灌进去；
+    2. 今天必须**已收盘**（≥15:30）—— 盘中写进去是半天的量；
+    3. 库里**已经有这一天或更新的日期** → 跳过（幂等，重复跑不写重）。
+
+    ⚠️ 边界用 `>=`：库里最新 >= trade_date 就跳过。等价于"只补更新的日期"，
+    所以**同一天重复跑不会写重**，也不会把更旧的 snapshot 盖到更新的行上。
+    """
+    from datahub.core.conn import connect
+
+    now = now or pd.Timestamp.now(tz="Asia/Shanghai")
+    if str(trade_date)[:10] != now.strftime("%Y-%m-%d"):
+        return (f"{table}：接口的交易日是 {trade_date}，今天是 {now:%Y-%m-%d}"
+                f"（周末/节假日）→ 不写")
+    if now.hour * 60 + now.minute < 15 * 60 + 30:
+        return f"{table}：现在 {now:%H:%M} 未收盘 → 不写（盘中数据是半天的量）"
+    con = connect()
+    try:
+        latest = con.execute(f'SELECT MAX(date) FROM "{table}"').fetchone()[0]
+    except Exception:  # noqa: BLE001
+        latest = None
+    finally:
+        con.close()
+    if latest and str(latest)[:10] >= str(trade_date)[:10]:
+        return f"{table}：{trade_date} 已存在（最新 {latest}）→ 跳过"
+    return None
+
+
+def trading_days_between(start: str, end: str) -> list[str]:
+    """[start, end] 之间的交易日（`YYYY-MM-DD`）。拿不到日历就退回工作日。"""
+    try:
+        from datahub.fin.sources.ashare import _trade_calendar
+
+        cal = _trade_calendar()
+        if cal is not None and len(cal):
+            d = pd.DatetimeIndex(cal)
+            sel = d[(d >= pd.Timestamp(start)) & (d <= pd.Timestamp(end))]
+            return [str(x.date()) for x in sel]
+    except Exception:  # noqa: BLE001
+        pass
+    return [str(x.date()) for x in pd.bdate_range(start, end)]
+
+
+def stock_daily_backfill(*, start: str, end: str,
+                         max_codes: int = 0) -> pd.DataFrame:
+    """用 `historical-batch` 补 `stock_daily` 的缺口（每批 10 个代码）。
+
+    为什么放在这里：**日更缺口不能靠 snapshot 补**——快照只有"当前"，
+    错过一天就永远补不回来（2026-11-21 发现 `stock_daily` 缺 11-19 就是这么来的）。
+    """
+    from datahub.fin.sources.ashare import _all_codes
+
+    codes = _all_codes()
+    if max_codes:
+        codes = codes[:max_codes]
+    out: list[pd.DataFrame] = []
+    for i in range(0, len(codes), 10):
+        batch = [to_thscode(c) for c in codes[i:i + 10]]
+        try:
+            df = historical_batch(batch, start, end)
+        except Exception as exc:  # noqa: BLE001
+            print(f"  stock_daily 补数：批次 {i} 失败（{type(exc).__name__}），继续")
+            continue
+        if not df.empty:
+            out.append(df)
+        if i and i % 500 == 0:
+            print(f"  stock_daily 补数：{i}/{len(codes)}")
+    if not out:
+        return pd.DataFrame()
+    res = pd.concat(out, ignore_index=True)
+    print(f"  stock_daily 补数（{start} ~ {end}）：{len(res)} 行 / "
+          f"{res['code'].nunique()} 只")
+    return res
+
+
+def stock_daily_sync(**_ignored) -> pd.DataFrame:
+    """`stock_daily` 的日更入口：**先补历史，再取最新**。
+
+    1. 量缺口：`今天 - MAX(date)` ≥ 1 个交易日 → 用 `historical-batch` 补齐；
+    2. 再取当天：`prices/snapshot` + 公共守卫（收盘后 / 交易日==今天 / 已存在则跳过）；
+    3. **绝不把旧数据当新数据写**：守卫不通过就打印原因、返回空表。
+    """
+    from datahub.core.conn import connect
+
+    now = pd.Timestamp.now(tz="Asia/Shanghai")
+    today = now.strftime("%Y-%m-%d")
+    # 收盘前，"该有的最新一天"是昨天
+    target = today if now.hour * 60 + now.minute >= 15 * 60 + 30 else str(
+        (pd.Timestamp(today) - pd.Timedelta(days=1)).date())
+
+    con = connect()
+    try:
+        latest = con.execute("SELECT MAX(date) FROM stock_daily").fetchone()[0]
+    finally:
+        con.close()
+    latest = str(latest)[:10] if latest else ""
+
+    frames: list[pd.DataFrame] = []
+    # ---- 缺哪些交易日：**尾巴缺口 + 中间的洞**都要找 ----
+    # 只看 MAX(date) 会漏掉"中间缺一天"的情况：2026-11-21 服务器上
+    # `stock_daily` 有 11-18 和 11-20、**独缺 11-19**，MAX 完全看不出来。
+    window_start = str((pd.Timestamp(target) - pd.Timedelta(days=20)).date())
+    recent = trading_days_between(window_start, target)
+    con = connect()
+    try:
+        have = {str(r[0])[:10] for r in con.execute(
+            "SELECT DISTINCT date FROM stock_daily WHERE date >= ?", (window_start,))}
+    finally:
+        con.close()
+    missing = [d for d in recent if d not in have]
+    if missing:
+        print(f"  stock_daily 缺 {len(missing)} 个交易日（{', '.join(missing)}）"
+              f"→ 用 historical-batch 补")
+        gaps = stock_daily_backfill(start=missing[0], end=missing[-1])
+        if not gaps.empty:
+            frames.append(gaps[gaps["date"].isin(missing)])
+
+    live = stock_daily_delta()
+    if not live.empty:
+        frames.append(live)
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True).drop_duplicates(
+        subset=["code", "date"], keep="last")
+
 def stock_daily_delta(**_ignored) -> pd.DataFrame:
     """`stock_daily` 日更源：**全市场行情快照分页**（`prices/snapshot`）。
 
@@ -241,31 +428,10 @@ def stock_daily_delta(**_ignored) -> pd.DataFrame:
     df = pd.concat(pages, ignore_index=True)
     assert trade_date is not None
 
-    # ① 只在收盘后、且 timestamp 就是今天时才写
-    if trade_date != now.strftime("%Y-%m-%d"):
-        print(f"  stock_daily 日更：snapshot 的交易日是 {trade_date}，今天是 "
-              f"{now:%Y-%m-%d}（周末/节假日）→ 不写")
+    reason = daily_write_guard("stock_daily", trade_date, now=now)
+    if reason:
+        print(f"  {reason}")
         return pd.DataFrame()
-    if now.hour * 60 + now.minute < 15 * 60 + 30:
-        print(f"  stock_daily 日更：现在 {now:%H:%M} 未收盘 → 不写（盘中数据是半天的量）")
-        return pd.DataFrame()
-
-    # 已有该交易日（重复跑 / 已经用 dump 补过）→ 直接跳过。
-    # ⚠️ 必须用 SQL `MAX(date)`，不能 `read("stock_daily")`——整表 1,040 万行读一次要 40 秒，
-    # 日更的意义就没了（2026-11-17 实测：改成 SQL 后 57s → 4s）。
-    try:
-        from datahub.core.conn import connect
-
-        con = connect()
-        try:
-            latest = con.execute("SELECT MAX(date) FROM stock_daily").fetchone()[0]
-        finally:
-            con.close()
-        if latest and str(latest)[:10] >= trade_date:
-            print(f"  stock_daily 日更：{trade_date} 已存在（最新 {latest}）→ 跳过")
-            return pd.DataFrame()
-    except Exception:  # noqa: BLE001
-        pass
 
     out = pd.DataFrame({
         "code": [to_raw_code(t) for t in df["thscode"].astype(str)],

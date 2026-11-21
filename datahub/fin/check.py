@@ -288,6 +288,38 @@ if __name__ == "__main__":
 # 语义照搬（`_period_end` 的四个分支 + 只判 D/M/Q/Y），但**多给一个布尔量**。
 
 
+#: 本进程里"跳过冻结表"的通知只打一次（每次调用都打会淹掉真正的告警）
+_FROZEN_ANNOUNCED = False
+
+
+def _frozen_tables() -> set[str]:
+    """**有意冻结**的表：`SOURCES` 里登记但 `enabled=False` 的。
+
+    2026-11-18：`freshness` 一上线就把 `geopolitic_risk` / `industrial_yoy` /
+    `exports_yoy` 报成 overdue——**技术正确、语义错误**：这三张是**有意停更**的
+    （FRED 无此序列 / 财经日历接口停更），不是"忘了跑"。
+
+    判定依据只能是 **源注册表**（`metadata` 里没有 `enabled` 列）：
+    在 `SOURCES` 里且 `enabled=False` ⇒ 冻结；**不在 `SOURCES` 里的表（手工导入表、
+    intake 表）一律不跳**——它们更该被盯着（`gold_etf_holdings` 就是靠这个报缺月的）。
+    """
+    from datahub.fin.sources import SOURCES
+
+    all_t = {t for s in SOURCES for t in s.table.split("|")}
+    active = {t for s in SOURCES if s.enabled for t in s.table.split("|")}
+    return all_t - active
+
+
+def _announce_frozen(frozen: set[str], skipped: list[str]) -> None:
+    """**跳过要"响"一次**：否则以后有人问"为什么这三张不报了"，又得翻代码。"""
+    global _FROZEN_ANNOUNCED
+    if _FROZEN_ANNOUNCED or not skipped:
+        return
+    _FROZEN_ANNOUNCED = True
+    print(f"[新鲜度] 跳过 {len(skipped)} 张已冻结的表（源 enabled=False，有意停更）："
+          f"{' / '.join(sorted(skipped))}", file=sys.stderr)
+
+
 def _period_end(freq: str, today: pd.Timestamp) -> pd.Timestamp | None:
     """最近一个"已结束的周期"的期末；不判过期的频率返回 None。
 
@@ -352,11 +384,17 @@ def freshness(tables=None, *, today: str | pd.Timestamp | None = None,
     idx = meta.set_index("name")
     names = list(tables) if tables is not None else [str(n) for n in idx.index]
 
+    frozen = _frozen_tables()
+    skipped_frozen: list[str] = []
     out: list[dict] = []
     for t in names:
         if t not in idx.index:
             print(f"[新鲜度] 监控清单里的 {t!r} 不在 metadata 里（改名/删表了？"
                   f"这张表的新鲜度没人看）", file=sys.stderr)
+            continue
+        # 冻结表（有意停更）不参与新鲜度：报了只会误导
+        if t in frozen:
+            skipped_frozen.append(t)
             continue
         # static / eav 没有日期轴：不是"过期"，是"没有期"这个维度
         if str(idx.loc[t].get("kind") or "") in ("static", "eav"):
@@ -392,4 +430,5 @@ def freshness(tables=None, *, today: str | pd.Timestamp | None = None,
             "stale": stale, "overdue": overdue,
             "days_behind": behind, "text": text,
         })
+    _announce_frozen(frozen, skipped_frozen)
     return out
