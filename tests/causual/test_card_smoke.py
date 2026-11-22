@@ -6,11 +6,17 @@
 一次出卡会写**四张**产物（日频卡 / 明细 / 月频卡 / 月频明细），这四张都要查
 `nan` 字样：以前只盯日频卡，于是明细里的 `[+nan, +nan]`（CI 缺失没做 isfinite）
 和 `+nan`（政策利率几个月没动 → 滚动标准差 0 → z 算不出）藏了很久。
+
+⚠️ **产物写到临时目录，不碰 `causual/data/output`**（2026-11-22 踩过）：
+这个测试以前用默认 `out_dir`，于是**跑一次测试就把正式卡重写了**——正好撞上
+"重估 edges 后要备份旧卡再重出"的那次，备份里拿到的已经是被测试覆盖过的新卡，
+对照直接失效。测试只该证明"能出卡、没 nan"，不该改用户的产物。
 """
 
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 
 #: 运行超过 10 秒（`run_tests.py --fast` 会跳过）
@@ -18,6 +24,9 @@ SLOW = True
 
 # 每个资产只生成一次，两条测试共用（生成一次要十几秒）
 _GENERATED: dict[str, tuple[Path, str, list[Path]]] = {}
+
+#: 本次测试专用的产物根目录（**不是** `causual/data/output`）
+_OUT_DIR = Path(tempfile.mkdtemp(prefix="causual_cards_"))
 
 
 def _generate(asset: str) -> tuple[Path, str, list[Path]]:
@@ -38,7 +47,9 @@ def _generate(asset: str) -> tuple[Path, str, list[Path]]:
     panel = _load_panel(asset)
     view = state_view(asset, panel)
     rows = _freshness(asset, panel)
-    path = pipeline.run(asset, panel, freshness=rows, state=view, quiet=True)
+    # `out_dir` 显式指到测试自己的临时目录：**不许**让测试重写 `causual/data/output`
+    path = pipeline.run(asset, panel, freshness=rows, state=view,
+                        out_dir=_OUT_DIR, quiet=True)
 
     d = path.stem.split("_", 1)[1]                       # 2026-11-10
     month = causal_port().macro_month(rows)

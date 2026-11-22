@@ -152,7 +152,9 @@ def run(
         print(card.split("\n\n")[0])
         print(f"\n日频卡 -> {path}")
         print(f"月频卡 -> {macro_path}")
-        print(f"（{asset} 签名 {spec['data']['label_signature']} / 边快照 {snap_meta['fit_date']}"
+        # 签名走同一处解析（v2 在 groups[primary] 里）。这里以前直接读 spec["data"]，
+        # v2 下会 KeyError——注意卡片**已经写完**才崩，所以只有"退出码 1"这一个症状。
+        print(f"（{asset} 签名 {sig} / 边快照 {snap_meta['fit_date']}"
               f" / 龄期 {age} 天）")
     return Path(path)
 
