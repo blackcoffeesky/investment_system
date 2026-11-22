@@ -257,7 +257,11 @@ def test_state_contract_fields():
         assert k in cur, f"契约缺字段 {k}"
     # version 形如 `<链>-k<K>-<fit_id>`：单模型是 `hmm-k3-…`，链式是
     # `extreme+hmm-k3-…`（按 MODEL_CHAIN 生成）。别写死前缀——换链就误报。
-    assert "hmm-k" in cur["model"]["version"], cur["model"]["version"]
+    # 版本串按**结构**断言，不写死前缀——写死 `hmm-k` 这次就误报了（换模型必炸）。
+    ver, k = cur["model"]["version"], cur["model"]["k"]
+    assert ver.startswith("estimator-v2:"), ver
+    assert f"@{cur['group']}" in ver, ver
+    assert f"-k{k}-" in ver, ver
     assert "hmm" in str(cur["model"].get("kind") or ""), cur["model"]
 
 
@@ -277,15 +281,20 @@ def test_state_extend_fills_gap():
     spaced = labels.reindex(
         pd.bdate_range(labels.index[0], labels.index[-1] + pd.Timedelta(days=20))
     ).fillna("").astype(str)
-    # 列名必须跟 `config.FEATURES` 走：模型的 last_window 按**训练时的列名**重排
-    # （hmm.infer: reindex(columns=cols).dropna()），少一列就整天认领不到、静默不外推。
-    cols = list(state_assets.load("ashare").config.FEATURES)
-    feats = pd.DataFrame(
-        np.random.default_rng(0).normal(size=(len(spaced), len(cols))),
-        index=spaced.index,
-        columns=cols)
-    out = port.extend("ashare", feats, spaced)
+
+    # 2026-11-22 接口变更：`extend` 的第二参数从 **features 矩阵** 变成 **panel**。
+    # 原因：特征现在属于分组（A 股三组各一套），提前算特征等于把特征定义泄漏到每个调用点。
+    # 所以这里喂真实面板，不再伪造随机特征矩阵。
+    from shared.adapter import Panel, get_data
+
+    panel = get_data(Panel.STATE_ASHARE, start=str(spaced.index[0].date()))
+    out = port.extend("ashare", panel, spaced)
     assert out.index.max() > labels.index.max(), "没有外推"
-    assert (out != "").all(), "外推结果里还有空标签"
+    # 只能要求"**面板里有的交易日**都填上"：`spaced` 是按工作日生成的，
+    # 节假日（A 股休市）没有面板行、也不该有标签。旧的 `(out != "").all()`
+    # 之所以能过，是因为旧测试伪造了一个覆盖所有工作日的特征矩阵——那不是真实形状。
+    filled_days = out[out.index > labels.index.max()]
+    assert (filled_days.loc[filled_days.index.isin(panel.index)] != "").all(), \
+        "外推结果在面板交易日上还有空标签"
     keep = out.reindex(labels.index)
     assert (keep == labels).all(), "已有标签被改动"

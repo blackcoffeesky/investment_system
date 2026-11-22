@@ -72,6 +72,10 @@ class GenerateMacroState(BaseState):
                     skipped.append(f"{asset} {month}")
                     continue
                 view = st.state_view(asset, panel)
+                # 画像要按面板现算统计，而 causual 核心不该 import 状态层
+                # （AGENTS §2①）——所以在装配点放进来，核心只读。
+                # 2026-11-22 新增：v2 spec 不再带 profile。
+                view["profile"] = st.profile(asset, panel)
                 cards.generate_macro(asset, month, panel,
                                      state=view, freshness=rows)
                 made.append(f"{asset} {month}")
@@ -134,6 +138,10 @@ class GenerateCardsState(BaseState):
                     skipped.append(f"{asset} {date}")
                     continue
                 view = st.state_view(asset, panel)
+                # 画像要按面板现算统计，而 causual 核心不该 import 状态层
+                # （AGENTS §2①）——所以在装配点放进来，核心只读。
+                # 2026-11-22 新增：v2 spec 不再带 profile。
+                view["profile"] = st.profile(asset, panel)
                 # 新鲜度按**卡片日**算（不是今天）：重跑历史 --asof 不会凭空多出告警
                 rows = _freshness(cards, asset, date=date)
                 cards.generate(asset, panel, date=date, state=view,

@@ -105,6 +105,16 @@ class FakeState:
         return {"labels": pd.Series(dtype=str), "label_name": {},
                 "labels_order": (), "version": "fake", "line": "假状态"}
 
+    def profile(self, asset, panel):
+        """假端口也要实现真端口的方法——**桩缺方法本身就是桩的 bug**。
+
+        2026-11-22：服务层在装配点把画像塞进 `state["profile"]`（causual 核心不 import 状态层），
+        这个桩没跟上，4 条 service 测试直接红。
+        """
+        import pandas as pd
+
+        return pd.DataFrame(columns=["label", "share", "n"])
+
 
 def _tmp():
     d = tempfile.mkdtemp()

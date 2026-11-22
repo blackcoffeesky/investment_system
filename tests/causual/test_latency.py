@@ -36,12 +36,29 @@ def test_mechanism_differs_by_asset():
 
 
 def test_label_enums_are_asset_specific():
+    """两个资产的标签**词表按各自模型定**，不再强行相等。
+
+    2026-11-22 起：
+    - 黄金 `raw` K=4 → `range / trend_up / trend_down / **distribution**`
+    - A 股 `short_price` K=3 → `range / trend_up / trend_down`（**没有 distribution**）
+    - 极端标签（`extreme_*`）随 extreme 模型一起移除
+
+    旧断言写的是 `g == a == {...四个...}`，A 股降到 3 态后它必然红——
+    而"两个资产词表必须相等"这个前提本身就不成立（K 不同）。
+    """
     g, a = set(gold_label.VALUES), set(ash_label.VALUES)
-    # v5.9 起常规 HMM 只产出四个标签，两支资产一致；差异体现在极端/遗留枚举上
-    assert g == a == {"range", "trend_up", "trend_down", "distribution"}
+
+    # 共同的三态：涨/跌/震荡，两边都有
+    base = {"range", "trend_up", "trend_down"}
+    assert base <= g and base <= a, f"共同三态缺失：gold={g} ashare={a}"
+
+    # `distribution` 是黄金 K=4 特有的，A 股 K=3 不该有
+    assert "distribution" in g, g
+    assert "distribution" not in a, a
+
     assert "panic" not in a and "rebound" not in a
     assert "stress" not in g and "recovery" not in g
-    # 极端标签由规则层给出，不在 HMM 词表里
+    # 极端标签由规则层给出过，已随 extreme 模型删除，不该回流到任何资产
     for lab in ("extreme_up", "extreme_down", "extreme_vol"):
         assert lab not in a and lab not in g
 
