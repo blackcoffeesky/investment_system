@@ -94,20 +94,50 @@ def test_all_cards_have_no_nan():
 
 
 def test_state_features_match_prepare():
-    """状态层的特征在"原始面板"和"因果层 prepare 后的面板"上必须一致。
+    """状态层特征在「原始面板」与「因果层 prepare 后面板」上必须逐值相同。
 
-    状态层自带最小派生（VOLUME_Z / MARGIN_CHG / SHIBOR_CHG_BP），
-    和因果层 prepare() 里的公式是两份实现——这条测试防止漂移。
+    为什么还要守这一条：状态层**只读面板列**（`short_price(panel)`），而 causual 的
+    `prepare()` 会往同一张表上加几十列。只要 prepare 不去改写状态层吃的列
+    （`close` / `high` / `low` / `open`），两边算出来的特征就该一模一样——
+    一旦有人让 `prepare()` 覆盖这些列，这条当场红。
+
+    顺便对账一处**更容易静默失效**的东西：`spec` 里声明的特征名
+    （`groups[primary]["features"]`）必须等于构造函数产出的列名。列名对不上时
+    状态层不会报错，只是特征矩阵变窄、模型照跑——那是查不出来的漂移。
+
+    （2026-11-22：状态层把 9 个旧特征换成 `short_price` / `short_vol` / `long_price`
+    三个构造函数，`features.build()` 已退役；`etf_dispersion` 不再由状态层计算。）
     """
     from causual.causual_assets.ashare import pipeline as P
     from causual.causual_core.cli import _load_panel
+    from causual.causual_core.spec import is_v2, primary_group
     from state_layer import state_assets
+    from state_layer.port import get_port as state_port
 
     raw = P.load_raw(_load_panel("ashare"))
     prep = P.prepare(raw)
 
     pkg = state_assets.load("ashare")
-    a = pkg.features.build(raw)
-    b = pkg.features.build(prep)
-    assert a.index.equals(b.index)
-    assert float((a - b).abs().max().max()) < 1e-9
+    a = pkg.features.build_groups(raw)
+    b = pkg.features.build_groups(prep)
+
+    # 组集合 = 配置里启用的那几个（多出来的组会白算，少一个会让模型静默少特征）
+    assert set(a) == set(pkg.config.GROUPS_ENABLED), (set(a), pkg.config.GROUPS_ENABLED)
+
+    for grp in a:
+        assert a[grp].index.equals(b[grp].index), grp
+        assert float((a[grp] - b[grp]).abs().max().max()) < 1e-9, grp
+
+    # spec 声明的特征名 ↔ 构造函数产出的列名
+    spec = state_port().spec("ashare")
+    if is_v2(spec):
+        prim = primary_group(spec)
+        assert prim in a, f"spec 的 primary={prim!r} 不在 build_groups 的产出里：{sorted(a)}"
+        declared = set(spec["groups"][prim]["features"])
+        produced = set(a[prim].columns)
+    else:
+        declared = set((spec.get("data") or {}).get("features") or [])
+        produced = {c for df in a.values() for c in df.columns}
+    assert declared == produced, (
+        f"spec 里声明的特征与实现产出的列不一致——多出 {sorted(produced - declared)}、"
+        f"缺少 {sorted(declared - produced)}")

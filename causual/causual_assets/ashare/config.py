@@ -37,11 +37,13 @@ TARGET = "CSI_ALL"
 
 # 状态标签：因果层只用到这几个字符串做**分组**（哪些边在什么行情下有效）。
 # 完整词表在状态层；这里不 import 它，靠 test_label_vocab_matches_state 守着一致。
+#
+# 2026-11-22：A 股的状态模型是 K=3（`short_price` 组），**没有 `distribution`**——
+# 那是黄金 K=4 才有的标签。这里跟着收成三个；`ALL` 因此也不会再含不存在的行情。
 RANGE = "range"
 TREND_UP = "trend_up"
 TREND_DOWN = "trend_down"
-DISTRIBUTION = "distribution"
-ORDER = (RANGE, TREND_UP, TREND_DOWN, DISTRIBUTION)
+ORDER = (RANGE, TREND_UP, TREND_DOWN)
 ALL = ORDER
 # 极端日不走常规 regime（regime_valid=False）
 RISK_OFF = (TREND_DOWN,)
@@ -98,7 +100,7 @@ EDGES: list[Edge] = [
          # 仅在审计里标注：趋势下行时贬值是利空，震荡市出口链逻辑可能占优
          direction_by_label={
              "trend_down": -1,
-             "range": +1, "trend_up": +1, "distribution": -1,
+             "range": +1, "trend_up": +1,
          },
          confounders=("usd_index",),
          falsifier="央行逆周期调节，汇率与股市脱钩"),

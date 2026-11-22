@@ -2,6 +2,48 @@
 
 ---
 
+# v5.54（2026-11-22）：跟着状态层的标签体系收口（A 股 K=3，无 `distribution`）
+
+状态层把 `label_signature` 从"哈希特征清单"改成 `label_fingerprint(labels)`
+（只哈希 primary 组的标签序列，加组不再让边快照失效），并重拟合了 v2 产物：
+
+```
+gold    raw(k=4)          0660ba2fa38b
+ashare  short_price(k=3)  b7f0879d7c3d
+```
+
+A 股的标签集合变成 **3 个**（`trend_down` / `range` / `trend_up`，显示名 下跌/震荡/上涨），
+`distribution` 只有黄金 K=4 才有。
+
+## causual 侧的连带
+
+| 位置 | 改动 |
+|---|---|
+| `causual_assets/ashare/config.py` | `ORDER` 收回 3 个标签、删掉 `DISTRIBUTION` 常量；`USDCNY` 边的 `direction_by_label` 去掉 `distribution`（A 股不会出现这个状态，留着是死键）。`ALL = ORDER` 因此也不再含不存在的行情 → `regime_valid ⊆ 词表` 重新成立 |
+| `tests/causual/test_card_smoke.py` | `state_assets` 的 `features.build()` 已退役（9 个旧特征换成 `short_price` / `short_vol` / `long_price`），改用 `build_groups()`；并加一条**列名对账**：`spec` 里声明的特征名必须等于构造函数产出的列名（列名对不上时状态层不报错，只是特征矩阵变窄、模型照跑） |
+
+## `etf_dispersion` 排查结论（lead 要求）
+
+**causual 只是读面板列，没有自己算**：
+
+- 适配层声明了它（`COLUMNS[CAUSUAL_ASHARE]` 含 `etf_dispersion`），面板里 2595 个非空值；
+- causual 侧只有 `ashare/pipeline.py::DERIVED_COLS` 里一个**列名**（"从面板搬进来"），
+  没有任何 `features.*` 调用，也没有边把它当 treatment/source；
+- 状态层的 `ETF_DISPERSION` 特征退役后，这一列目前**没有消费者**（causual 只是搬运）。
+  要不要从面板里删，是数据层的决定，causual 不做主。
+
+## 验证
+
+- `test_label_vocab_matches_state`（causual ORDER == state VALUES）绿
+- `test_latency.py::test_regime_valid_uses_asset_own_enum` 绿
+- 仍红 3 条：`test_card_smoke` ×2 + `test_e2e::test_regenerate_card_returns_303`，
+  全是 `CardRejected: 标签体系不一致：状态模型 b7f0879d7c3d vs 边快照 ce378e8af201`
+  —— 等 lead 发令重估 edges；`test_latency.py::test_label_enums_are_asset_specific`
+  是 lead 自己改（断言写死了 4 个标签）
+- pyright 0 error
+
+---
+
 # v5.53（2026-11-22）：跟进状态层 `spec` 的 v2 结构（多分组）
 
 状态层重构成"多分组"，`state["spec"]` 变成 `schema="estimator-v2"` 的形状：
