@@ -239,25 +239,6 @@ def fit_edges(df: pd.DataFrame, spec: dict, seed: int = 42, verbose: bool = True
     )
     path = snapshot.save(C.ASSET, models, label_signature_of(spec), fit_date=str(df.index[-1].date()))
 
-    # 对照实验：USDCNY 若**不控制** USD_INDEX，会不会把美元指数的效果算到汇率头上
-    try:
-        from dataclasses import replace
-        from causual.causual_core.estimators import fit_dml_edge
-
-        e = next(x for x in EDGES if x.source == "USDCNY")
-        m_nc = fit_dml_edge(
-            df, replace(e, confounders=()), labels=list(LABELS),
-            tcol=TREATMENT_COL["USDCNY"], ycol="RET", label_col=LABEL_COL, seed=seed,
-        )
-        with_c = models.get(e.key)
-        print("\n[对照] USDCNY→CSI_ALL")
-        print(f"  控制 USD_INDEX: β(panic)={with_c.beta_lead.get('panic', float('nan')):+.4f}"
-              if with_c else "")
-        print(f"  不控制 USD_INDEX: β(panic)={m_nc.beta_lead.get('panic', float('nan')):+.4f}")
-        _write_contrast(with_c, m_nc)
-    except Exception as exc:  # noqa: BLE001
-        print(f"[对照] 失败：{type(exc).__name__}: {exc}")
-
     try:
         validate_insider(df, seed=seed)
     except Exception as exc:  # noqa: BLE001
@@ -274,19 +255,6 @@ def fit_edges(df: pd.DataFrame, spec: dict, seed: int = 42, verbose: bool = True
                     print(f"  lag{k}: {m.path[k]:+.2f}%  [{lo:+.2f}, {hi:+.2f}]")
         print(f"\n快照 -> {path}")
     return {"models": models, "path": path}
-
-
-def _write_contrast(with_c, without_c) -> None:
-    lines = ["# USDCNY→CSI_ALL：控制 vs 不控制 USD_INDEX", "",
-             "| 标签 | 控制 USD_INDEX | 不控制 |", "|---|---|---|"]
-    labels = sorted(set((with_c.beta_lead if with_c else {}) ) | set(without_c.beta_lead))
-    for lab in labels:
-        a = with_c.beta_lead.get(lab, float("nan")) if with_c else float("nan")
-        b = without_c.beta_lead.get(lab, float("nan"))
-        lines.append(f"| {lab} | {a:+.4f} | {b:+.4f} |")
-    out = ROOT / "output" / C.ASSET / "usdcny_contrast.md"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def validate_insider(df: pd.DataFrame, seed: int = 42, n_seg: int = 4) -> pd.DataFrame:
