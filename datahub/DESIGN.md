@@ -1141,3 +1141,50 @@ missing = [d for d in recent if d not in 库里已有的日期]
 
 ⚠️ **边界是 `>=`**：库里最新 >= `trade_date` 就跳过 ⇒ 同一天重复跑不会写重，
 也不会把更旧的 snapshot 盖到更新的行上。
+
+## 25. 日更守卫与缺口检查：源无关，住在 `fin/check.py`（2026-11-22）
+
+原来这两件事长在 `sources/fuyao.py` 里。用户的判断是对的：**"先补历史再取最新"、
+"查历史漏洞"、"防旧数据当新数据写入"不是 Fuyao 特有的**，长在源里，第二个源要用就
+变成第二份副本，必然漂移（AGENTS §4「数据只在一处定义」）。
+
+### 25.1 五个函数（都在 `datahub/fin/check.py`）
+
+| 函数 | 作用 |
+|---|---|
+| `trading_days(start, end, market="CN")` | 交易日序列（复用 `expected_dates`） |
+| `is_trading_day(day, market="CN")` | 这天是不是交易日 |
+| `last_closed_trading_day(now=None)` | 最后一个**已收盘**的交易日（收盘前/周末 = 上一个） |
+| `find_gaps(table, lookback=20, path=None)` | 最近 N 个交易日里**缺哪几天**（`MAX(date)` 看不出中间的洞） |
+| `write_guard(table, trade_date, *, source=None, path=None, now=None)` | 四条守卫 → `(能不能写, 原因)` |
+
+`write_guard` 的四条：①`trade_date`==今天 ②已收盘（≥15:30）③**是交易日**
+④库里已有该日或更新（边界 `>=`）→ 跳过。
+
+### 25.2 各源怎么接的
+
+| 源 | 接法 | 为什么 |
+|---|---|---|
+| `fuyao`（`stock_daily` snapshot） | **调 `write_guard`** | 唯一"把当前快照当日线写"的源；周六事故就出在这 |
+| `fuyao`（`stock_daily_sync`） | **调 `find_gaps`** | 缺口含"中间的洞"，`MAX(date)` 查不出 |
+| `fuyao`（`historical_batch` 补数） | 不需要 `write_guard` | 日期**逐行来自接口的 `date_ms`**，不存在"用今天盖章" |
+| `index_sina` / `index_tx`（`csi300` / `csi1000` / `csi_all`） | 不需要 `write_guard` | 源返回**带日期的历史序列**，按 `date` upsert；不会出现"旧数据被标成今天" |
+| `margin_total`（`margin_balance`） | 同上 | 日期取自源的 `信用交易日期` 列 |
+| `etf_shares`（long） | 同上 | 每行带 `(code, date)`，`date` 来自源 |
+| `fut_hold` / `fut_daily`（`gold_open_interest` / `gold_cny`） | 同上 | 同上 |
+| `shibor3m` / `world_tension` / `xaus_gold` / `fred` | 同上 | 同上 |
+
+**"天然不需要守卫"不是省略，是结论**：这些源的数据行**自己带着日期**，写库是
+"按日期 upsert"，不存在"给今天的行填昨天的值"这种错法。它们**需要的是
+`find_gaps`**（查有没有漏天），而 `find_gaps` 是通用的，任何 daily 表都能调。
+
+⚠️ 判据（以后加新源时问一句）：**"这个源的每一行，日期是从哪来的？"**
+· 来自数据本身 → 不需要 `write_guard`
+· 来自"现在"（快照/实时行情）→ **必须**走 `write_guard`
+
+### 25.3 2026-11-21 的教训
+
+`stock_daily` 在周六跑了日更：快照返回 `timestamp = 今天(11-21)`，但 values 是
+**周五收盘**。只判"日期==今天"的守卫放行 → 5,572 行 11-20 的数据被标成 11-21
+（逐字段相同，已删除）。**"日期==今天"不等于"这行数据是今天的"**——
+还必须问"今天真的是交易日吗"。

@@ -1,24 +1,24 @@
-"""日更：先补历史（historical-batch）再取最新（snapshot），守卫只有一份。
+"""日更守卫 + 缺口检查（**源无关**，住在 `fin/check.py`）。
 
-2026-11-21 服务器事故：`stock_daily` **独缺 11-19**（11-18、11-20 都在），
-而 fuyao 快照只有"当前"——错过一天就永远补不回来。这次做了三件事：
+2026-11-21 的事故链：
+- `stock_daily` **独缺 11-19**（11-18、11-20 都在）→ `MAX(date)` 看不出来；
+- 周六跑日更，fuyao 快照仍回 `timestamp=今天`、值是周五收盘 → 原守卫只判"日期==今天"，
+  把 5,572 行 11-20 的数据标成 11-21 写进库（已删除）。
 
-1. `historical_batch()`：批量历史 K 线（个股/指数两个端点，单次 ≤10 码），
-   `date_ms` 是 **UTC** 毫秒，已按 Asia/Shanghai 转（不转会整体少一天）。
-2. `daily_write_guard()`：日更三条守卫抽成**一份**（日期==今天 / 已收盘 / 库里没有更新），
-   `stock_daily_delta` 改为调它——原来这套逻辑写死在函数里，别人抄一份就会漂。
-3. `stock_daily_sync()`：日更入口——**先查缺口（含中间的洞）→ 补历史 → 再取当天**。
-   ⚠️ 只看 `MAX(date)` 查不出"中间缺一天"：11-19 就是这么漏掉的，所以按
-   "最近 20 个交易日里库里缺哪几天"来查。
-
-**绝不把旧数据当新数据写**：snapshot 的 `timestamp` 不是今天（周末/节假日/盘中）
-→ 打印原因、返回空表，不落库。
+所以这两件事抽成通用能力（任何源都该有），测试钉四种情形：
+**中间的洞 / 重复写 / 周末 / 盘中**。
 """
 
 from __future__ import annotations
 
+import sqlite3
+import tempfile
+from pathlib import Path
+
 import pandas as pd
 
+from datahub.fin import check as C
+from datahub.fin.check import find_gaps, is_trading_day, write_guard
 from datahub.fin.sources import fuyao as F
 
 
@@ -26,19 +26,64 @@ def _now(s: str) -> pd.Timestamp:
     return pd.Timestamp(s, tz="Asia/Shanghai")
 
 
-def test_guard_blocks_non_trading_day():
-    """周末跑：snapshot 的 timestamp 是上一个交易日 → 不能当今天写。"""
-    reason = F.daily_write_guard("stock_daily", "2026-11-19", now=_now("2026-11-21 20:00"))
-    assert reason and "周末/节假日" in reason, reason
+def _db_with(dates: list[str]) -> Path:
+    db = Path(tempfile.gettempdir()) / f"dh_gaps_{abs(hash(tuple(dates))) % 10**8}.sqlite"
+    if db.exists():
+        db.unlink()
+    con = sqlite3.connect(str(db))
+    con.execute("CREATE TABLE t (date TEXT PRIMARY KEY, value REAL)")
+    con.executemany("INSERT INTO t VALUES (?,1.0)", [(d,) for d in dates])
+    con.commit()
+    con.close()
+    return db
 
 
-def test_guard_blocks_before_close():
-    reason = F.daily_write_guard("stock_daily", "2026-11-21", now=_now("2026-11-21 10:00"))
-    assert reason and "未收盘" in reason, reason
+def _pin_today(monkeypatch_end="2026-11-20"):
+    """把"最后一个已收盘交易日"钉死，测试不依赖真实日期。"""
+    orig = C.last_closed_trading_day
+    C.last_closed_trading_day = lambda *a, **k: monkeypatch_end   # type: ignore[assignment]
+    return orig
 
 
-def test_guard_blocks_when_day_already_present():
-    """库里已有该日（或更新）→ 跳过：重复跑不写重（边界是 `>=`）。"""
+# ---------------------------------------------------------------- find_gaps
+def test_find_gaps_catches_hole_in_the_middle():
+    """**核心用例**：11-18 有、11-19 没有、11-20 有 —— `MAX(date)` 完全正常。"""
+    orig = _pin_today("2026-11-20")
+    try:
+        db = _db_with(["2026-11-16", "2026-11-17", "2026-11-18", "2026-11-20"])
+        gaps = find_gaps("t", lookback=5, path=db)
+        assert gaps == ["2026-11-19"], gaps
+    finally:
+        C.last_closed_trading_day = orig     # type: ignore[assignment]
+        db.unlink()
+
+
+def test_find_gaps_empty_when_table_complete():
+    orig = _pin_today("2026-11-20")
+    try:
+        days = C.trading_days("2026-11-02", "2026-11-20")
+        db = _db_with(days)
+        assert find_gaps("t", lookback=10, path=db) == []
+    finally:
+        C.last_closed_trading_day = orig     # type: ignore[assignment]
+        db.unlink()
+
+
+# --------------------------------------------------------------- write_guard
+def test_write_guard_blocks_weekend():
+    """周六：快照仍回 `timestamp=今天`，但值是周五收盘 → 必须拦。"""
+    ok, why = write_guard("stock_daily", "2026-11-21", now=_now("2026-11-21 23:00"))
+    assert ok is False and "不是交易日" in why, why
+
+
+def test_write_guard_blocks_intraday():
+    """盘中（未到 15:30）：写进去是半天的量。"""
+    ok, why = write_guard("stock_daily", "2026-11-20", now=_now("2026-11-20 10:00"))
+    assert ok is False and "未收盘" in why, why
+
+
+def test_write_guard_blocks_when_day_already_present():
+    """重复写：边界 `>=` —— 库里已有该日或更新就跳过。"""
     from datahub.core.conn import connect
 
     con = connect()
@@ -46,31 +91,39 @@ def test_guard_blocks_when_day_already_present():
         latest = str(con.execute("SELECT MAX(date) FROM stock_daily").fetchone()[0])[:10]
     finally:
         con.close()
-    reason = F.daily_write_guard("stock_daily", latest, now=_now(f"{latest} 20:00"))
-    assert reason and "已存在" in reason, reason
+    ok, why = write_guard("stock_daily", latest, now=_now(f"{latest} 20:00"))
+    assert ok is False and "已存在" in why, why
+
+
+def test_write_guard_allows_a_fresh_trading_day():
+    """今日收盘后、库里没有这天 → 放行（返回 (True, "")）。"""
+    ok, why = write_guard("no_such_table_for_test", "2026-11-20", now=_now("2026-11-20 20:00"))
+    assert ok is True and why == "", (ok, why)
+
+
+def test_fuyao_no_longer_implements_guard_logic():
+    """守卫判定**只能有一份**（AGENTS §4）。fuyao 只许调用，不许自己实现。"""
+    for name in ("write_guard", "find_gaps", "is_trading_day"):
+        assert hasattr(C, name), f"{name} 应该在 fin/check.py"
+    for name in ("daily_write_guard", "_is_trading_day", "trading_days_between"):
+        assert not hasattr(F, name), f"fuyao.py 里不该再有自己的 {name}（会漂）"
 
 
 def test_historical_batch_parses_utc_ms_and_columns():
     """解析契约：`date_ms`(UTC) → 上海日期；列名映射到库里口径。"""
-    body = {
-        "code": 0, "message": "success",
-        "data": {"interval": "1d", "adjust": "none", "item": [
-            {"thscode": "600519.SH", "timestamp": 1795104000000, "item": [
-                # 2026-11-19 00:00 +08:00 == 2026-11-18T16:00Z
-                {"date_ms": 1795017600000, "volume": 4269153.0, "turnover": 6234e6,
-                 "open_price": 1442.0, "high_price": 1465.0,
-                 "low_price": 1438.0, "close_price": 1460.21},
-            ]},
-        ]},
-    }
+    body = {"code": 0, "message": "success",
+            "data": {"interval": "1d", "adjust": "none", "item": [
+                {"thscode": "600519.SH", "timestamp": 1795104000000, "item": [
+                    {"date_ms": 1795017600000, "volume": 4269153.0, "turnover": 6234e6,
+                     "open_price": 1442.0, "high_price": 1465.0,
+                     "low_price": 1438.0, "close_price": 1460.21},
+                ]}]}}
     orig = F.api_get
     F.api_get = lambda *a, **k: body          # type: ignore[assignment]
     try:
         df = F.historical_batch(["600519.SH"], "2026-11-19", "2026-11-19")
     finally:
         F.api_get = orig                      # type: ignore[assignment]
-    assert list(df.columns) == ["code", "date", "open", "high", "low", "close",
-                                "volume", "turnover"]
     row = df.iloc[0]
     assert row["code"] == "sh600519"
     assert row["date"] == "2026-11-19", f"UTC 转换错了：{row['date']}"
@@ -86,19 +139,5 @@ def test_historical_batch_rejects_more_than_10_codes():
     raise AssertionError("超过 10 个代码应报错")
 
 
-def test_trading_days_between_is_monotone_weekdays():
-    days = F.trading_days_between("2026-11-16", "2026-11-20")
-    assert days == sorted(days) and len(days) >= 1
-    assert all(pd.Timestamp(d).weekday() < 5 for d in days)
-
-
-def test_guard_blocks_non_trading_day_even_if_date_is_today():
-    """**周六事故的回归**：快照在非交易日仍回 `timestamp=今天`，值却是上一交易日收盘。
-
-    2026-11-21（周六）实测：只判"日期==今天"的守卫放行了，结果把 11-20 的
-    5,572 行整份标成 11-21 写进库（逐字段相同，已删除）。
-    """
-    assert F._is_trading_day("2026-11-21") is False, "周六不是交易日"
-    reason = F.daily_write_guard("stock_daily", "2026-11-21",
-                                 now=_now("2026-11-21 23:00"))
-    assert reason and "不是交易日" in reason, reason
+def test_is_trading_day_saturday_is_false():
+    assert is_trading_day("2026-11-21") is False

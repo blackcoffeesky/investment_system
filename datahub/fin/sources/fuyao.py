@@ -241,77 +241,6 @@ def historical_batch(thscodes: list[str], start: str, end: str, *,
 
 
 
-def _is_trading_day(day: str) -> bool:
-    """这天是不是交易日。拿不到日历就退回"工作日"（周六周日一定不是）。"""
-    d = pd.Timestamp(str(day)[:10])
-    try:
-        from datahub.fin.sources.ashare import _trade_calendar
-
-        cal = _trade_calendar()
-        if cal is not None and len(cal):
-            return d in pd.DatetimeIndex(cal)
-    except Exception:  # noqa: BLE001
-        pass
-    return d.weekday() < 5
-
-
-def daily_write_guard(table: str, trade_date: str, *,
-                      now: pd.Timestamp | None = None) -> str | None:
-    """日更守卫：**能不能把 `trade_date` 这天的数据写进 `table`**。
-
-    返回 `None` = 可以写；返回字符串 = **跳过原因**（调用方打印后 return 空表）。
-
-    三条判断（`stock_daily` 原来写死在函数里，现在抽成公共的一份）：
-
-    1. `trade_date` 必须就是今天 —— 非交易日/节假日接口会回**上一个交易日**的
-       `timestamp`，照写就是把旧数据当新数据灌进去；
-    2. 今天必须**已收盘**（≥15:30）—— 盘中写进去是半天的量；
-    3. 库里**已经有这一天或更新的日期** → 跳过（幂等，重复跑不写重）。
-
-    ⚠️ 边界用 `>=`：库里最新 >= trade_date 就跳过。等价于"只补更新的日期"，
-    所以**同一天重复跑不会写重**，也不会把更旧的 snapshot 盖到更新的行上。
-    """
-    from datahub.core.conn import connect
-
-    now = now or pd.Timestamp.now(tz="Asia/Shanghai")
-    if str(trade_date)[:10] != now.strftime("%Y-%m-%d"):
-        return (f"{table}：接口的交易日是 {trade_date}，今天是 {now:%Y-%m-%d}"
-                f"（周末/节假日）→ 不写")
-    if now.hour * 60 + now.minute < 15 * 60 + 30:
-        return f"{table}：现在 {now:%H:%M} 未收盘 → 不写（盘中数据是半天的量）"
-    # ⚠️ **非交易日**必须拦：2026-11-21（周六）实测 —— 快照仍返回
-    # `timestamp = 今天`，但 values 是**周五收盘**。只判"日期==今天"会把周五数据
-    # 整份标成周六写进库（5,572 行与 11-20 逐字段相同，已删除并补此守卫）。
-    if not _is_trading_day(str(trade_date)[:10]):
-        return (f"{table}：{trade_date} 不是交易日（快照仍回 timestamp=今天，"
-                f"但值是上一交易日的收盘）→ 不写")
-    con = connect()
-    try:
-        latest = con.execute(f'SELECT MAX(date) FROM "{table}"').fetchone()[0]
-    except Exception:  # noqa: BLE001
-        latest = None
-    finally:
-        con.close()
-    if latest and str(latest)[:10] >= str(trade_date)[:10]:
-        return f"{table}：{trade_date} 已存在（最新 {latest}）→ 跳过"
-    return None
-
-
-def trading_days_between(start: str, end: str) -> list[str]:
-    """[start, end] 之间的交易日（`YYYY-MM-DD`）。拿不到日历就退回工作日。"""
-    try:
-        from datahub.fin.sources.ashare import _trade_calendar
-
-        cal = _trade_calendar()
-        if cal is not None and len(cal):
-            d = pd.DatetimeIndex(cal)
-            sel = d[(d >= pd.Timestamp(start)) & (d <= pd.Timestamp(end))]
-            return [str(x.date()) for x in sel]
-    except Exception:  # noqa: BLE001
-        pass
-    return [str(x.date()) for x in pd.bdate_range(start, end)]
-
-
 def stock_daily_backfill(*, start: str, end: str,
                          max_codes: int = 0) -> pd.DataFrame:
     """用 `historical-batch` 补 `stock_daily` 的缺口（每批 10 个代码）。
@@ -366,19 +295,13 @@ def stock_daily_sync(**_ignored) -> pd.DataFrame:
         con.close()
     latest = str(latest)[:10] if latest else ""
 
-    frames: list[pd.DataFrame] = []
     # ---- 缺哪些交易日：**尾巴缺口 + 中间的洞**都要找 ----
-    # 只看 MAX(date) 会漏掉"中间缺一天"的情况：2026-11-21 服务器上
-    # `stock_daily` 有 11-18 和 11-20、**独缺 11-19**，MAX 完全看不出来。
-    window_start = str((pd.Timestamp(target) - pd.Timedelta(days=20)).date())
-    recent = trading_days_between(window_start, target)
-    con = connect()
-    try:
-        have = {str(r[0])[:10] for r in con.execute(
-            "SELECT DISTINCT date FROM stock_daily WHERE date >= ?", (window_start,))}
-    finally:
-        con.close()
-    missing = [d for d in recent if d not in have]
+    # 只看 MAX(date) 会漏掉"中间缺一天"：2026-11-21 服务器上 `stock_daily` 有
+    # 11-18 和 11-20、独缺 11-19，MAX 完全看不出来。判定逻辑在 `fin.check.find_gaps`。
+    from datahub.fin.check import find_gaps
+
+    missing = [d for d in find_gaps("stock_daily", lookback=20) if d <= target]
+    frames: list[pd.DataFrame] = []
     if missing:
         print(f"  stock_daily 缺 {len(missing)} 个交易日（{', '.join(missing)}）"
               f"→ 用 historical-batch 补")
@@ -449,8 +372,10 @@ def stock_daily_delta(**_ignored) -> pd.DataFrame:
     df = pd.concat(pages, ignore_index=True)
     assert trade_date is not None
 
-    reason = daily_write_guard("stock_daily", trade_date, now=now)
-    if reason:
+    from datahub.fin.check import write_guard
+
+    ok, reason = write_guard("stock_daily", trade_date, source="stock_daily", now=now)
+    if not ok:
         print(f"  {reason}")
         return pd.DataFrame()
 

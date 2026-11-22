@@ -432,3 +432,110 @@ def freshness(tables=None, *, today: str | pd.Timestamp | None = None,
         })
     _announce_frozen(frozen, skipped_frozen)
     return out
+
+# ======================================================================
+# 日更守卫 + 缺口检查（**源无关**，2026-11-22 从 sources/fuyao.py 搬来）
+# ======================================================================
+# 为什么放这里而不是某个源里：这两件事不是 Fuyao 特有的，是**任何数据源都该有的**。
+# 长在源里，第二个源要用就变成第二份副本，必然漂移（AGENTS §4「数据只在一处定义」）。
+
+
+def trading_days(start: str, end: str, market: str = "CN") -> list[str]:
+    """[start, end] 的交易日（`YYYY-MM-DD`）。日历拿不到就退回工作日。"""
+    try:
+        d = expected_dates("D", market, start, end)
+        if len(d):
+            return [str(x.date()) for x in d]
+    except Exception:  # noqa: BLE001
+        pass
+    return [str(x.date()) for x in pd.bdate_range(start, end)]
+
+
+def is_trading_day(day: str, market: str = "CN") -> bool:
+    """这天是不是交易日。拿不到日历就退回"工作日"（周六周日一定不是）。"""
+    return str(day)[:10] in trading_days(str(day)[:10], str(day)[:10], market)
+
+
+def last_closed_trading_day(now: pd.Timestamp | None = None,
+                            market: str = "CN") -> str:
+    """**最后一个已经收盘的交易日**。
+
+    收盘（15:30）之前，"今天"的数据还不完整 → 上一个交易日；
+    今天不是交易日（周末/节假日）→ 上一个交易日。
+    """
+    now = now or pd.Timestamp.now(tz="Asia/Shanghai")
+    today = now.strftime("%Y-%m-%d")
+    if now.hour * 60 + now.minute >= 15 * 60 + 30 and is_trading_day(today, market):
+        return today
+    days = trading_days(str((now - pd.Timedelta(days=30)).date()), today, market)
+    return days[-2] if len(days) >= 2 else (days[-1] if days else today)
+
+
+def find_gaps(table: str, lookback: int = 20, *, path: Path | None = None) -> list[str]:
+    """最近 `lookback` 个交易日里，`table` **缺哪几天**（`YYYY-MM-DD` 列表）。
+
+    为什么需要它：`MAX(date)` 只能看"尾巴"，**看不出中间的洞**。
+    2026-11-21 的 `stock_daily` 就是"11-18 有、11-19 无、11-20 有"，
+    `MAX=11-20` 完全正常——靠人眼看 `/data` 才发现。
+
+    终点取 `last_closed_trading_day()`（收盘前不算今天），起点 = 终点往前
+    `lookback` 个交易日。表不存在 / 空表 → 返回整个窗口（全缺）。
+    """
+    now = pd.Timestamp.now(tz="Asia/Shanghai")
+    end = last_closed_trading_day(now)
+    days = trading_days(str((pd.Timestamp(end) - pd.Timedelta(days=lookback * 3)).date()), end)
+    window = days[-lookback:] if len(days) > lookback else days
+    if not window:
+        return []
+    con = _conn(path)
+    try:
+        have = {str(r[0])[:10] for r in con.execute(
+            f'SELECT DISTINCT date FROM "{table}" WHERE date >= ?', (window[0],))}
+    except Exception:  # noqa: BLE001
+        have = set()
+    finally:
+        con.close()
+    return [d for d in window if d not in have]
+
+
+def write_guard(table: str, trade_date: str, *, source: str | None = None,
+                path: Path | None = None,
+                now: pd.Timestamp | None = None) -> tuple[bool, str]:
+    """**能不能把 `trade_date` 这天的数据写进 `table`** → `(能写?, 原因)`。
+
+    四条判断（任何"把当前快照当日线写"的源都必须走这里）：
+
+    1. `trade_date` 必须就是**今天** —— 周末/节假日接口会回上一个交易日的
+       `timestamp`，照写就是把旧数据当新数据灌进去；
+    2. 今天必须**已收盘**（≥15:30）—— 盘中写进去是半天的量；
+    3. `trade_date` 必须是**交易日** —— 2026-11-21（周六）实测：快照仍返回
+       `timestamp = 今天`，但值是**周五收盘**；只判"日期==今天"会把周五数据
+       整份标成周六写进库（5,572 行与 11-20 逐字段相同）；
+    4. 库里**已经有这一天或更新的日期** → 跳过（幂等，重复跑不写重）。
+
+    ⚠️ 第 4 条边界是 `>=`：等价于"只补更新的日期"——同一天重复跑不写重，
+    也不会把更旧的快照盖到更新的行上。
+
+    返回 `(True, "")` 或 `(False, 跳过原因)`；原因里带 `source` 便于定位。
+    """
+    src = f"{source}：" if source else ""
+    now = now or pd.Timestamp.now(tz="Asia/Shanghai")
+    td = str(trade_date)[:10]
+    if td != now.strftime("%Y-%m-%d"):
+        return False, (f"{src}接口的交易日是 {td}，今天是 {now:%Y-%m-%d}"
+                       f"（周末/节假日）→ 不写")
+    if now.hour * 60 + now.minute < 15 * 60 + 30:
+        return False, f"{src}现在 {now:%H:%M} 未收盘 → 不写（盘中数据是半天的量）"
+    if not is_trading_day(td):
+        return False, (f"{src}{td} 不是交易日（快照仍回 timestamp=今天，"
+                       f"但值是上一交易日的收盘）→ 不写")
+    con = _conn(path)
+    try:
+        latest = con.execute(f'SELECT MAX(date) FROM "{table}"').fetchone()[0]
+    except Exception:  # noqa: BLE001
+        latest = None
+    finally:
+        con.close()
+    if latest and str(latest)[:10] >= td:
+        return False, f"{src}{table}：{td} 已存在（最新 {latest}）→ 跳过"
+    return True, ""
