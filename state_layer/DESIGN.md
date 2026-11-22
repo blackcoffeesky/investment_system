@@ -256,3 +256,81 @@ saved_models/<asset>/
 
 如果要在 `port` / `features` / `analysis` 里再 import `get_data`，先回读 §3：
 **那样做会把耦合从 2 个装配点摊回全模块**，也违反 AGENTS §4'③。
+
+---
+
+## 11. 接口变更记录：第二参数从 features 矩阵 → panel（2026-11-22）
+
+**改了什么**：`port.state_view` / `current_state` / `extend` / `transition` 的第二个参数
+从 **features 矩阵**（调用方先 `features.build(panel)` 再传进来）改成 **panel**
+（`get_data(...)` 的原样产物）。
+
+**为什么**：多分组之后，特征属于**分组**（短价格 4 列 / 短波动 4 列 / 长价格 5 列），
+不再是一个扁平矩阵。让调用方先算特征，等于把"特征怎么算"泄漏到每个调用点——
+A 股一加组，`routes.py`、causual、测试都要各算一遍，特征定义就有 N 份。
+现在由 estimator 内部从 panel 算自己那几组，**特征定义只有一份**（`state_assets/<asset>/features.py`）。
+
+**影响面（必须一起改）**：
+- ✅ 已改：`web/routes.py`（传 panel）、`cli.py`、`port.py`
+- ⚠️ 待改（不归本模块）：`tests/service/test_e2e.py`、`tests/causual/*`
+- ⚠️ 语义提醒：`extend` 缺 v2 产物时**抛 `FileNotFoundError`**，不再返回带空标签的 Series
+  （带空标签最坏：下游以为有标签）。`state_view` 捕获后退化成"只给历史标签、不外推"。
+
+**为什么不做兼容层**：按列名嗅探"这是 panel 还是 features"在同名不同义时会静默走错分支
+（特征里一旦出现叫 `close` 的派生量），这种错不报错。宁可让 call site 显式改。
+
+## 12. v2 spec 的字段布局（causual 侧要按这个读）
+
+```jsonc
+{
+  "schema": "estimator-v2",
+  "asset": "ashare",
+  "primary": "short_price",              // 哪个组给下游用（config.PRIMARY_GROUP）
+  "groups": {
+    "short_price": {
+      "title": "短价格",
+      "k": 3,
+      "features": ["ret_5", "ret_10", "er_10", "snr_10"],
+      "labels": {"0": "trend_down", "1": "range", "2": "trend_up"},
+      "usable": true,
+      "fit_id": "…",
+      "label_signature": "…"              // 每组的签名（**不在顶层**）
+    }
+  }
+}
+```
+
+读法的三个答案：
+
+1. **`label_signature` 的唯一来源**：`spec["groups"][spec["primary"]]["label_signature"]`。
+   **不是**顶层字段——签名现在属于**某个分组**（A 股有三个），顶层放一个会让人以为资产只有一个签名。
+2. **`profile` 不在 spec 里**：v2 只落标签（`groups.csv`）。画像要用
+   `get_port().profile(asset, panel)`（内部 `analysis/stats.profile`，按 label 索引）。
+   如果将来要"不传 panel 也能拿画像"，就把快照写进 `groups[<组>]["profile"]`——
+   那是**新增一步**，现在没有，别假装有。
+3. **不加顶层兼容字段**：`label_signature` / `profile` 都不上浮。理由同 1：
+   分组之后"资产只有一个签名/一份画像"这句话本身是错的。
+
+
+---
+
+## 13. `label_signature` 的契约（硬约束，2026-11-22 用户拍板）
+
+> **签名 = primary 组标签的指纹。**
+
+- 算法：`state_assets.base.label_fingerprint(primary 组的逐日标签)` = sha1(「日期:标签」逐行) 前 12 位
+- **不含**：组名列表、组数、其他组的标签、`primary` 字段本身、特征清单
+- 落盘位置：`spec.groups[<组名>].label_signature`（每组各有一份；causual 只读 primary 那份）
+- 唯一允许改签名的原因：**primary 组的标签体系本身变了**（重拟合换词表/换状态数）
+
+### 将来加组时别动这些
+
+- ❌ 不改协议（`dict[str, GroupResult]` 不变）
+- ❌ 不改 primary 的定义（A 股永远是 `short_price`）
+- ❌ 不改签名算法（只哈希 primary 的标签）
+- ✅ 只加 key（`config.GROUPS_ENABLED` 加名字 + estimator 里 `groups[name]`）
+- ✅ causual / service 的装配点不用改（它们只取 primary）
+
+**为什么是硬约束**：用户明确"A 股加短波动/长价格只是给 state_layer 自己用，causual 不变"。
+签名一变，causual 的边快照全部失效、卡片被守卫拒绝——加组就会误伤下游。
+**多分组是已具备、按需启用的能力**；加组不该被下游感知。

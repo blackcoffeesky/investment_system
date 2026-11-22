@@ -13,7 +13,11 @@
     "datahub/fin/write.py",
     "state_layer/port.py",
     "state_layer/web",
-    "state_layer/analysis"
+    "state_layer/analysis",
+    // 契约层：store 是落盘格式的定义处，base 是 Estimator/GroupResult 协议的定义处。
+    // 它们类型不清楚，上面所有调用方都不清楚。
+    "state_layer/store.py",
+    "state_layer/state_assets/base.py"
   ],
   "exclude": ["**/__pycache__",
               // 卡片渲染是 pandas 密集的展示代码，接口由 test_card_smoke 守着

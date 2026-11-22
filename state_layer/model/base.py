@@ -1,33 +1,34 @@
-"""模型协议：一条**模型链**里的每一环都要满足这个契约。
+"""模型协议：**统计模型**的契约（Gaussian HMM / Student-t HMM / 未来的 …）。
 
-链的语义
---------
-`MODEL_CHAIN = ("extreme", "hmm")` 表示处理次序。每个模型只认领一部分日期：
+判据（2026-11-22 定）：**模型层不该知道有组，也不该知道资产。**
+模型只认"特征矩阵 + K"：训练、逐日推断、交出纯数组供 metrics 评价、可序列化。
 
-    features ──► extreme: 认领极端日，返回剩下没认领的
-                        │
-                        ▼
-                 hmm: 认领其余全部，返回空
+契约
+----
+1. **不得前视**：某日的结果只能用该日及之前的数据（`predict` 只用传入的行）。
+2. `to_dict()` 必须可 JSON 序列化；`from_dict(to_dict(m))` 后 `predict` 逐位相同。
+3. **模型不评价自己**：`state_params()` 只交纯数组，评价由 `metrics.py` 做。
+4. `valid_index()` **只用于对齐**：声明"我能吃哪些行"，调用方（estimator）用它取各组日期交集。
 
-`fit` / `infer` 都返回**没认领的日期**，外部循环把它喂给下一个模型。
-`claim` 参数限定"这一环只准在这些日子上下判断"——传全量特征是为了滚动窗口
-能正常算，不是为了让模型越界认领。
-
-契约（必须遵守）
----------------
-1. **不得前视**：某日的结果只能用该日及之前的数据。
-2. `to_dict()` 必须可 JSON 序列化。
-3. `from_dict(to_dict(m))` 后 `infer` 结果逐位相同。
-4. 模型**不评价自己**：`state_params()` 只交出纯数组，评价由 `metrics.py` 做。
-   规则类模型（如 extreme）没有概率分布，返回 None。
+链已经不存在（2026-11-22）：模型不再"认领日期 / 返回剩余"，`claim` / `remaining_index` 已删。
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Any
 
+import numpy as np
 import pandas as pd
+
+
+@dataclass
+class ModelOutput:
+    """一次推断的结果。`states` 是**组内编号**（int），标签由资产层映射。"""
+
+    states: pd.Series
+    proba: pd.DataFrame | None = None
 
 
 class Model(ABC):
@@ -35,24 +36,27 @@ class Model(ABC):
 
     def __init__(self, params: dict | None = None):
         self.params: dict[str, Any] = dict(params or {})
-        self.labels_: pd.Series | None = None
-        # 统计模型的"最后窗口"（在线算后验用）；规则模型为 None
-        self.last_window: dict | None = None
+        self.states_: pd.Series | None = None      # fit 产出的逐日编号（int）
+        self.labels_: pd.Series | None = None      # fit 产出的逐日标签（str，来自 labeler）
+        self.proba_: pd.DataFrame | None = None
+        self.last_window: dict | None = None       # 在线推断用（纯数组）
 
     # ---------------- 必选
     @abstractmethod
-    def fit(self, features: pd.DataFrame, *, claim: pd.Index | None = None,
-            **kw) -> pd.Index:
-        """训练。返回**没认领**的日期（交给下游）。认领结果放 `self.labels_`。"""
+    def fit(self, features: pd.DataFrame, *, labeler=None) -> None:
+        """训练。结果放 `states_` / `labels_` / `proba_` / `last_window`。
+
+        `labeler` 是**资产注入**的命名回调：`raw_means(DataFrame) -> {编号: 标签}`。
+        模型不自己决定"状态叫什么"——那是资产语义（按收益/波动排序）。
+        """
 
     @abstractmethod
-    def infer(self, features: pd.DataFrame, *,
-              claim: pd.Index | None = None) -> dict:
-        """返回 {states: Series(只含认领日期), remaining_index: Index, proba: DataFrame|None}。"""
+    def predict(self, features: pd.DataFrame) -> ModelOutput:
+        """逐日推断（只用传入的行，不重训）。"""
 
     @abstractmethod
     def state_params(self) -> dict[str, Any] | None:
-        """纯数组字典（means / covars / transmat），规则类模型返回 None。"""
+        """纯数组（means / covars / transmat / startprob），供 `metrics` 用。"""
 
     # ---------------- 序列化
     @abstractmethod
@@ -62,16 +66,16 @@ class Model(ABC):
     @classmethod
     @abstractmethod
     def from_dict(cls, data: dict[str, Any]) -> "Model":
-        """从 to_dict 的产物重建。"""
+        """从 `to_dict` 的产物重建。"""
 
     # ---------------- 能力声明
     def valid_index(self, features: pd.DataFrame) -> pd.Index:
-        """这个模型**能处理**哪些行。
+        """**只用于对齐**：模型能处理哪些行（按自己用到的列判断非空）。
 
-        默认要求全部特征非空；子类应该按自己实际用到的列收窄——
-        规则模型只吃两列，不该被第三列的 NaN 挡住。
+        与"交给下一个模型"无关——链已经不存在。
         """
-        return features.dropna().index
+        cols = [c for c in (self.params.get("features") or []) if c in features.columns]
+        return features[cols].dropna().index if cols else features.dropna().index
 
     # ---------------- 可选钩子
     def transition(self, features: pd.DataFrame | None = None) -> dict | None:
@@ -82,10 +86,20 @@ class Model(ABC):
         return f"<{self.kind}>"
 
 
-def resolve_claim(model: "Model", features: pd.DataFrame,
-                  claim: pd.Index | None) -> pd.Index:
-    """这一环允许认领的日期 = 模型能处理的行 ∩ 上一环交出来的行。"""
-    valid = model.valid_index(features)
-    if claim is None:
-        return valid
-    return valid.intersection(claim)
+def to_numpy(obj):
+    """把 numpy / pandas 递归转成**可 JSON / 可 pickle 的纯 Python 结构**。
+
+    模型参数要落盘（`store`）又要能进 `spec.json`，所以序列化前统一过这一层：
+    ndarray → list、numpy 标量 → 内置标量、Series → list。
+    """
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, (np.floating, np.integer)):
+        return obj.item()
+    if isinstance(obj, pd.Series):
+        return obj.tolist()
+    if isinstance(obj, dict):
+        return {k: to_numpy(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [to_numpy(x) for x in obj]
+    return obj

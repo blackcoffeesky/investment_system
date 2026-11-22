@@ -19,9 +19,11 @@ LABEL_NAME = {
     "trend_up": "趋势上行",
     "range": "震荡",
     "trend_down": "趋势下行",
-    "extreme_up": "极端上行",
-    "extreme_down": "极端下行",
-    "extreme_vol": "极端波动",
+    "low": "低波",
+    "normal": "常波",
+    "high": "高波",
+    "weak": "弱",
+    "strong": "强",
 }
 
 
@@ -33,14 +35,14 @@ def _current(asset: str, features=None) -> dict:
 
 
 def load_labels(asset: str) -> pd.Series:
-    """读状态标签（走 inference，P2 之后由它统一提供）。"""
-    return store.load_labels(asset)
+    """读状态标签：v2 优先（primary 组），没有 v2 回退 legacy。"""
+    return store.labels_any(asset)
 
 
 def current(asset: str) -> dict:
-    """当前 spec（模型产物统一在 state_layer/saved_models）。"""
+    """当前 spec（v2 的 spec.json 或 legacy 的 current.json）。"""
     try:
-        return store.load_spec(asset)
+        return store.spec_any(asset)
     except FileNotFoundError:
         return {}
 

@@ -2,25 +2,19 @@
 
 from __future__ import annotations
 
-from state_layer.model.extreme import ExtremeParams
-
 ASSET = "gold"
 TITLE = "国内黄金"
 
-# 现存黄金模型是 K=4（2026-10-19 拟合）。配置必须与线上一致，
-# 否则 `state_layer.cli regime` 会用 K=3 悄悄换掉整个状态体系。
-
-# ---------------- 模型链（顺序即处理次序）
-# 每个模型只认领一部分日期，没认领的交给下一个；
-# 最后一个模型通常认领"剩下的全部"。
-MODEL_CHAIN = ("extreme", "hmm")
-MODEL_PARAMS = {
-    "extreme": dict(
-        ret_col="log_return", vol_col="realized_vol_20", sigma=3.0,
-        pct=0.99, abs_cap=0.05,
-    ),
-    "hmm": {"k": 4},          # k=None 表示让模型自己按 BIC+分离度选
-}
+# ---------------- 分组（2026-11-22 重构）
+# 黄金只有**一个**分组；`PRIMARY_GROUP` 就是它。
+PRIMARY_GROUP = "raw"
+GROUP_TITLE = {"raw": "原始状态"}
+K = {"raw": 4}                 # 现存黄金模型是 K=4（2026-10-19 拟合），不许改
+GROUP_MODEL = {"raw": "hmm"}
+ORDER_COL = {"raw": "log_return"}
+# 黄金沿用旧四词表（0 格差异的一部分：`name_states` 按收益切三段 + 波动排序）
+GROUP_LABELS = {"raw": ("trend_down", "range", "trend_up", "distribution")}
+# 黄金的 walk-forward 参数**钉死在 estimator 里**（0 格差异的前置条件）
 
 # 评价用哪个指标、及格线多少。模型不评价自己，由 state_layer.metrics 算。
 METRICS = {"separation": "bhattacharyya", "min_separation": 0.40}
@@ -38,21 +32,10 @@ FEATURES = [
     "gap",
 ]
 
-EXTREME_PARAMS = ExtremeParams(
-    ret_col="log_return",
-    vol_col="realized_vol_5d",
-    sigma=3.0,
-    pct=0.99,
-    exit_days=1,
-)
-
 LABEL_NAME = {
     "trend_up": "趋势上行",
     "range": "震荡",
     "trend_down": "趋势下行",
-    "extreme_up": "极端上行",
-    "extreme_down": "极端下行",
-    "extreme_vol": "极端波动",
 }
 
 # 本资产要哪些表（**不**描述面板怎么拼——面板由 `shared.adapter` 统一提供）。

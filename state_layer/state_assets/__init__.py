@@ -22,14 +22,17 @@ from shared.adapter import Panel
 
 
 def load(asset: str):
-    """返回资产包的命名空间（config + features + REQUIRED_TABLES）。"""
+    """返回资产包的命名空间（config + features + estimator + REQUIRED_TABLES）。"""
     mod = importlib.import_module(f"state_layer.state_assets.{asset}")
+    est_mod = importlib.import_module(f"state_layer.state_assets.{asset}.estimator")
     cfg = mod.config
 
     class _Pkg:
         ASSET = asset
         config = cfg
         features = mod.features
+        # 资产装配的**实现类**（协议在 state_assets/base.py）
+        estimator = est_mod.Estimator
         # 刻意**不留默认值**：资产包漏写就 AttributeError 当场炸。
         # 留 `getattr(..., ())` 会让 `required_tables()` 静默少几张表（DESIGN：失败要响）。
         REQUIRED_TABLES = tuple(cfg.REQUIRED_TABLES)

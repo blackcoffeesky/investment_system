@@ -3,12 +3,12 @@
 {% block content %}
 
 <div class="row" style="margin-bottom:10px">
-  {% for a in ["ashare"] %}
+  {% for a in assets or ["ashare"] %}
   <a class="btn" href="/state?asset={{ a }}" style="{{ 'border-color:var(--accent)' if a == asset else '' }}">{{ a }}</a>
   {% endfor %}
   <span class="muted">
-  {% if spec %}模型拟合于 {{ spec.data.fit_date or '—' }}（K={{ spec.model.k or '?' }}）
-  {% else %}还没拟合过状态模型（python -m state_layer.cli regime --asset {{ asset }}）{% endif %}
+  {% if current.model %}模型拟合于 {{ current.model.fit_date or '—' }}（K={{ current.model.k or '?' }}，组 {{ current.group or '—' }}）
+  {% else %}还没拟合过状态模型（python -m state_layer.cli fit --asset {{ asset }}）{% endif %}
   </span>
 </div>
 
@@ -19,9 +19,9 @@
     <strong>{{ current.label_name or current.label or '—' }}</strong>
     {% if current.confidence %}<span class="muted">（后验 {{ '%.0f%%' | format(current.confidence * 100) }}）</span>{% endif %}
   </td></tr>
-  {% if spec %}
+  {% if current.model %}
   <tr><td>模型</td><td class="muted">
-    {{ spec.model.version }} · 拟合 {{ spec.data.fit_date }}{% if spec.metrics %} · 分离度 {{ '%.2f' | format(spec.metrics['min']) }}{% endif %}
+    {{ current.model.version }} · 拟合 {{ current.model.fit_date or '—' }}
   </td></tr>
   {% endif %}
   {% if transition %}

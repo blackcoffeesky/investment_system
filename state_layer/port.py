@@ -1,11 +1,13 @@
 """state_layer 对外的能力（其他模块只能通过这里访问状态层）。
 
 这一层做三件事，都不涉及模型内部：
-- 读：状态标签、spec、单点状态
-- 算：标签外推（用最后窗口的模型）、状态黏性
+- 读：标签、spec、单点状态
+- 算：标签外推（用 estimator 现算）、状态黏性
 - 装配：spec → 对外契约（date / label / model / metrics / as_of_date）
 
-模型参数怎么存、怎么重建，都由 `store` 与 `model.hmm` 负责。
+**多分组**：A 股有 3 组、黄金 1 组。对外默认只给 `primary`（`config.PRIMARY_GROUP`），
+分组全貌留给 `/state` 页面（步 4）。`state_view` 的返回形状保持不变，
+这样 service / causual 不用跟着改。
 """
 
 from __future__ import annotations
@@ -15,41 +17,57 @@ from typing import cast
 import numpy as np
 import pandas as pd
 
-from state_layer import state_assets
-from state_layer import store
-from state_layer.analysis import observations, stats
-from state_layer.model import MODELS, run_infer
+from state_layer import state_assets, store
 
-# 页面观测用到的表。市场宽度（breadth_*）已从数据层移除、改由
-# `datahub.fin.derive.breadth()` 现算，状态层不再依赖它们。
+# 页面观测用到的表。
 REQUIRED_TABLES = (
     "csi_all",
     "csi1000", "csi300",
 )
 
 
+def _is_v2(meta: dict) -> bool:
+    return meta.get("schema") == store.SCHEMA_V2
+
+
+def _primary_meta(meta: dict) -> tuple[str, dict]:
+    """(primary 组名, 该组元信息)。legacy spec 没有分组，合成一个。"""
+    if _is_v2(meta):
+        name = str(meta.get("primary"))
+        return name, dict((meta.get("groups") or {}).get(name) or {})
+    d = meta.get("data") or {}
+    m = meta.get("model") or {}
+    return "raw", {"k": m.get("k"), "features": list(d.get("features") or []),
+                   "labels": {}, "usable": True, "fit_id": d.get("fit_id"),
+                   "label_signature": d.get("label_signature")}
+
+
 def _payload(asset: str, date, label: str, sid: int | None,
-             proba: list[float] | None, spec: dict) -> dict:
+             proba: list[float] | None, meta: dict) -> dict:
     c = state_assets.load(asset).config
-    m = spec.get("model", {})
-    d = spec.get("data", {})
+    name, g = _primary_meta(meta)
+    k = g.get("k")
+    kind = g.get("kind") or ("thmm" if asset == "ashare" else "hmm")
+    version = (f"estimator-v2:{asset}@{name}-{kind}-k{k}-{g.get('fit_id')}"
+               if _is_v2(meta) else (meta.get("model") or {}).get("version"))
     return {
         "date": str(pd.Timestamp(date).date()),
         "asset": asset,
+        "group": name,
         "state_id": sid,
         "label": label,
         "label_name": c.LABEL_NAME.get(label, label),
         "state_probabilities": proba or [],
         "confidence": float(max(proba)) if proba else None,
         "model": {
-            "kind": m.get("kind"),
-            "k": m.get("k"),
-            "version": m.get("version"),
-            "features": list(d.get("features") or c.FEATURES),
-            "fit_date": d.get("fit_date"),
-            "signature": d.get("label_signature"),
+            "kind": kind,
+            "k": k,
+            "version": version,
+            "features": list(g.get("features") or []),
+            "fit_date": g.get("fit_date"),
+            "signature": g.get("label_signature"),
         },
-        "metrics": spec.get("metrics", {}),
+        "metrics": meta.get("metrics", {}),
         "as_of_date": str(pd.Timestamp(date).date()),
     }
 
@@ -57,21 +75,20 @@ def _payload(asset: str, date, label: str, sid: int | None,
 class StatePort:
     # ---------------- 装配数据
     def required_tables(self, asset: str = "ashare") -> tuple[str, ...]:
-        """状态层要的数据 = 页面观测用的 + 该资产特征用的。"""
         pkg = state_assets.load(asset)
         return tuple(sorted(set(REQUIRED_TABLES) | set(pkg.REQUIRED_TABLES)))
 
     # ---------------- 读
-    def labels(self, asset: str = "ashare") -> pd.Series:
-        """状态标签（date → label）。因果层要的就是这个。"""
-        return store.load_labels(asset)
+    def labels(self, asset: str = "ashare", group: str | None = None) -> pd.Series:
+        """状态标签（date → label）。默认给 `primary` 组；legacy 产物回退读旧文件。"""
+        return store.labels_any(asset, group)
 
     def spec(self, asset: str = "ashare") -> dict:
-        return store.load_spec(asset)
+        return store.spec_any(asset)
 
     def states(self, asset: str = "ashare", start: str | None = None,
                end: str | None = None) -> pd.DataFrame:
-        s = cast(pd.Series, store.load_labels(asset))
+        s = cast(pd.Series, self.labels(asset))
         if s.empty:
             return pd.DataFrame(columns=["date", "label", "label_name"])
         if start:
@@ -86,142 +103,124 @@ class StatePort:
         })
 
     # ---------------- 现算
-    def _models(self, asset: str) -> list:
-        """重建整条模型链。
+    def _estimate(self, asset: str):
+        """重建 estimator（v2 产物）。没有 v2 就抛——不拿旧链凑。"""
+        return state_assets.load(asset).estimator.load(asset)
 
-        **结构以 config.MODEL_CHAIN 为准**，参数优先用落盘的那份；
-        落盘里没有的环节（比如旧版本只存了 hmm.pkl）按 config 现场构造，
-        这样"旧模型 + 新链结构"也能正确跑，不用先重拟合。
+    def _primary_group(self, asset: str, panel: pd.DataFrame):
+        meta = self.spec(asset)
+        name, _ = _primary_meta(meta)
+        groups = self._estimate(asset).predict(panel)
+        if name not in groups:
+            raise KeyError(f"{asset} 的 estimator 没产出 primary 组 {name!r}；"
+                           f"实际有 {sorted(groups)}")
+        return groups[name], meta
 
-        最后窗口以 **chain.pkl 为唯一真相**：它由 `fit.save` 和 spec 一起落盘，
-        每个模型自带 `last_window`（含 `state_labels` / `transmat`）。
-        链里没带窗口就**不可用**，不回退到任何遗留文件（2026-11-15 起只认链）。
-        """
-        pkg = state_assets.load(asset)
-        chain_names = list(getattr(pkg.config, "MODEL_CHAIN", ("hmm",)))
-        params = dict(getattr(pkg.config, "MODEL_PARAMS", {}))
-
-        try:
-            saved = {d.get("kind", "hmm"): d for d in store.load_chain(asset)}
-        except FileNotFoundError:
-            saved = {}
-
-        out = []
-        for name in chain_names:
-            data = saved.get(name)
-            m = (MODELS[name].from_dict(data) if data
-                 else MODELS[name](params.get(name)))
-            if m.kind != "extreme" and m.last_window is None:
-                # 链里没带最后窗口（旧格式链 / 压根没有 chain.pkl）。
-                # 不回退：留 None，让在线后验与外推明确报缺，而不是拿一份过期窗口凑。
-                print(f"[state] {asset} 的 {name} 没有最后窗口（last_window），"
-                      f"离线后验与外推不可用")
-            out.append(m)
-        return out
-
-    def current_state(self, asset: str = "ashare", features=None) -> dict:
-        spec = store.load_spec(asset)
-        labels = store.load_labels(asset)
-        if labels.empty:
+    def current_state(self, asset: str = "ashare", panel: pd.DataFrame | None = None) -> dict:
+        meta = self.spec(asset)
+        labels = self.labels(asset)
+        if labels.empty and panel is None:
             return {}
-        label = str(labels.iloc[-1])
-        date = labels.index[-1]
+        label, date = str(labels.iloc[-1]), labels.index[-1]
         sid, proba = None, None
 
-        if features is not None and len(features):
+        if panel is not None and len(panel):
             try:
-                models = self._models(asset)
-                if models:
-                    res = run_infer(models, features)
-                    st = res.get("states")
-                    pb = res.get("proba")
-                    if st is not None and len(st):
-                        label = str(st.iloc[-1])
-                        date = st.index[-1]
-                    if pb is not None and len(pb):
-                        proba = [float(x) for x in pb.iloc[-1].to_numpy()]
-                        sid = int(np.argmax(proba))
+                g, _ = self._primary_group(asset, panel)
+                if len(g.states):
+                    sid = int(g.states.iloc[-1])
+                    date = g.states.index[-1]
+                    label = str(g.labels.get(sid, sid))
+                    if g.proba is not None and len(g.proba):
+                        proba = [float(x) for x in g.proba.iloc[-1].to_numpy()]
             except Exception as e:  # noqa: BLE001
                 print(f"[state] 现算后验失败：{type(e).__name__}: {e}")
 
-        return _payload(asset, date, label, sid, proba, spec)
+        return _payload(asset, date, label, sid, proba, meta)
 
-    def extend(self, asset: str, features: pd.DataFrame,
+    def extend(self, asset: str, panel: pd.DataFrame,
                labels: pd.Series | None = None) -> pd.Series:
-        """把标签外推到断档期：最后窗口的模型 + 极端规则覆盖。
-
-        最后窗口只来自**模型链**（`chain.pkl`，与 spec 同一次 `fit.save` 落盘）；
-        链里没有窗口就不外推，不回退到任何遗留文件。
-        同源产物不需要比对 `fit_id`：以前那个遗留窗口文件是**独立老化**的、可能不是
-        这次拟合的，才需要核对；它已于 2026-11-15 删除。
-        """
-        lab = cast(pd.Series, store.load_labels(asset) if labels is None else labels)
-        if lab.empty or features is None or features.empty:
+        """把标签外推到断档期（用 estimator 现算，只用当日及之前的行）。"""
+        lab = cast(pd.Series, self.labels(asset) if labels is None else labels)
+        if lab.empty or panel is None or panel.empty:
             return lab
-
         filled = cast(pd.Series, lab[lab.astype(str) != ""])
         if filled.empty:
             return lab
-        gap = features.index[features.index > filled.index.max()]
+        gap = panel.index[panel.index > filled.index.max()]
         if not len(gap):
             return lab
-
-        models = self._models(asset)
-        if not models:
-            return lab
-        stat = next((m for m in models if m.kind != "extreme"), None)
-        lw = stat.last_window if stat is not None else None
-        if not lw:
-            print(f"[state] {asset} 的模型链里没有最后窗口，标签不外推")
-            return lab
-
-        sub = features.loc[features.index <= gap.max()]
-        raw = cast(pd.Series, run_infer(models, sub)["states"])
-        keep = raw.astype(str) != ""
-        add = cast(pd.Series, raw.loc[keep])
+        # 缺 v2 产物**不降级成空标签**：带空标签的 Series 会让下游以为有标签。
+        # 让 FileNotFoundError 上抛，由调用方（state_view）决定怎么退化。
+        g, _ = self._primary_group(asset, panel)
+        add = g.label_series()
         add = cast(pd.Series, add.loc[add.index > filled.index.max()])
         if add.empty:
-            print(f"[state] {asset} 外推没产出标签（模型一天都没认领）；"
-                  f"检查传入的 features 是否覆盖了训练时的列 {list(lw.get('features') or [])}")
+            print(f"[state] {asset} 外推没产出标签；检查面板是否覆盖训练特征")
             return lab
         span = pd.DatetimeIndex(add.index)
-        print(f"[state] 外推 {len(add)} 天标签"
-              f"（{span[0].date()} ~ {span[-1].date()}）")
+        print(f"[state] 外推 {len(add)} 天标签（{span[0].date()} ~ {span[-1].date()}）")
         return pd.concat([filled, add.astype(str)]).sort_index()
 
-    def transition(self, asset: str, features=None) -> dict | None:
-        """状态黏性：留在原状态的概率、平均停留、最可能转向。"""
-        models = self._models(asset)
-        if not models:
+    def transition(self, asset: str, panel: pd.DataFrame | None = None) -> dict | None:
+        """状态黏性：从**历史标签**估经验转移（不读模型内部）。
+
+        与旧实现（读模型 transmat）的差别：这里量的是"实际发生过什么"，
+        跨重训不会失真。`p_next` 需要 panel（现算当天后验）。
+        """
+        s = self.labels(asset)
+        if s.empty or len(s) < 30:
             return None
-        stat = next((m for m in models if m.kind != "extreme"), None)
-        if stat is None or stat.last_window is None:
-            return None
-        if features is None or not len(features):
-            return stat.transition(None)
-        # 只有非极端日才有后验，和 fit 时喂给 HMM 的是同一批日子
-        res = run_infer(models, features)
-        non_extreme = res["states"].index.intersection(features.index)
-        hmm_part = features.loc[non_extreme]
-        return stat.transition(hmm_part if len(hmm_part) else None)
+        vals = s.astype(str).to_numpy()
+        names = sorted(set(vals))
+        idx = {n: i for i, n in enumerate(names)}
+        P = np.zeros((len(names), len(names)))
+        for a, b in zip(vals[:-1], vals[1:]):
+            P[idx[a], idx[b]] += 1.0
+        row = P.sum(axis=1, keepdims=True)
+        P = np.divide(P, np.where(row == 0, 1, row))
+        run = (s != s.shift()).cumsum()
+        dur = s.groupby([s, run]).size().groupby(level=0).mean()
+        cur = str(s.iloc[-1])
+        durations: dict[str, float | None] = {}
+        for n in names:
+            v = dur.get(n)
+            durations[n] = None if v is None else float(v)
+        out: dict = {"durations": durations, "transmat": P.tolist()}
+        nxt = sorted(((n, float(P[idx[cur], idx[n]])) for n in names if n != cur),
+                     key=lambda kv: -kv[1])[:2]
+        out.update({"label": cur, "stay_prob": float(P[idx[cur], idx[cur]]),
+                    "duration": durations.get(cur), "p_next": nxt})
+        if panel is not None and len(panel):
+            try:
+                g, _ = self._primary_group(asset, panel)
+                cur_state = int(g.states.iloc[-1])
+                p_today = (g.proba.iloc[-1].to_numpy()
+                           if g.proba is not None and len(g.proba) else None)
+                if p_today is not None:
+                    out["posterior"] = {str(g.labels.get(i, i)): float(p)
+                                        for i, p in enumerate(p_today)}
+                    out["confident"] = bool(np.max(p_today) >= 0.6)
+                    out["label"] = str(g.labels.get(cur_state, cur))
+            except Exception:  # noqa: BLE001
+                pass
+        return out
 
     # ---------------- 状态的视图
     def state_view(self, asset: str, panel: pd.DataFrame) -> dict:
-        """需要的状态数据，一次给全。
+        """需要的状态数据，一次给全（**形状不变**：primary 组）。
 
-        消费者不知道状态层的存在，只消费这个 dict：
-        `{labels, label_name, labels_order, version, line}`。
-
-        `panel` 由**装配点**（`cli.py` / `web/routes.py` / service）传进来——
-        状态层不自己取数，也不接受 `{表名: Series}` 的 dict。
+        `{labels, label_name, labels_order, version, spec, line}`。
         """
         pkg = state_assets.load(asset)
-        feats = pkg.features.build(panel)
-
-        labels = self.extend(asset, feats)
+        try:
+            labels = self.extend(asset, panel)
+        except FileNotFoundError as e:
+            print(f"[state] {asset} 没有 v2 产物，标签不外推：{e}")
+            labels = self.labels(asset)
         c = pkg.config
-        cur = self.current_state(asset, feats)
-        tr = self.transition(asset, feats) or {}
+        cur = self.current_state(asset, panel)
+        tr = self.transition(asset, panel) or {}
 
         bits = [str(cur.get("label_name") or cur.get("label") or "—")]
         conf = cur.get("confidence")
@@ -230,25 +229,30 @@ class StatePort:
         if tr.get("duration"):
             bits.append(f"平均停留 {float(tr['duration']):.0f} 天")
 
-        spec = store.load_spec(asset)
-
+        spec = self.spec(asset)
         return {
             "labels": labels,
             "label_name": dict(c.LABEL_NAME),
             "labels_order": tuple(c.VALUES),
-            "version": spec.get("model", {}).get("version"),
+            "version": (cur.get("model") or {}).get("version"),
             "spec": spec,
             "line": " · ".join(bits) + "（详见 /state）",
         }
 
     # ---------------- 展示（面板由装配点传进来，这里不取数）
     def availability(self, panel: pd.DataFrame) -> list[dict]:
+        from state_layer.analysis import observations
+
         return observations.availability(panel)
 
     def profile(self, asset: str, panel: pd.DataFrame) -> pd.DataFrame:
+        from state_layer.analysis import observations, stats
+
         return stats.profile(asset, observations.panel(panel))
 
     def timeline(self, asset: str, panel: pd.DataFrame, days: int = 250) -> list[dict]:
+        from state_layer.analysis import observations, stats
+
         return stats.timeline(asset, observations.panel(panel), days)
 
 

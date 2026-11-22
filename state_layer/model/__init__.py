@@ -1,52 +1,17 @@
-"""模型注册表：按名字取模型类。
+"""模型包：**统计模型**的协议与实现。
 
-加新模型 = 在 `model/<name>/` 实现 `Model` 协议，然后在这里登记一行。
-链里用哪些、什么次序，由 `state_assets/<asset>/config.MODEL_CHAIN` 决定。
+- `base.py`：`Model` 协议 + `ModelOutput`（模型层不知道"组"、不知道资产）
+- `hmm/`：Gaussian HMM（短波动用；黄金仍用它）
+- `thmm/`：Student-t HMM（A 股价格维度用）
+
+链已经退役（2026-11-22）：没有 `MODELS` 注册表、没有 `run_infer`。
+谁用哪个模型、怎么组合，由 `state_assets/<asset>/estimator.py` 决定。
 """
 
 from __future__ import annotations
 
-from state_layer.model.base import Model
-from state_layer.model.extreme import ExtremeModel
+from state_layer.model.base import Model, ModelOutput, to_numpy
 from state_layer.model.hmm import GaussianHMM
+from state_layer.model.thmm import StudentTHMM
 
-MODELS: dict[str, type[Model]] = {
-    "hmm": GaussianHMM,
-    "extreme": ExtremeModel,
-}
-
-
-def make(name: str, params: dict | None = None) -> Model:
-    if name not in MODELS:
-        raise KeyError(f"没有这个模型：{name}（可用：{sorted(MODELS)}）")
-    return MODELS[name](params)
-
-
-def run_infer(models: list[Model], features) -> dict:
-    """按链依次推断：上一环交出的日期才给下一环。
-
-    这是"推断"和"拟合"口径一致的保证——fit 时 hmm 只见过非极端日，
-    infer 时也必须只喂非极端日，否则 tail(window) 的分布就不是同一回事。
-    """
-    import pandas as pd
-
-    remaining = features.index
-    states: dict = {}
-    proba = None
-    for m in models:
-        res = m.infer(features, claim=remaining)
-        st = res.get("states")
-        if st is not None and len(st):
-            states.update(st.to_dict())
-        if res.get("proba") is not None:
-            proba = res["proba"]
-        remaining = res.get("remaining_index", remaining)
-
-    out = pd.Series(states, dtype=object)
-    if len(out):
-        out = out.sort_index()
-    return {"states": out, "remaining_index": remaining, "proba": proba}
-
-
-__all__ = ["Model", "GaussianHMM", "ExtremeModel", "MODELS", "make",
-           "run_infer"]
+__all__ = ["Model", "ModelOutput", "to_numpy", "GaussianHMM", "StudentTHMM"]

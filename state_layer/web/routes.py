@@ -21,7 +21,7 @@ from service.registry import Module, register
 router = APIRouter()
 TEMPLATES = Path(__file__).parent / "templates"
 
-ASSETS = ("ashare",)
+ASSETS = ("ashare", "gold")   # 2026-11-22：黄金页开出来（先验两页都能 200）
 
 # 状态配色（与卡片语义一致：上行暖色、下行冷色、极端更深）
 COLORS = {
@@ -126,25 +126,24 @@ def index(request: Request, asset: str = "ashare", days: int = 250):
     except FileNotFoundError:
         cur = {}          # 还没拟合过模型：页面照常打开，只是没有状态信息
 
-    # 市场状态区块：特征由状态层自己的资产包算
-    feats = None
+    # 市场状态区块：**传面板**（2026-11-22 起特征由 estimator 内部构造；
+    # 以前这里传的是 features 矩阵，接口已改）
     try:
-        feats = state_assets.load(asset).features.build(panel)
-        cur = port.current_state(asset, feats)
+        cur = port.current_state(asset, panel)
     except Exception as e:  # noqa: BLE001
         print(f"[state] 现算后验失败：{type(e).__name__}: {e}")
 
-    trans = port.transition(asset, feats) if feats is not None else None
+    trans = port.transition(asset, panel)
     spec = {}
     try:
-        spec = store.load_spec(asset)
+        spec = store.spec_any(asset)
     except Exception:  # noqa: BLE001
         pass
 
     return _tpl(request).TemplateResponse(
         request, "diagnose.html",
         {"asset": asset, "profile": prof, "svg": _svg(tl), "avail": avail,
-         "current": cur, "spec": spec, "transition": trans,
+         "current": cur, "spec": spec, "transition": trans, "assets": ASSETS,
          "groups": observations.GROUPS,
          "excluded": observations.EXCLUDED_TABLES, "days": days})
 
