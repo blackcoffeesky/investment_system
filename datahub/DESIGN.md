@@ -1300,7 +1300,7 @@ check.run  : industrial_yoy 最新停在 2025-08-31，应到 2026-10-31；近期
 | 性质 | 张数 |
 |---|---|
 | 真该看（`overdue=True`） | 20 |
-| **源还没发布**（`overdue=False`：`gold_etf_flow` / `vix` / `usdcny` / `usd_index` / `fed_rate` / `real_yield_10y`） | 6 |
+| **源还没发布**（`overdue=False`：`vix` / `usdcny` / `usd_index` / `fed_rate` / `real_yield_10y`） | 5 |
 | `freshness` 里没有（`gold_cot_net_long` 周频） | 1 |
 
 后 6 张是"`find_gaps` 不吃 `lag_days`"的直接后果——**原则我认同**（否则就有两套 lag），
