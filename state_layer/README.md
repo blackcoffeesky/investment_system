@@ -13,11 +13,11 @@
 
 ```bash
 # 拟合状态模型（改特征/改 K 之后跑；会换 label_signature）
-python -m state_layer.cli regime --asset ashare
+python -m state_layer.cli fit --asset ashare
 
 # 临时试其他状态数 / 种子（不写回 config，只影响这一次拟合）
-python -m state_layer.cli regime --asset ashare --k 2
-python -m state_layer.cli regime --asset ashare --k auto     # 让模型按 BIC 自己选
+python -m state_layer.cli fit --asset ashare --k 2
+python -m state_layer.cli fit --asset ashare --k auto     # 让模型按 BIC 自己选
 
 # 之后必须重估边快照，否则卡片会被拒
 python -m causual.causual_core.cli edges --asset ashare
@@ -111,3 +111,12 @@ K 写死而不是自动选：**拟合要可复现**，让数据自己选 K 只�
 
 已退役的东西（旧面板模块、旧签名、旧产物文件等）以及"为什么退、别再引入"的理由，
 见 [DESIGN.md](DESIGN.md) §10。
+
+## 分组（2026-11-22）
+
+A 股出 **3 组**状态：短期价格（3 态，primary）/ 短期波动（3 态）/ 中长期价格（2 态）。
+九宫格由 `analysis/combine.py::grid()` 合成（唯一实现）。黄金仍只有 1 组。
+
+- 训练/落盘：`python -m state_layer.cli fit --asset ashare`（或 `from state_layer.fit import fit_asset; fit_asset("ashare")`）
+- 下游（causual）只读 **primary**（`short_price`）；加组**不会**改变 `label_signature`
+- 页面上四张图的区间不完全相同（各组预热不同，九宫格取交集）

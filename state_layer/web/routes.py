@@ -23,19 +23,87 @@ TEMPLATES = Path(__file__).parent / "templates"
 
 ASSETS = ("ashare", "gold")   # 2026-11-22：黄金页开出来（先验两页都能 200）
 
-# 状态配色（与卡片语义一致：上行暖色、下行冷色、极端更深）
+# 状态配色（标签语义：上行暖色、下行冷色、波动三档由浅到深）
 COLORS = {
     "trend_up": "#c9853a",
     "range": "#5a6472",
     "trend_down": "#3d6b9e",
-    "extreme_up": "#b4472f",
-    "extreme_down": "#2f4b7c",
-    "extreme_vol": "#7a3fa0",
+    "low": "#8aa0b8",
+    "normal": "#c9853a",
+    "high": "#b4472f",
+}
+
+#: 每个资产要画几张图、按什么顺序（2026-11-22 用户指定）
+CHART_ORDER = {
+    "ashare": ("short_price", "short_vol", "grid", "long_price"),
+    "gold": ("raw",),
 }
 
 
 def _tpl(request: Request):
     return request.app.state.templates
+
+
+def _rows(panel, labels, days: int) -> list[dict]:
+    """面板尾部 days 行 + 给定标签 → `_svg` 认的行结构（没有标签就是空串）。"""
+    if panel is None or panel.empty:
+        return []
+    tail = panel.tail(days)
+    lab = labels.reindex(tail.index).fillna("").astype(str) if len(labels) else None
+    amount = tail["amount"] if "amount" in tail.columns else None
+    rows = []
+    for i, d in enumerate(tail.index):
+        rows.append({
+            "date": str(d)[:10],
+            "close": float(tail["close"].iloc[i]),
+            "amount": float(amount.iloc[i]) if amount is not None else 0.0,
+            "label": lab.iloc[i] if lab is not None else "",
+        })
+    return rows
+
+
+def _charts(asset: str, panel, days: int) -> list[dict]:
+    """按 `CHART_ORDER` 组装图；`grid` 走 `analysis.combine.grid`（唯一实现）。"""
+    from state_layer.analysis import combine
+
+    if not store.has_v2(asset):
+        return []
+    df = store.load_groups(asset)
+    cfg = state_assets.load(asset).config
+    meta = store.load_meta(asset)
+    out: list[dict] = []
+
+    for name in CHART_ORDER.get(asset, ()):
+        if name == "grid":
+            price = store.series_of(df, "short_price")
+            vol = store.series_of(df, "short_vol")
+            labels = combine.grid(price, vol,
+                                  price_order=tuple(cfg.GROUP_LABELS["short_price"]),
+                                  vol_order=tuple(cfg.GROUP_LABELS["short_vol"]))
+            order = [f"{i}-{j}" for i in range(3) for j in range(3)]
+            names = {f"{i}-0": "下跌" if i == 0 else ("震荡" if i == 1 else "上涨")
+                     for i in range(3)}
+            out.append({
+                "title": "短期九宫格（价格档 × 波动档）",
+                "svg": _svg(_rows(panel, labels, days)),
+                "range": f"{labels.index.min():%Y-%m-%d} ~ {labels.index.max():%Y-%m-%d}"
+                         if len(labels) else "—",
+                "note": "两组合成：格号 = 价格档-波动档；"
+                        "区间取 short_price ∩ short_vol（比其他三张窄）",
+            })
+            continue
+        if name not in (meta.get("groups") or {}):
+            continue
+        labels = store.series_of(df, name)
+        out.append({
+            "title": str((meta["groups"][name] or {}).get("title") or name),
+            "svg": _svg(_rows(panel, labels, days)),
+            "range": f"{labels.index.min():%Y-%m-%d} ~ {labels.index.max():%Y-%m-%d}"
+                     if len(labels) else "—",
+            "note": f"{name} · K={meta['groups'][name].get('k')} · "
+                    f"自己那组的区间（四张图不完全相同）",
+        })
+    return out
 
 
 def _svg(rows: list[dict], width: int = 900, height: int = 218) -> str:
@@ -134,6 +202,9 @@ def index(request: Request, asset: str = "ashare", days: int = 250):
         print(f"[state] 现算后验失败：{type(e).__name__}: {e}")
 
     trans = port.transition(asset, panel)
+
+    # 四张图（黄金一张）。**单组用各组自己的区间；九宫格用交集**。
+    charts = _charts(asset, panel, days)
     spec = {}
     try:
         spec = store.spec_any(asset)
@@ -142,7 +213,7 @@ def index(request: Request, asset: str = "ashare", days: int = 250):
 
     return _tpl(request).TemplateResponse(
         request, "diagnose.html",
-        {"asset": asset, "profile": prof, "svg": _svg(tl), "avail": avail,
+        {"asset": asset, "profile": prof, "charts": charts, "avail": avail,
          "current": cur, "spec": spec, "transition": trans, "assets": ASSETS,
          "groups": observations.GROUPS,
          "excluded": observations.EXCLUDED_TABLES, "days": days})

@@ -35,9 +35,18 @@
   {% endif %}
 </table>
 
+{% if charts %}
+{% for c in charts %}
+<h2>{{ c.title }}</h2>
+<p class="muted">区间 {{ c.range }} · {{ c.note }}</p>
+<div class="card-body">{{ c.svg | safe }}</div>
+{% endfor %}
+<p class="muted">上：收盘价 + 状态色带；下：成交额。悬停可看当天数值。
+四张图的区间**不完全相同**（各组的重估起点不同，九宫格取交集）。</p>
+{% else %}
 <h2>时间轴（近 {{ days }} 个交易日）</h2>
-<div class="card-body">{{ svg | safe }}</div>
-<p class="muted">上：收盘价 + 状态色带；下：成交额。悬停可看当天数值。</p>
+<p class="muted">还没有 v2 产物，先跑 <code>python -m state_layer.cli fit --asset {{ asset }}</code>。</p>
+{% endif %}
 
 <h2>各状态画像</h2>
 {% if profile is not none and profile | length %}

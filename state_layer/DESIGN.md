@@ -61,7 +61,7 @@ saved_models/<asset>/     current.json / labels.csv / chain.pkl
 | `analysis/observations.py` | 观测矩阵（收益/波动/成交/换手/大小盘）——**收面板**，缺列给 NaN | web |
 | `analysis/stats.py` | 状态画像（各状态的收益、波动、持续） | web |
 | `port.py` | 对外能力 | 其他模块 |
-| `cli.py` | `python -m state_layer.cli regime`（**装配点**） | 人 |
+| `cli.py` | `python -m state_layer.cli fit`（**装配点**） | 人 |
 | `web/` | `/state` 页面（**装配点**） | service |
 
 **新文件必须先补这张表。** 表里没有的文件 = 漂了。
@@ -217,7 +217,7 @@ saved_models/<asset>/
 | 动作 | 频率 | 命令 |
 |---|---|---|
 | 加载标签、出卡片 | 每天 | 状态机（不重拟合） |
-| 重拟合模型 | 手动 | `python -m state_layer.cli regime --asset X` |
+| 重拟合模型 | 手动 | `python -m state_layer.cli fit --asset X` |
 | 重估边模型 | 重拟合后**必须** | `python -m causual.causual_core.cli edges --asset X` |
 
 ⚠️ **重拟合会改 `label_signature`**，边快照随之失效，卡片会被拒绝。
@@ -334,3 +334,54 @@ A 股一加组，`routes.py`、causual、测试都要各算一遍，特征定义
 **为什么是硬约束**：用户明确"A 股加短波动/长价格只是给 state_layer 自己用，causual 不变"。
 签名一变，causual 的边快照全部失效、卡片被守卫拒绝——加组就会误伤下游。
 **多分组是已具备、按需启用的能力**；加组不该被下游感知。
+
+---
+
+## 14. 现状（2026-11-22 重构后）
+
+> **§3 / §5 / §7 里关于 `MODEL_CHAIN`、模型链、`chain.pkl`、`extreme` 模型的描述已作废**，
+> 以本节为准（链已退役，极端模型已删除）。
+
+### 三个分组（A 股）
+
+| 组 | 模型 | K | 特征 | 标签 code | 显示名 | 预热(交易日) |
+|---|---|---|---|---|---|---|
+| `short_price`（**primary**） | Student-t HMM ν=5 | 3 | ret_5 / ret_10 / er_10 / snr_10 | trend_down / range / trend_up | 下跌 / 震荡 / 上涨 | 10 |
+| `short_vol` | Gaussian HMM | 3 | rv_5 / atr_5 / gk_10 / abs_ret_5 | low / normal / high | 低波 / 中波 / 高波 | 5 |
+| `long_price` | Student-t HMM ν=5 | 2 | ret_60 / ret_120 / er_60 / er_120 / snr_60 | trend_down / trend_up | 下跌 / 上涨 | 120 |
+
+- 黄金只有一组：`raw`，K=4，Gaussian，沿用旧四词表（trend_* + distribution）
+- 每组**自己**的 K / 特征 / 词表 / 预热都在 `state_assets/<asset>/config.py`
+- 拟合方式：walk-forward（`min_train` / `refit_every` / `window` 在 config，代码里不写死）
+- 三组的日期范围**不同**（各组预热与重估起点不同）：单组图用各组自己的区间，任何跨组组合取交集
+
+### 组合只有一份实现
+
+九宫格 = `analysis/combine.py::grid(price, vol, price_order=, vol_order=)`（纯函数）：
+返回 `"i-j"`（价格档-波动档），**index 是两条序列的交集**。页面、causual、将来的用法都调它，
+**不许在路由或资产包里再拼一次**。
+
+### 面板（2026-11-22 瘦身后）
+
+`Panel.STATE_ASHARE` = `open / high / low / close / amount / turnover / csi300 / csi1000`
+（8 列；`tables_of` = csi_all / csi300 / csi1000）。
+- 特征只用 OHLC；`amount` / `turnover` / `csi300` / `csi1000` 只服务展示（观测矩阵）
+- 已删：`volume`（无人用）、`shibor3m` / `margin_balance`（旧特征退役）、4 个派生列（状态面板不再读 etf_shares）
+- `Panel.CAUSUAL_ASHARE` 未动（causual 自己的列照旧）
+
+### 加组规则（已用签名验证过）
+
+**加组只服务 state_layer 自己，causual 只读 primary。**
+2026-11-22 实测：A 股从 1 组加到 3 组，`short_price.label_signature` 仍为 `b7f0879d7c3d`
+（加组没惊动因果层）。规则见 §13。
+
+## 15. 已退役（2026-11-22，别再引入）
+
+| 东西 | 为什么 |
+|---|---|
+| `MODEL_CHAIN` / `Model.fit(claim=)` / `remaining_index` / `run_infer` / `MODELS` 注册表 | 链式认领没有语义了；模型组合由 estimator 决定 |
+| `model/extreme/`（规则模型 + `extreme_*` 标签） | 用户决定去掉；极端行情由 t 分布厚尾 + 短期波动 `high` 档表达 |
+| `model/hmm/select.py`（BIC 选 K）、`_ops.py`、`serialize.py` | K 由 config 固定；`_ops` 的 helper 与 `shared.data_processing` 重复；`serialize` 与 `store` 重叠 |
+| `port` 第二参数传 features 矩阵 | 改为传 **panel**（特征属于分组，见 §11） |
+| `features.build()`（旧 9 特征） | 改成分组构造 `build_groups()`；旧特征（log_return/vol20/volume_z/ma20_slope/size_mom/margin_chg_z/rv_ratio/shibor_chg_z/etf_dispersion）退役 |
+| `align.name_states` 作为 A 股的命名方式 | A 股改"序位命名"（`align.order_labeler`）；`label_churn` **保留**为稳定性度量 |
