@@ -2,6 +2,5 @@
 
 from causual.causual_core import edge, evaluate, nodes, signal_layer, snapshot
 from causual.causual_core.edge import Edge
-from shared.utils import calendar
 
-__all__ = ["Edge", "nodes", "edge", "calendar", "signal_layer", "snapshot", "evaluate"]
+__all__ = ["Edge", "nodes", "edge", "signal_layer", "snapshot", "evaluate"]
