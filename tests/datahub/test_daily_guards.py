@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from datahub.core.schema import DATA_DDL
 from datahub.fin import check as C
 from datahub.fin.check import find_gaps, is_trading_day
 from datahub.fin.sources.guard import write_guard
@@ -27,14 +28,18 @@ def _now(s: str) -> pd.Timestamp:
     return pd.Timestamp(s, tz="Asia/Shanghai")
 
 
-def _db_with(dates) -> Path:
+def _db_with(dates, freq: str = "D") -> Path:
     dates = [str(pd.Timestamp(d).date()) for d in dates]   # 兼容 DatetimeIndex
     db = Path(tempfile.gettempdir()) / f"dh_gaps_{abs(hash(tuple(dates))) % 10**8}.sqlite"
     if db.exists():
         db.unlink()
     con = sqlite3.connect(str(db))
+    con.executescript(DATA_DDL)                      # find_gaps 要读 metadata
     con.execute("CREATE TABLE t (date TEXT PRIMARY KEY, value REAL)")
     con.executemany("INSERT INTO t VALUES (?,1.0)", [(d,) for d in dates])
+    con.execute("INSERT INTO metadata(name, kind, freq, market, start_date, end_date, n_rows) "
+                "VALUES ('t','single',?, 'CN', ?, ?, ?)",
+                (freq, dates[0], dates[-1], len(dates)))
     con.commit()
     con.close()
     return db
@@ -53,7 +58,7 @@ def test_find_gaps_catches_hole_in_the_middle():
     orig = _pin_today("2026-11-20")
     try:
         db = _db_with(["2026-11-16", "2026-11-17", "2026-11-18", "2026-11-20"])
-        gaps = find_gaps("t", lookback=5, path=db)
+        gaps = find_gaps("t", lookback=5, path=db)["missing"]
         assert gaps == ["2026-11-19"], gaps
     finally:
         C.last_closed_trading_day = orig     # type: ignore[assignment]
@@ -63,9 +68,9 @@ def test_find_gaps_catches_hole_in_the_middle():
 def test_find_gaps_empty_when_table_complete():
     orig = _pin_today("2026-11-20")
     try:
-        days = C.trading_days("2026-11-02", "2026-11-20")
+        days = C.trading_days("2026-10-01", "2026-11-20")
         db = _db_with(days)
-        assert find_gaps("t", lookback=10, path=db) == []
+        assert find_gaps("t", lookback=10, path=db)["missing"] == []
     finally:
         C.last_closed_trading_day = orig     # type: ignore[assignment]
         db.unlink()
@@ -192,9 +197,11 @@ def test_find_gaps_agrees_with_check_run():
     if db.exists():
         db.unlink()
     days = [str(d.date()) for d in C.trading_days("2026-11-02", "2026-11-20")]
+    days = days[-10:]                    # 只看最近 10 个交易日，洞（11-11/12）在里面
     holes = [d for d in days if d in ("2026-11-11", "2026-11-12")]
     assert len(holes) == 2, "前提：11-11/11-12 是交易日"
     keep = [d for d in days if d not in holes]
+    assert len(holes) == 2
 
     con = sqlite3.connect(str(db))
     con.executescript(DATA_DDL)
@@ -205,7 +212,7 @@ def test_find_gaps_agrees_with_check_run():
     con.commit()
     con.close()
 
-    gaps = find_gaps("t", lookback=20, path=db)
+    gaps = find_gaps("t", lookback=10, path=db)["missing"]
     assert set(holes) <= set(gaps), f"find_gaps 没报出洞：{gaps}"
 
     rows = run(path=db)
@@ -227,3 +234,47 @@ def test_check_run_marks_calendar_failure_separately():
     assert set(rows["status"].unique()) <= {"data", "check_failed"}
     failed = rows[rows["status"] == "check_failed"]
     assert len(failed) == 0, f"日历仍然在失败：{failed[['name', 'issues']].to_string()}"
+
+
+# ------------------------------------------------- find_gaps 三频率 + stale
+def test_find_gaps_monthly_compares_by_period_not_date():
+    """月表按**周期**比：数据日期是"披露日"（如 10-15），不是月末 → 不能算缺口。"""
+    db = _db_with(["2026-08-31", "2026-09-15", "2026-10-15"], freq="M")
+    g = find_gaps("t", lookback=3, path=db)
+    # 8/9/10 月都有数据 → 不该报这三个月的缺口；期望 10 月是最后一个已结束的月
+    assert g["missing"] == [], g["missing"]
+    assert g["expected_latest"] == "2026-10-31", g
+    assert g["stale"] is None, g
+    db.unlink()
+
+
+def test_find_gaps_quarterly_reports_missing_period():
+    """季表：缺 2026Q2 → `missing` 里是 2026-06-30。"""
+    db = _db_with(["2026-03-31", "2026-09-30"], freq="Q")
+    g = find_gaps("t", lookback=3, path=db)
+    assert "2026-06-30" in g["missing"], g["missing"]
+    db.unlink()
+
+
+def test_find_gaps_reports_stale_tail():
+    """**尾部**：表停在 11-13、应到 11-20 → `stale` 报出来（**不套 lag_days**）。"""
+    days = [d for d in C.trading_days("2026-10-01", "2026-11-20")
+            if str(d.date()) <= "2026-11-13"]
+    db = _db_with(days)
+    g = find_gaps("t", lookback=10, path=db)
+    assert g["stale"] == "2026-11-13", g
+    assert g["expected_latest"] == "2026-11-20", g
+    # 缺口里包含 11-16 之后的所有交易日
+    assert "2026-11-16" in g["missing"] and "2026-11-20" in g["missing"], g["missing"]
+    db.unlink()
+
+
+def test_unacked_filters_by_day_and_by_period():
+    from datahub.fin.check import unacked
+
+    # D：按日去掉
+    assert unacked(["2026-11-19", "2026-11-20"], {"2026-11-19"}, "D") == ["2026-11-20"]
+    # M：按月去掉——ack 了 9 月的任意一天，9 月的缺口就不报了
+    assert unacked(["2026-09-30", "2026-10-31"], {"2026-09-15"}, "M") == ["2026-10-31"]
+    # Q：按季
+    assert unacked(["2026-06-30", "2026-09-30"], {"2026-05-01"}, "Q") == ["2026-09-30"]

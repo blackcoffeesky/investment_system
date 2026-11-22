@@ -1219,3 +1219,62 @@ Python 只留最后一个 → `expected_dates` 里按**位置**传参变成
 
 **通用教训**：同名函数覆盖 + 位置传参 = **静默的签名错位**。
 加函数前先 `grep "def <名字>"`；调用自己模块的函数**尽量用关键字**。
+
+## 26. 职责切分：日历在 shared、写在 guard、查在 check（2026-11-22）
+
+用户的要求是"**一个文件一件事**"：`check.py` 不该同时管日历、写库守卫、缺口检查。
+
+| 东西 | 现在在哪 | 为什么 |
+|---|---|---|
+| `trading_days` / `expected_periods` / `is_trading_day` / `last_closed_trading_day` | **`shared/utils/trading_calendar.py`** | 全系统共用（不是 datahub 私产）；同名覆盖过一次，17 张日频表的检查整体失效 |
+| `write_guard` | **`datahub/fin/sources/guard.py`** | 它的语义是"**写之前挡一下**"，属写库；`check` 只负责"查" |
+| `find_gaps` / `unacked` / `run` | `datahub/fin/check.py` | 查缺口、过滤已登记、出报告 |
+
+### 26.1 `find_gaps` 的语义（返回 dict）
+
+```python
+find_gaps(table, *, lookback=None, max_age_days=None, path=None) -> dict
+# {"table", "freq", "missing": [日期…], "stale": 实际最新|None, "expected_latest": 应到的最新}
+```
+
+三条**刻意的**决定：
+
+1. **不吃 `lag_days`**。"源还没发布"是 `freshness` 的宽限语义，**不是"数据缺"**。
+   `find_gaps` 只报原始事实，调用方自己套宽限——否则就是第二个 `freshness`，两套定义必然打架。
+2. **低频表按周期比，不按日期相等**：`M/Q/Y` 的数据日期是"披露日/月末"之类的任意一天
+   （`cpi_yoy` 停在 2026-10-31、上一期在 2026-10-15），逐日比会把整月算成缺口
+   （`m1/m2/total_*` 的「53 天缺口」就是这么误报的）。`expected_latest` 取
+   **上一个已结束的周期**（当月/当季还没结束，不要求它）。
+3. **窗口起点不早于表首日**：表还没建的时候不算缺口，否则新表一上来就报"缺 51 天"。
+
+**`lookback` 默认值按频率定**（不搞一刀切）：`D` 60 个交易日（约 3 个月，够抓"漏更一周"）、
+`W` 26 周、`M` 24 月、`Q` 8 季、`Y` 5 年、`SPARSE` 24 期。低频表一年才几个点，扫短了等于没扫。
+
+**`SPARSE` / `eav` 没有"洞"的概念**：`missing` 恒空，只报 `stale`
+（超过 `max_age_days`（默认 90）没更新 → `stale`）。
+
+### 26.2 `run()` 现在也报"尾部停滞"（文案变了）
+
+以前 `run()` 只用表自身的 `min/max` 当区间，**尾部停更完全看不见**（`csi_all` 停在
+11-13 时报"无缺口"）。现在 `run()` 走 `find_gaps`，所以会多出这类 issue：
+
+```
+最新停在 2026-11-17，应到 2026-11-20；近期缺 3 天（…）
+```
+
+⇒ **`/data` 的问题表数会变多**（本地 17 → 30）。这是**有意**的：以前"尾部停更"只有
+service 的 `overdue_tables` 和 `freshness` 在看，`check` 自己看不见。
+SPARSE 表的「最近一条停在 X」也**统一成了 `stale`**，不再两套说法。
+
+### 26.3 `unacked` 独立成函数
+
+`D` 按日比、`M/Q/Y` **按周期**比（ack 了 9 月任意一天，9 月就不报）。逻辑从 `run()` 里
+搬出来，便于单测（`test_unacked_filters_by_day_and_by_period`）。
+
+### 26.4 防回潮的结构断言
+
+`tests/datahub/test_daily_guards.py::test_guard_and_calendar_have_single_home` 断言：
+
+- `find_gaps` 在 `check.py`、`write_guard` 在 `sources/guard.py`，`write_guard` **不许**在 `check.py`
+- `trading_days` / `expected_periods` / `is_trading_day` / `last_closed_trading_day`
+  的 `__module__` 必须是 `shared.utils.trading_calendar`

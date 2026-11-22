@@ -176,56 +176,39 @@ def run(path: Path | None = None, recent_days: int = 90) -> pd.DataFrame:
         else:
             dates = pd.DatetimeIndex(obj.index)
 
-        if str(m["freq"] or "").upper() == "SPARSE":
-            # 稀疏表（事件表、份额快照）：只要求不是很久没更新，不查逐日缺口
-            last = str(dates[-1].date()) if len(dates) else ""
-            if last < cutoff:
-                rows.append({"name": name, "freq": "SPARSE",
-                             "n": len(obj), "issues": f"最近一条停在 {last or '无'}"})
-            continue
-
-        actual = set(str(d.date()) for d in dates)
-        start, end = min(actual), max(actual)
         freq = str(m["freq"] or "D")
         market = str(m["market"] or "CN")
         try:
-            exp = expected_periods(freq, market, start, end)
+            gaps = find_gaps(name, max_age_days=recent_days, path=path)
         except Exception as e:  # noqa: BLE001
             # **检查本身没跑成**，不是"数据有问题"：标成 check_failed，
             # 调用方要能分清（2026-11-22：17 张日频表全报「日历失败」，页面上
             # 却只像一条普通 issue，真实缺口一条也检不出来）。
             print(f"[check] {name}：日历失败（检查没跑成）{type(e).__name__}: {e}",
                   file=sys.stderr)
-            rows.append({"name": name, "freq": str(m.get("freq") or ""),
+            rows.append({"name": name, "freq": freq, "market": market,
                          "issues": f"日历失败 {type(e).__name__}: {e}",
                          "status": "check_failed"})
             continue
 
         issues: list[str] = []
-        dup = pd.Series(dtype="int64")
-        per = _PERIOD.get(freq.upper())          # M/Q/Y → "M"/"Q"/"Y"；D/W → None
-        if per:
-            # 低频表按**周期**比对：同一个月里"月初一行 + 月末一行"是**重复**，不是缺口。
-            # 按天比会把月初那批算成缺口（m1/m2/total_* 的「53 天缺口」就是这么误报的）。
-            actual_per = pd.DatetimeIndex(sorted(dates)).to_period(per)
-            exp_per = pd.DatetimeIndex(exp).to_period(per)
-            acked = ack_map.get(name, set())
-            ack_per = (pd.DatetimeIndex(sorted(acked)).to_period(per)
-                       if acked else pd.PeriodIndex([], freq=per))
-            missing_per = sorted(set(exp_per) - set(actual_per) - set(ack_per))
-            missing = [str(p.end_time.date()) for p in missing_per]
-            counts = pd.Series(actual_per).value_counts()
-            dup = counts[counts > 1].sort_index()
-        else:
-            expected = set(str(d.date()) for d in exp)
-            missing = sorted(expected - actual - ack_map.get(name, set()))
-
+        # ① 尾部：最新 < 应到（**不套 lag_days**——宽限是 freshness 的事）
+        if gaps["stale"]:
+            tail = (f"最新停在 {gaps['stale']}" +
+                    (f"，应到 {gaps['expected_latest']}" if gaps["expected_latest"] else ""))
+            issues.append(tail)
+        # ② 区间内的洞：去掉已登记的（ack）
+        missing = unacked(gaps["missing"], ack_map.get(name, set()), freq)
         recent = [d for d in missing if d >= cutoff]
         old = len(missing) - len(recent)
-
-        if per and len(dup):
-            issues.append(f"{_DUP_LABEL[per]}多行 {len(dup)} 期"
-                          f"（最多 {int(dup.max())} 行，首见 {dup.index[0]}）")
+        # ③ 低频表的"同月多行"（重复，不是缺口）
+        per = _PERIOD.get(freq.upper())
+        if per and len(dates):
+            counts = pd.Series(pd.DatetimeIndex(sorted(dates)).to_period(per)).value_counts()
+            dup = counts[counts > 1].sort_index()
+            if len(dup):
+                issues.append(f"{_DUP_LABEL[per]}多行 {len(dup)} 期"
+                              f"（最多 {int(dup.max())} 行，首见 {dup.index[0]}）")
         if recent:
             sample = ", ".join(recent[:5])
             more = f" … 共 {len(recent)} 天" if len(recent) > 5 else ""
@@ -428,28 +411,140 @@ def freshness(tables=None, *, today: str | pd.Timestamp | None = None,
 # 长在源里，第二个源要用就变成第二份副本，必然漂移（AGENTS §4「数据只在一处定义」）。
 
 
-def find_gaps(table: str, lookback: int = 20, *, path: Path | None = None) -> list[str]:
-    """最近 `lookback` 个交易日里，`table` **缺哪几天**（`YYYY-MM-DD` 列表）。
+#: 各频率默认扫多长（**不是一刀切**）：D 扫 60 个交易日（约 3 个月，够抓到
+#: "漏更一周"这类问题）；W 26 周、M 24 月、Q 8 季、Y 5 年——低频表一年才几个点，
+#: 扫短了等于没扫。
+_LOOKBACK: dict[str, int] = {
+    "D": 60, "W": 26, "M": 24, "Q": 8, "Y": 5, "SPARSE": 24,
+}
 
-    为什么需要它：`MAX(date)` 只能看"尾巴"，**看不出中间的洞**。
-    2026-11-21 的 `stock_daily` 就是"11-18 有、11-19 无、11-20 有"，
-    `MAX=11-20` 完全正常——靠人眼看 `/data` 才发现。
 
-    终点取 `last_closed_trading_day()`（收盘前不算今天），起点 = 终点往前
-    `lookback` 个交易日。表不存在 / 空表 → 返回整个窗口（全缺）。
+def find_gaps(table: str, *, lookback: int | None = None,
+              max_age_days: int | None = None,
+              path: Path | None = None) -> dict:
+    """`table` 的**原始缺口事实**：区间内的洞 + 尾部是否过期。
+
+    返回 `{"table", "freq", "missing": [日期…], "stale": 实际最新|None,
+    "expected_latest": 应到的最新}`。
+
+    三条语义（都刻意如此）：
+
+    1. **不吃 `lag_days`**。宽限（"源还没发布"）是 `freshness` 的语义，不是"数据缺"。
+       这里只报事实，调用方自己套宽限——否则就是第二个 `freshness`，两套定义必然打架。
+    2. **按频率判"该有哪些期"**：`D` = 每个交易日（`shared` 的日历，含节假日休市）；
+       `W/M/Q/Y` = 每个周期末（用 `expected_periods`），所以月表在月中不会被误报。
+    3. **SPARSE / eav 没有"洞"的概念**，`missing` 恒为 `[]`，只报 `stale`。
+
+    为什么返回 dict 而不是 list：`run()`（`/data` 页）和 `stock_daily_sync`（补数）
+    要的是同一份结果的不同字段，返回 list 会让每个调用方各自再算一遍 stale。
     """
+    from datahub.fin.read import kind_of
+
+    con = _conn(path)
+    try:
+        row = con.execute("SELECT freq, market, end_date FROM metadata WHERE name=?",
+                          (table,)).fetchone()
+    finally:
+        con.close()
+    freq = str((row["freq"] if row else "") or "D").upper()
+    market = str((row["market"] if row else "") or "CN")
+    kind = kind_of(table, path)
+
     now = pd.Timestamp.now(tz="Asia/Shanghai")
-    end = last_closed_trading_day(now)
-    days = trading_days(str((pd.Timestamp(end) - pd.Timedelta(days=lookback * 3)).date()), end)
-    window = [str(d.date()) for d in (days[-lookback:] if len(days) > lookback else days)]
-    if not window:
-        return []
+    end = last_closed_trading_day(now, market if market != "NONE" else "CN")
+    n = int(lookback if lookback is not None else _LOOKBACK.get(freq, 20))
+
     con = _conn(path)
     try:
         have = {str(r[0])[:10] for r in con.execute(
-            f'SELECT DISTINCT date FROM "{table}" WHERE date >= ?', (window[0],))}
+            f'SELECT date FROM "{table}"')} if kind not in ("eav",) else set()
     except Exception:  # noqa: BLE001
         have = set()
     finally:
         con.close()
-    return [d for d in window if d not in have]
+
+    out: dict = {"table": table, "freq": freq, "missing": [],
+                 "stale": None, "expected_latest": ""}
+    if kind == "eav" or freq == "SPARSE":
+        # 稀疏表：没有"每周该有几行"的定义 → `missing` 恒空，**只报 `stale`**：
+        # 超过 `max_age_days`（默认 90）没更新就算 stale。这就是原来
+        # `run()` 里"最近一条停在 X"那条判断，现在统一成 `stale` 一个概念。
+        latest = max(have) if have else None
+        age_limit = int(max_age_days if max_age_days is not None else 90)
+        out["expected_latest"] = ""
+        if latest is not None and (now.date() - pd.Timestamp(latest).date()).days > age_limit:
+            out["stale"] = latest
+        return out
+
+    # 窗口：按 freq 往前推够长的日历区间，取最后 n 个"期"
+    if freq == "D":
+        span_days = n * 2
+    else:
+        span_days = {"W": n * 9, "M": n * 32, "Q": n * 95, "Y": n * 370}.get(freq, 60)
+    start = str((pd.Timestamp(end) - pd.Timedelta(days=span_days)).date())
+    # **表还没建的时候不算缺口**：新表（或刚换源的表）首日之前的日期不存在"该有"，
+    # 拿它们报缺口只会制造噪音（临时表 11-09 才有数据，却报 8 月缺 51 天）。
+    if have:
+        first = min(have)
+        if first > start:
+            start = first
+
+    if freq == "D":
+        expected = [str(d.date()) for d in
+                    expected_periods("D", market if market != "NONE" else "CN", start, end)]
+        expected = expected[-n:] if len(expected) > n else expected
+        out["expected_latest"] = expected[-1] if expected else end
+        out["missing"] = [d for d in expected if d not in have]
+        latest = max(have) if have else None
+        if latest is not None and latest < out["expected_latest"]:
+            out["stale"] = latest
+        return out
+
+    # ⚠️ W/M/Q/Y **按周期**比，不按日期相等：低频表的数据日期是"披露日/月末"
+    # 之类的任意一天（如 `cpi_yoy` 停在 2026-10-31、上一期在 2026-10-15），
+    # 逐日比会把整月算成缺口（`m1/m2/total_*` 的「53 天缺口」就是这么误报的）。
+    per = {"W": "W", "M": "M", "Q": "Q", "Y": "Y"}[freq]
+    end_p = pd.Timestamp(end).to_period(per)
+    # "该有的最新一期" = **上一个已结束的周期**（当月/当季还没结束，不该要求它）
+    last_ok_p = end_p - 1 if freq != "W" else end_p
+    have_p = {pd.Timestamp(d).to_period(per) for d in have}
+    window_p = pd.period_range(pd.Timestamp(start).to_period(per), last_ok_p, freq=per)
+    window_p = window_p[-n:] if len(window_p) > n else window_p
+    expected = [str(p.end_time.date()) for p in window_p]
+    out["expected_latest"] = expected[-1] if expected else ""
+    out["missing"] = [str(p.end_time.date()) for p in window_p if p not in have_p]
+    if have:
+        latest_p = pd.Timestamp(max(have)).to_period(per)
+        if expected and latest_p < last_ok_p:
+            out["stale"] = max(have)
+    return out
+
+
+def find_gaps_list(table: str, *, lookback: int | None = None,
+                   path: Path | None = None) -> list[str]:
+    """兼容薄包装：只要 `missing` 的调用方用它（别把调用点改散）。"""
+    return find_gaps(table, lookback=lookback, path=path)["missing"]
+
+
+def _period_of(day: str, freq: str) -> object:
+    """一个日期属于哪个"期"（`M`/`Q`/`Y`），`D` 原样返回日期字符串。"""
+    if freq in ("M", "Q", "Y"):
+        return pd.Timestamp(day).to_period({"M": "M", "Q": "Q", "Y": "Y"}[freq])
+    return day
+
+
+def unacked(missing: list[str], acked: set[str], freq: str) -> list[str]:
+    """从缺口里**去掉已登记的**（`missing` 表 ack）。
+
+    `D` 按日比；`M`/`Q`/`Y` **按周期**比——低频表"月初一行 + 月末一行"是重复，
+    按天比会把整月算成缺口（`m1/m2/total_*` 的「53 天缺口」就是这么误报的）。
+    """
+    if not missing:
+        return []
+    f = freq.upper()
+    if f in ("M", "Q", "Y"):
+        acked_p = {_period_of(a, f) for a in acked}
+        return [d for d in missing if _period_of(d, f) not in acked_p]
+    return [d for d in missing if d not in acked]
+
+
