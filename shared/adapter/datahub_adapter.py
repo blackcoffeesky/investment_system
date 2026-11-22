@@ -103,6 +103,18 @@ _ASHARE_BASE: dict[str, Any] = {
     "margin_balance": "margin_balance",
 }
 
+#: 状态层面板（2026-11-22 瘦身）：只留特征 + 展示层真正读的列。
+#:
+#: 砍掉的四类（都 grep 过 `state_layer/`，0 使用）：
+#:   `volume`（0 处）、`shibor3m` / `margin_balance`（旧特征退役后只剩 config 里的名字）、
+#:   `etf_sse50/csi300/csi1000`（0 处，连带不再读 `etf_shares`）
+#: 保留的：OHLC 是特征输入；`amount` / `turnover` / `csi300` / `csi1000` 是
+#:   `analysis/observations.py` + `analysis/stats.py` 的观测矩阵要用的。
+_ASHARE_STATE_COLS: tuple[str, ...] = (
+    "open", "high", "low", "close", "amount", "turnover", "csi300", "csi1000",
+)
+_ASHARE_STATE: dict[str, Any] = {c: _ASHARE_BASE[c] for c in _ASHARE_STATE_COLS}
+
 _ASHARE_MACRO: dict[str, Any] = {
     # 共享宏观（黄金也用同一份）
     "vix": "vix",
@@ -163,6 +175,7 @@ _GOLD_MACRO: dict[str, Any] = {
 
 _SPECS: dict[str, Mapping[str, Any]] = {
     "ashare_base": _ASHARE_BASE,
+    "ashare_state": _ASHARE_STATE,
     "ashare_macro": _ASHARE_MACRO,
     "gold_base": _GOLD_BASE,
     "gold_macro": _GOLD_MACRO,
@@ -198,7 +211,10 @@ _GOLD_DERIVED: tuple[tuple[str, str, str], ...] = (
 #: causual 用，而 `dividend_yield` 一次要 3.7 秒、state 又用不上——不能因为它俩共享
 #: builder 就让 state 也付这个代价）。
 _PANEL_DERIVED: dict[Panel, tuple[tuple[str, str, str], ...]] = {
-    Panel.STATE_ASHARE: _ASHARE_DERIVED,
+    # 状态面板不挂派生列：4 个派生（etf_dispersion / size_flow / national_etf /
+    # national_netf_event）在 `state_layer/` 里 0 使用（grep 过），
+    # 挂上就得读 `etf_shares` 并现算——白花时间。causual 面板仍保留它们。
+    Panel.STATE_ASHARE: (),
     Panel.CAUSUAL_ASHARE: _ASHARE_DERIVED + _DIVIDEND_YIELD,
     Panel.STATE_GOLD: (),
     Panel.CAUSUAL_GOLD: _GOLD_DERIVED,
@@ -241,6 +257,7 @@ _GOLD_MACRO_POLICY: dict[str, str] = {
 
 _POLICY: dict[str, Mapping[str, str]] = {
     "ashare_base": _ASHARE_BASE_POLICY,
+    "ashare_state": {c: _DAILY for c in _ASHARE_STATE},
     "ashare_macro": _ASHARE_MACRO_POLICY,
     "gold_base": _GOLD_BASE_POLICY,
     "gold_macro": _GOLD_MACRO_POLICY,
@@ -252,6 +269,7 @@ _POLICY: dict[str, Mapping[str, str]] = {
 # 否则窗口头部会是 NaN（实测 CAUSUAL_GOLD 2025-01-01 起取，头部 23 行差异）。
 # 0 = 当天就够（价格类，本身就是日频且窗口内每天都有）。
 _WARMUP: dict[str, Mapping[str, int]] = {
+    "ashare_state": {c: 0 for c in _ASHARE_STATE},   # 全是日频价格/指数，0 天足够
     "ashare_base": {
         **{c: 0 for c in ("open", "high", "low", "close", "volume", "csi300", "csi1000")},
         **{c: 10 for c in ("shibor3m", "margin_balance")},
@@ -300,7 +318,7 @@ _INDEX = {
 
 # 声明式组合：一个 Panel = 若干 builder 按顺序叠列
 _BUILD: dict[Panel, tuple[str, ...]] = {
-    Panel.STATE_ASHARE: ("ashare_base",),
+    Panel.STATE_ASHARE: ("ashare_state",),
     Panel.STATE_GOLD: ("gold_base",),
     Panel.CAUSUAL_ASHARE: ("ashare_base", "ashare_macro"),
     Panel.CAUSUAL_GOLD: ("gold_base", "gold_macro"),
@@ -325,25 +343,29 @@ def column_of(spec: Any) -> str:
     return spec[1] if isinstance(spec, tuple) else str(spec)
 
 
-def _build_ashare_base(series: Mapping[str, pd.Series],
-                       meta: pd.DataFrame) -> pd.DataFrame:
-    """A 股基础面板：价格/指数/两融走 `build`，ETF 分组份额取自**派生量**。
+def _build_ashare(spec_name: str, *, with_etf: bool):
+    """按 `spec_name` 造 A 股面板；`with_etf=False` 时不挂 `etf_*` 四列（也不读 `etf_shares`）。
 
-    `etf_group_shares` 是 `series_map` 按名字现算的（分组与求和都在数据层），
-    这里只把 `etf_group_shares:sse50` 之类的 key 落到 `etf_sse50` 列上，
-    并按原生观测日 reindex（不 ffill）。
+    2026-11-22 参数化：原来是 `_build_ashare_base` 写死 `_ASHARE_BASE`，
+    想给状态层一个更窄的 spec 就只能复制一份 builder——那是第二份实现，必然漂移。
     """
-    df = T.build(_ASHARE_BASE, "csi_all", series, meta,
-                 policy=_ASHARE_BASE_POLICY)
-    idx = df.index
-    for g in _ETF_GROUP_KEYS:
-        s = series.get(f"{_ETF_DERIVED}:{g}")
-        if s is None:
-            _warn(f"series 里没有 {_ETF_DERIVED}:{g}，etf_{g} 整列 NaN")
-            df[f"etf_{g}"] = pd.Series(index=idx, dtype=float)
-        else:
-            df[f"etf_{g}"] = s.reindex(idx)
-    return df
+
+    def build(series: Mapping[str, pd.Series], meta: pd.DataFrame) -> pd.DataFrame:
+        df = T.build(_SPECS[spec_name], _INDEX.get(spec_name, "csi_all"),
+                     series, meta, policy=_POLICY[spec_name])
+        if not with_etf:
+            return df
+        idx = df.index
+        for g in _ETF_GROUP_KEYS:
+            s2 = series.get(f"{_ETF_DERIVED}:{g}")
+            if s2 is None:
+                _warn(f"series 里没有 {_ETF_DERIVED}:{g}，etf_{g} 整列 NaN")
+                df[f"etf_{g}"] = pd.Series(index=idx, dtype=float)
+            else:
+                df[f"etf_{g}"] = s2.reindex(idx)
+        return df
+
+    return build
 
 
 def _plain(builder: str):
@@ -355,7 +377,8 @@ def _plain(builder: str):
 
 
 _BUILDERS = {
-    "ashare_base": _build_ashare_base,
+    "ashare_base": _build_ashare("ashare_base", with_etf=True),
+    "ashare_state": _build_ashare("ashare_state", with_etf=False),
     "ashare_macro": _plain("ashare_macro"),
     "gold_base": _plain("gold_base"),
     "gold_macro": _plain("gold_macro"),

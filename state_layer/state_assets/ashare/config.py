@@ -17,7 +17,7 @@ TITLE = "中证全指"
 PRIMARY_GROUP = "short_price"
 # 多分组能力已具备，**当前只启用一组**（用户 2026-11-22：A 股状态数就是 3）。
 # 将来加 short_vol / long_price：往下面的 dict 加 key，再把名字放进这里。
-GROUPS_ENABLED = ("short_price",)
+GROUPS_ENABLED = ("short_price", "short_vol", "long_price")  # 顺序即展示顺序
 
 GROUP_TITLE = {"short_price": "短期价格", "short_vol": "短期波动",
                "long_price": "长期价格"}
@@ -43,7 +43,7 @@ GROUP_FEATURES = {
 GROUP_LABELS = {
     "short_price": ("trend_down", "range", "trend_up"),
     "short_vol": ("low", "normal", "high"),
-    "long_price": ("weak", "strong"),
+    "long_price": ("trend_down", "trend_up"),
 }
 
 # 各组特征的预热交易日数（由 features 里的 min_periods 决定，不是拍脑袋）：
@@ -68,10 +68,13 @@ FEATURES = ["ret_5", "ret_10", "er_10", "snr_10"]
 
 # 标签 → 展示名
 LABEL_NAME = {
-    # code 不变（进签名 / 因果层枚举），只改展示名：下跌 / 震荡 / 上涨
+    # code 不变（进签名 / 因果层枚举），只改展示名
     "trend_down": "下跌",
     "range": "震荡",
     "trend_up": "上涨",
+    "low": "低波",
+    "normal": "中波",
+    "high": "高波",
 }
 
 # 本资产要哪些表（**不**描述面板怎么拼——面板由 `shared.adapter` 统一提供）。
@@ -81,13 +84,10 @@ REQUIRED_TABLES = (
     "csi_all",          # OHLCV 主价格（特征 + 成交额/换手展示）
     "csi300",
     "csi1000",
-    # 下面三张表**当前面板仍在取**（`Panel.STATE_ASHARE` 还是 `ashare_base`）。
-    # 面板瘦身（只留 OHLC + 成交/换手）需要 adapter 里一个独立的 builder 函数，
-    # 尚未做——**声明必须与实现一致**，所以先留着；瘦身时一起删。
-    "margin_balance",
-    "shibor3m",
-    "etf_shares",
 )
+# 2026-11-22 面板瘦身：`Panel.STATE_ASHARE` 换成独立的 `ashare_state` spec
+# （只取 OHLC + amount/turnover/csi300/csi1000，且不挂 4 个派生列），
+# 所以 `etf_shares` / `margin_balance` / `shibor3m` 三张表不再取。
 
 
 # ======================================================================
