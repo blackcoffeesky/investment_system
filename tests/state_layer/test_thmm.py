@@ -1,13 +1,14 @@
-"""Student-t HMM 的三条基础单元测试（用户 2026-11-21 要求）。
+"""Student-t HMM 的 4 条基础单元测试（原在 `tests/hmm_state/`，2026-11-22 随 t-HMM 进生产迁移至此）。
 
-1. **Gaussian 极限**：ν→∞ 时 t 的对数密度必须趋近多元高斯。
-2. **过滤递推**：手工构造 2 状态 2 天的例子，逐日验证过滤概率与预测似然。
-3. **EM 更新**：每次迭代的观测对数似然不能下降，尺度矩阵始终正定。
+它们测的是**实现正确性**，与资产、分组无关：
+1. Gaussian 极限：ν→∞ 时 t 的对数密度必须趋近多元高斯。
+2. 过滤递推：手工构造 2 状态 2 天的例子，逐日验证过滤概率与预测似然。
+3. EM 更新：每轮观测对数似然不得下降，尺度矩阵始终正定。
+4. 截断不变性：第 t 天的过滤概率不依赖 t 之后的数据（无未来泄露的机器证明）。
 
 跑法：
 
-    python tests/run_tests.py hmm_state
-    python tests/run_tests.py            # 全量
+    python tests/run_tests.py state_layer
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ import pandas as pd
 
 def test_t_logpdf_converges_to_gaussian() -> None:
     """ν 很大时，t 密度必须等于高斯密度（差 < 1e-4）。"""
-    from experiment.hmm_state.stage3_t import gauss_logpdf, t_logpdf
+    from state_layer.model.thmm.numerics import gauss_logpdf, t_logpdf
 
     rng = np.random.default_rng(0)
     x = rng.normal(size=(200, 3)) * 1.5 + 0.3
@@ -41,7 +42,7 @@ def test_filtered_recursion_by_hand() -> None:
     发射 ∝ [4, 1] → un ∝ [1.73333, 0.56667]，和 = 2.3
     → log p(x2) = log(2.3)，post = [0.75362, 0.24638]
     """
-    from experiment.hmm_state.stage3_t import filtered_predict
+    from state_layer.model.thmm.numerics import filtered_predict
 
     a = np.array([[0.9, 0.1], [0.2, 0.8]])
     log_b = np.log(np.array([[1.0, 3.0], [4.0, 1.0]]))
@@ -55,7 +56,8 @@ def test_filtered_recursion_by_hand() -> None:
 
 def test_em_loglik_monotone_and_positive_definite() -> None:
     """EM 的观测似然不得下降；每轮尺度矩阵必须正定。"""
-    from experiment.hmm_state.stage3_t import _chol, fit_t_hmm
+    from state_layer.model.thmm.fit import fit_t_hmm
+    from state_layer.model.thmm.numerics import _chol
 
     rng = np.random.default_rng(7)
     # 两簇 + 厚尾：一个纯净的正态簇 + 一个带离群点的簇
@@ -80,7 +82,7 @@ def test_filtered_is_point_in_time() -> None:
     这条是"图上每个状态只用了过去数据"的机器证明。若实现里混进了后向递推
     （平滑）或任何全局归一化，这里会立刻失败。
     """
-    from experiment.hmm_state.stage3_t import filtered_predict
+    from state_layer.model.thmm.numerics import filtered_predict
 
     rng = np.random.default_rng(3)
     n, k = 120, 3

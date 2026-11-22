@@ -1,18 +1,25 @@
-"""模型契约测试：链上的每个模型都要满足 base.Model 的约定。"""
+"""模型契约：两个统计模型（Gaussian / Student-t）都要满足 `base.Model` 的约定。
 
+链已退役（2026-11-22）：没有 `MODELS` 注册表、没有 `claim`/`remaining_index`。
+这里测的是**模型层**的通用契约，与资产、分组无关。
+"""
+
+from __future__ import annotations
 
 import json
 
 import numpy as np
 import pandas as pd
 
-from state_layer.model import MODELS, make
+from state_layer.model import GaussianHMM, StudentTHMM
 
-#: 运行超过 10 秒（`run_tests.py --fast` 会跳过）
-SLOW = True
+CASES = (
+    (GaussianHMM, {"k": 3, "min_train": 200, "walk_forward": False}),
+    (StudentTHMM, {"k": 3, "walk_forward": False}),
+)
 
 
-def _toy(n=600, seed=0):
+def _toy(n: int = 600, seed: int = 0) -> pd.DataFrame:
     rng = np.random.default_rng(seed)
     idx = pd.bdate_range("2020-01-01", periods=n)
     return pd.DataFrame(
@@ -22,101 +29,59 @@ def _toy(n=600, seed=0):
         index=idx)
 
 
-def test_hmm_roundtrip_is_lossless():
+def _labeler(means: pd.DataFrame) -> dict[int, str]:
+    return {i: f"s{i}" for i in range(len(means))}
+
+
+def test_roundtrip_is_lossless():
     """to_dict → from_dict 后，后验必须逐位相同。"""
-
     feat = _toy()
-    model = make("hmm", {"k": 3, "min_train": 200})
-    model.fit(feat)
-    data = model.to_dict()
-    json.dumps(data)                      # 必须可 JSON 序列化
+    for cls, params in CASES:
+        model = cls(params)
+        model.fit(feat, labeler=_labeler)
+        data = model.to_dict()
+        json.dumps(data)                      # 必须可 JSON 序列化
 
-    clone = MODELS["hmm"].from_dict(data)
-    a = model.infer(feat)["proba"].to_numpy()
-    b = clone.infer(feat)["proba"].to_numpy()
-    assert np.allclose(a, b, atol=1e-12)
+        clone = cls.from_dict(data)
+        a = model.predict(feat).proba
+        b = clone.predict(feat).proba
+        assert a is not None and b is not None
+        assert np.allclose(a.to_numpy(), b.to_numpy(), atol=1e-12), cls.__name__
 
 
-def test_hmm_declares_state_params():
-    """评价函数只吃 state_params()。"""
+def test_declares_state_params():
+    """评价函数只吃 `state_params()`（模型不评价自己）。"""
     feat = _toy()
-    m = make("hmm", {"k": 3, "min_train": 200})
-    m.fit(feat)
-    params = m.state_params()
-    assert params is not None
-    assert np.asarray(params["means"]).shape[0] == 3
+    for cls, params in CASES:
+        model = cls(params)
+        model.fit(feat, labeler=_labeler)
+        p = model.state_params()
+        assert p is not None, cls.__name__
+        assert np.asarray(p["means"]).shape[0] == 3
+        assert np.asarray(p["transmat"]).shape == (3, 3)
 
 
-def test_extreme_claims_only_extreme_days():
-    """规则模型认领极端日，并把其余日期交出来。"""
+def test_valid_index_narrows_to_used_columns():
+    """`valid_index` **只用于对齐**：只按自己用到的列判断非空。
+
+    这是各组日期取交集的基础——模型不该被自己用不到的列的 NaN 挡住。
+    """
     feat = _toy()
-    feat.loc[feat.index[100], "log_return"] = 0.20     # 造一个极端日
-    m = make("extreme", {"sigma": 3.0})
-    unclaimed = m.fit(feat)
+    feat.loc[feat.index[10], "volume_z"] = np.nan
 
-    assert feat.index[100] not in unclaimed
-    assert len(m.labels_) >= 1
-    assert m.state_params() is None                    # 没有概率分布
-    assert m.infer(feat)["proba"] is None
+    narrow = GaussianHMM({"k": 3, "features": ["log_return", "realized_vol_20"]})
+    assert feat.index[10] in narrow.valid_index(feat)
+
+    uses_volume = GaussianHMM({"k": 3, "features": ["volume_z"]})
+    assert feat.index[10] not in uses_volume.valid_index(feat)
 
 
-def test_chain_filters_between_models():
-    """上一个模型交出的日期，下一个模型才处理。"""
+def test_fit_without_labeler_keeps_numeric_states():
+    """不传 labeler 也能训练：状态是编号，`labels_` 为空（命名是资产的事）。"""
     feat = _toy()
-    feat.loc[feat.index[100], "log_return"] = 0.20
-
-    ext = make("extreme", {"sigma": 3.0})
-    remaining = ext.fit(feat)
-    hmm = make("hmm", {"k": 3, "min_train": 200})
-    labeler = lambda means: {i: f"s{i}" for i in range(len(means))}   # noqa: E731
-    left = hmm.fit(feat, claim=remaining, labeler=labeler)
-
-    assert len(left) == 0, "最后一环应该认领剩下的全部"
-    assert hmm.labels_ is not None and len(hmm.labels_) == len(remaining)
-    assert feat.index[100] not in hmm.labels_.index
-
-
-def test_extreme_valid_index_ignores_irrelevant_nan():
-    """规则模型只看两列，别的列有 NaN 不该挡住它。"""
-    feat = _toy()
-    feat.loc[feat.index[50], "volume_z"] = np.nan       # 规则用不到的列
-    feat.loc[feat.index[100], "log_return"] = 0.20      # 造一个极端日
-
-    ext = make("extreme", {"sigma": 3.0})
-    assert feat.index[50] in ext.valid_index(feat), "不该因为 volume_z 有 NaN 就放弃这一行"
-    assert feat.index[100] in ext.valid_index(feat)
-
-
-def test_chain_infer_skips_extreme_days_for_hmm():
-    """推断也要按链走：HMM 看不到极端日，与 fit 时的输入一致。"""
-    from state_layer.model import run_infer
-
-    feat = _toy()
-    feat.loc[feat.index[100], "log_return"] = 0.20
-
-    ext = make("extreme", {"sigma": 3.0})
-    ext.fit(feat)
-    hmm = make("hmm", {"k": 3, "min_train": 200})
-    hmm.fit(feat, claim=ext.fit(feat),
-            labeler=lambda m: {i: f"s{i}" for i in range(len(m))})
-
-    res = run_infer([ext, hmm], feat)
-    assert feat.index[100] in res["states"].index, "极端日应由 extreme 认领"
-    assert res["states"][feat.index[100]].startswith("extreme")
-    assert res["proba"] is not None
-    assert feat.index[100] not in res["proba"].index, "HMM 的后验不该覆盖极端日"
-
-
-def test_labeler_required():
-    """没有 labeler 时必须报错，不能静默产出空标签。"""
-    from state_layer import fit as fit_mod
-
-    import pandas as pd
-    import tempfile
-    # 只验证函数级前置条件，不真的跑拟合
-    try:
-        fit_mod.fit_pipeline("ashare", pd.DataFrame(), labeler=None, verbose=False)
-    except ValueError as e:
-        assert "labeler" in str(e)
-    except Exception:
-        pass          # 面板为空时可能先在别处报错，这条只守 labeler 检查
+    for cls, params in CASES:
+        model = cls(params)
+        model.fit(feat, labeler=None)
+        assert model.states_ is not None and len(model.states_)
+        assert model.labels_ is None
+        assert model.states_.dtype.kind == "i"

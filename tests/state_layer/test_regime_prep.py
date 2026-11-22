@@ -59,17 +59,18 @@ def test_prep_accepts_dict_scaler():
 
 def test_fit_and_recompute_agree():
     """fit 之后用在线路径重算最后一天后验，必须与存储值一致。"""
+    from state_layer.model.base import to_numpy
     from state_layer.model.hmm import fit as RE
-    from state_layer.model.hmm import serialize as S
-    from state_layer.model.hmm import _ops as H
+    from shared.utils.data_processing import fit_bounds
+    from state_layer.model.hmm.params import rebuild
 
     feat = _toy_features(600)
     fit = RE.fit_regime(feat, k=3, seed=0)
     labels, proba, last = fit.walk_forward(feat, labeler=lambda m: {i: f"s{i}" for i in range(len(m))},
                                            min_train=200, refit_every=100)
-    spec = {**S.to_numpy(last), "fit_id": "x"}
+    spec = {**to_numpy(last), "fit_id": "x"}
     pick = feat.loc[: labels[labels != ""].index[-1]]
-    lo, hi = H.fit_window_bounds(pick)
+    lo, hi = fit_bounds(pick)
     X = prep_features(pick, {"mean": spec["scaler_mean"], "scale": spec["scaler_scale"]}, lo, hi)
-    p = S.rebuild(spec).predict_proba(X)[-1]
+    p = rebuild(spec).predict_proba(X)[-1]
     assert np.allclose(p, proba.iloc[-1].to_numpy(), atol=1e-9)

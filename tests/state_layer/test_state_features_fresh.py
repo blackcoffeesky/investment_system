@@ -50,7 +50,10 @@ def test_feature_columns_reach_latest_trading_day():
     if close.empty:
         return                      # 空库（新环境）不判，与其它测试一致
 
-    feats = pkg.features.build(panel)
+    import pandas as pd
+
+    # 2026-11-22 起特征按**分组**构造（当前只启用 short_price）
+    feats = pd.concat(pkg.features.build_groups(panel).values(), axis=1)
     anchor = close.index[-1]
 
     bad: dict[str, str] = {}
