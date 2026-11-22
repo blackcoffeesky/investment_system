@@ -18,7 +18,8 @@ from pathlib import Path
 import pandas as pd
 
 from datahub.fin import check as C
-from datahub.fin.check import find_gaps, is_trading_day, write_guard
+from datahub.fin.check import find_gaps, is_trading_day
+from datahub.fin.sources.guard import write_guard
 from datahub.fin.sources import fuyao as F
 
 
@@ -102,10 +103,22 @@ def test_write_guard_allows_a_fresh_trading_day():
     assert ok is True and why == "", (ok, why)
 
 
-def test_fuyao_no_longer_implements_guard_logic():
-    """守卫判定**只能有一份**（AGENTS §4）。fuyao 只许调用，不许自己实现。"""
-    for name in ("write_guard", "find_gaps", "is_trading_day"):
-        assert hasattr(C, name), f"{name} 应该在 fin/check.py"
+def test_guard_and_calendar_have_single_home():
+    """判定逻辑**只能有一份**（AGENTS §4）。fuyao 只许调用，不许自己实现。
+
+    2026-11-22 定下的家：日历 → `shared.utils.trading_calendar`；
+    `find_gaps` → `fin/check.py`；`write_guard` → `sources/guard.py`。
+    """
+    from datahub.fin import check as C2
+    from datahub.fin.sources import guard as G
+
+    assert hasattr(C2, "find_gaps"), "find_gaps 应该在 fin/check.py"
+    assert hasattr(G, "write_guard"), "write_guard 应该在 sources/guard.py"
+    assert not hasattr(C2, "write_guard"), "write_guard 不该留在 check.py（那是写库概念）"
+    for name in ("trading_days", "expected_periods", "is_trading_day",
+                 "last_closed_trading_day"):
+        assert getattr(C2, name).__module__ == "shared.utils.trading_calendar", \
+            f"{name} 应该来自 shared.utils.trading_calendar"
     for name in ("daily_write_guard", "_is_trading_day", "trading_days_between"):
         assert not hasattr(F, name), f"fuyao.py 里不该再有自己的 {name}（会漂）"
 

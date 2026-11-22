@@ -372,7 +372,7 @@ def stock_daily_delta(**_ignored) -> pd.DataFrame:
     df = pd.concat(pages, ignore_index=True)
     assert trade_date is not None
 
-    from datahub.fin.check import write_guard
+    from datahub.fin.sources.guard import write_guard
 
     ok, reason = write_guard("stock_daily", trade_date, source="stock_daily", now=now)
     if not ok:
