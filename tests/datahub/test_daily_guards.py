@@ -26,7 +26,8 @@ def _now(s: str) -> pd.Timestamp:
     return pd.Timestamp(s, tz="Asia/Shanghai")
 
 
-def _db_with(dates: list[str]) -> Path:
+def _db_with(dates) -> Path:
+    dates = [str(pd.Timestamp(d).date()) for d in dates]   # 兼容 DatetimeIndex
     db = Path(tempfile.gettempdir()) / f"dh_gaps_{abs(hash(tuple(dates))) % 10**8}.sqlite"
     if db.exists():
         db.unlink()
@@ -141,3 +142,75 @@ def test_historical_batch_rejects_more_than_10_codes():
 
 def test_is_trading_day_saturday_is_false():
     assert is_trading_day("2026-11-21") is False
+
+
+# --------------------------------------------------- 交易日历（2026-11-22 修复）
+def test_expected_dates_cn_has_no_weekends():
+    """`expected_dates` 依赖的 `trading_days` **只能有一份**。
+
+    2026-11-22 的 bug：`check.py` 里出现了第二个同名 `trading_days`（返回 `list[str]`），
+    把带 `market` 的那个**覆盖**了 → `expected_dates` 按位置传参变成
+    `trading_days("CN", "2026-11-10", ...)` → `DateParseError` →
+    `check.run()` 里 17 张日频表全报「日历失败」，**逐日缺口检查整体失效**。
+    """
+    from datahub.fin.check import expected_dates
+
+    d = expected_dates("D", "CN", "2026-11-10", "2026-11-20")
+    assert len(d) >= 7, f"CN 交易日只有 {len(d)} 天"
+    assert all(x.weekday() < 5 for x in d), "交易日里出现了周末"
+    assert str(d[0].date()) == "2026-11-10" and str(d[-1].date()) == "2026-11-20"
+
+
+def test_expected_dates_us_market():
+    """`xau_usd` 是 US 市场（就是这个 market 在 11-22 报的 `DateParseError`）。"""
+    from datahub.fin.check import expected_dates
+
+    d = expected_dates("D", "US", "2026-11-10", "2026-11-20")
+    assert len(d) >= 7, f"US 交易日只有 {len(d)} 天"
+    assert all(x.weekday() < 5 for x in d)
+
+
+def test_find_gaps_agrees_with_check_run():
+    """**一致性**：同一张表、同一个洞，`find_gaps` 和 `check.run` 要报同一批日期。"""
+    from datahub.core.schema import DATA_DDL
+    from datahub.fin.check import find_gaps, run
+
+    db = Path(tempfile.gettempdir()) / "dh_gap_agree.sqlite"
+    if db.exists():
+        db.unlink()
+    days = [str(d.date()) for d in C.trading_days("2026-11-02", "2026-11-20")]
+    holes = [d for d in days if d in ("2026-11-11", "2026-11-12")]
+    assert len(holes) == 2, "前提：11-11/11-12 是交易日"
+    keep = [d for d in days if d not in holes]
+
+    con = sqlite3.connect(str(db))
+    con.executescript(DATA_DDL)
+    con.execute("CREATE TABLE t (date TEXT PRIMARY KEY, value REAL)")
+    con.executemany("INSERT INTO t VALUES (?,1.0)", [(d,) for d in keep])
+    con.execute("INSERT INTO metadata(name, kind, freq, market, start_date, end_date, n_rows) "
+                "VALUES ('t','single','D','CN',?,?,?)", (keep[0], keep[-1], len(keep)))
+    con.commit()
+    con.close()
+
+    gaps = find_gaps("t", lookback=20, path=db)
+    assert set(holes) <= set(gaps), f"find_gaps 没报出洞：{gaps}"
+
+    rows = run(path=db)
+    row = rows[rows["name"] == "t"]
+    assert len(row) == 1, f"check.run 没报这张表：{rows.to_string()}"
+    issues = str(row.iloc[0]["issues"])
+    assert "缺" in issues, issues
+    for h in holes:                      # 两个洞都要在 check.run 的文案里
+        assert h in issues, f"{h} 没进 check.run 的文案：{issues}"
+    db.unlink()
+
+
+def test_check_run_marks_calendar_failure_separately():
+    """**日历失败 ≠ 数据有问题**：前者是"检查没跑成"，要单独标 `check_failed`。"""
+    from datahub.fin.check import run
+
+    rows = run()
+    assert "status" in rows.columns, "check.run 必须带 status 列"
+    assert set(rows["status"].unique()) <= {"data", "check_failed"}
+    failed = rows[rows["status"] == "check_failed"]
+    assert len(failed) == 0, f"日历仍然在失败：{failed[['name', 'issues']].to_string()}"

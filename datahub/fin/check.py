@@ -37,14 +37,26 @@ _PERIOD = {"M": "M", "Q": "Q", "Y": "Y"}
 _DUP_LABEL = {"M": "同月", "Q": "同季", "Y": "同年"}
 
 
-def trading_days(market: str, start: str, end: str) -> pd.DatetimeIndex:
-    """某市场的交易日（不含周末与节假日）。"""
-    import pandas_market_calendars as mcal
+def trading_days(start: str, end: str, market: str = "CN") -> pd.DatetimeIndex:
+    """某市场的交易日（不含周末与节假日）。
 
-    name = _MARKET_ALIAS.get(str(market).upper(), str(market))
-    cal = mcal.get_calendar(name)
-    sched = cal.schedule(start_date=pd.Timestamp(start), end_date=pd.Timestamp(end))
-    return pd.DatetimeIndex(sched.index).normalize()
+    ⚠️ **全库只有这一个 `trading_days`**（2026-11-22 合并）：
+    之前 `check.py` 里有第二个同名函数返回 `list[str]`，把本函数**覆盖**掉了，
+    于是 `expected_dates` 按老签名调用变成 `trading_days("CN", "2026-11-10", ...)` →
+    `DateParseError` → `check.run()` 里 **17 张日频表全报「日历失败」**，
+    逐日缺口检查**整体失效**（页面上却只像一条普通 issue）。
+
+    拿不到日历（未装 `pandas_market_calendars` / 该市场没日历）→ 退回工作日。
+    """
+    try:
+        import pandas_market_calendars as mcal
+
+        name = _MARKET_ALIAS.get(str(market).upper(), str(market))
+        cal = mcal.get_calendar(name)
+        sched = cal.schedule(start_date=pd.Timestamp(start), end_date=pd.Timestamp(end))
+        return pd.DatetimeIndex(sched.index).normalize()
+    except Exception:  # noqa: BLE001
+        return pd.bdate_range(start, end)
 
 
 def expected_dates(freq: str, market: str, start: str, end: str) -> pd.DatetimeIndex:
@@ -56,11 +68,11 @@ def expected_dates(freq: str, market: str, start: str, end: str) -> pd.DatetimeI
     if str(market).upper() == "NONE" and freq == "D":
         return pd.DatetimeIndex(pd.date_range(start, end, freq="D")).normalize()
     if freq == "D":
-        return trading_days(market, start, end)
+        return trading_days(start, end, market=market)
     if str(market).upper() == "NONE":
         rule = {"W": "W", "M": "ME", "Q": "QE", "Y": "YE"}[freq]
         return pd.DatetimeIndex(pd.date_range(start, end, freq=rule)).normalize()
-    days = trading_days(market, start, end)
+    days = trading_days(start, end, market=market)
     if len(days) == 0:
         return days
     s = pd.Series(1, index=days)
@@ -217,7 +229,14 @@ def run(path: Path | None = None, recent_days: int = 90) -> pd.DataFrame:
         try:
             exp = expected_dates(freq, market, start, end)
         except Exception as e:  # noqa: BLE001
-            rows.append({"name": name, "issues": f"日历失败 {type(e).__name__}: {e}"})
+            # **检查本身没跑成**，不是"数据有问题"：标成 check_failed，
+            # 调用方要能分清（2026-11-22：17 张日频表全报「日历失败」，页面上
+            # 却只像一条普通 issue，真实缺口一条也检不出来）。
+            print(f"[check] {name}：日历失败（检查没跑成）{type(e).__name__}: {e}",
+                  file=sys.stderr)
+            rows.append({"name": name, "freq": str(m.get("freq") or ""),
+                         "issues": f"日历失败 {type(e).__name__}: {e}",
+                         "status": "check_failed"})
             continue
 
         issues: list[str] = []
@@ -263,7 +282,14 @@ def run(path: Path | None = None, recent_days: int = 90) -> pd.DataFrame:
                 issues.append(hint)
             rows.append({"name": name, "freq": freq, "market": market,
                          "n": len(obj), "issues": "；".join(issues)})
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    if len(df):
+        # `status`：`data` = 数据真有问题；`check_failed` = 检查本身没跑成。
+        # 两者都不该被静默，但排查方向完全不同——别混成一种。
+        if "status" not in df.columns:
+            df["status"] = "data"
+        df["status"] = df["status"].fillna("data")
+    return df
 
 
 if __name__ == "__main__":
@@ -440,20 +466,10 @@ def freshness(tables=None, *, today: str | pd.Timestamp | None = None,
 # 长在源里，第二个源要用就变成第二份副本，必然漂移（AGENTS §4「数据只在一处定义」）。
 
 
-def trading_days(start: str, end: str, market: str = "CN") -> list[str]:
-    """[start, end] 的交易日（`YYYY-MM-DD`）。日历拿不到就退回工作日。"""
-    try:
-        d = expected_dates("D", market, start, end)
-        if len(d):
-            return [str(x.date()) for x in d]
-    except Exception:  # noqa: BLE001
-        pass
-    return [str(x.date()) for x in pd.bdate_range(start, end)]
-
-
 def is_trading_day(day: str, market: str = "CN") -> bool:
     """这天是不是交易日。拿不到日历就退回"工作日"（周六周日一定不是）。"""
-    return str(day)[:10] in trading_days(str(day)[:10], str(day)[:10], market)
+    d = trading_days(str(day)[:10], str(day)[:10], market)
+    return len(d) == 1
 
 
 def last_closed_trading_day(now: pd.Timestamp | None = None,
@@ -468,7 +484,9 @@ def last_closed_trading_day(now: pd.Timestamp | None = None,
     if now.hour * 60 + now.minute >= 15 * 60 + 30 and is_trading_day(today, market):
         return today
     days = trading_days(str((now - pd.Timedelta(days=30)).date()), today, market)
-    return days[-2] if len(days) >= 2 else (days[-1] if days else today)
+    if len(days) >= 2:
+        return str(days[-2].date())
+    return str(days[-1].date()) if len(days) else today
 
 
 def find_gaps(table: str, lookback: int = 20, *, path: Path | None = None) -> list[str]:
@@ -484,7 +502,7 @@ def find_gaps(table: str, lookback: int = 20, *, path: Path | None = None) -> li
     now = pd.Timestamp.now(tz="Asia/Shanghai")
     end = last_closed_trading_day(now)
     days = trading_days(str((pd.Timestamp(end) - pd.Timedelta(days=lookback * 3)).date()), end)
-    window = days[-lookback:] if len(days) > lookback else days
+    window = [str(d.date()) for d in (days[-lookback:] if len(days) > lookback else days)]
     if not window:
         return []
     con = _conn(path)

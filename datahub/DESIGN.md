@@ -1188,3 +1188,34 @@ missing = [d for d in recent if d not in 库里已有的日期]
 **周五收盘**。只判"日期==今天"的守卫放行 → 5,572 行 11-20 的数据被标成 11-21
 （逐字段相同，已删除）。**"日期==今天"不等于"这行数据是今天的"**——
 还必须问"今天真的是交易日吗"。
+
+### 25.4 一个"整体失效但看起来正常"的 bug（2026-11-22）
+
+重构时 `check.py` 里出现了**两个同名 `trading_days`**：
+
+```python
+def trading_days(market, start, end) -> pd.DatetimeIndex   # line 40，老签名
+def trading_days(start, end, market="CN") -> list[str]     # line 443，我新加的
+```
+
+Python 只留最后一个 → `expected_dates` 里按**位置**传参变成
+`trading_days("CN", "2026-11-10", "2026-11-20")` → `DateParseError: unable to parse: CN`
+→ `check.run()` 里 **17 张日频表全报「日历失败」**，**逐日缺口检查整体没在跑**。
+
+而它在页面上只是 `issues` 里的一条文字；测试 49/49 全绿（没有测试直接调
+`expected_dates("D", ...)`，而新测试恰好走的是被覆盖后的那个签名）。
+
+**三条修法与教训**：
+
+1. **合并成一个** `trading_days(start, end, market="CN") -> pd.DatetimeIndex`，
+   `expected_dates` 两处调用改成**关键字传参**（`market=market`）——别靠位置。
+2. **`check.run()` 的 `except` 不许把"检查没跑成"混进 `issues`**：现在每行带
+   `status`，取值 `data`（数据真有问题）/ `check_failed`（检查本身失败），
+   失败同时打到 stderr。
+3. **测试要覆盖"被依赖的函数签名"**：新增
+   `test_expected_dates_cn_has_no_weekends` / `..._us_market`（US 就是当日报错的市场）、
+   `test_find_gaps_agrees_with_check_run`（人为造洞，两个入口报同一批日期）、
+   `test_check_run_marks_calendar_failure_separately`。
+
+**通用教训**：同名函数覆盖 + 位置传参 = **静默的签名错位**。
+加函数前先 `grep "def <名字>"`；调用自己模块的函数**尽量用关键字**。
