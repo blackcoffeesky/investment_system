@@ -128,8 +128,7 @@ DERIVED_COLS = (...)   # 其中"耦合层算好、我只搬进来"的那几列
 | `pipeline.py` | **出卡编排**：面板 → 状态 → 信号 → 卡片（数据由调用方传入） |
 | `cli.py` | 子命令：`regime` / `edges` / `audit` |
 | `evaluate.py` | 评估口径：Rank IC、分层收益、参数回收 |
-| `utils/calendar.py` | 交易日历与对齐 |
-| `utils/zscore.py` | 滚动 z（按边自身频率） |
+| （原 `utils/` 已迁走） | 日期对齐在 `shared/utils/time_align.py`（`to_daily` / `build` / `daily_index`）；滚动 z 在 `shared/utils/data_processing.py`（`periodic_z` / `edge_z`）。**不要引 `shared.utils.calendar`**——2026-11-22 已删除，三个函数在 production 里没有使用者 |
 
 ### 4.2 `causual_assets/`（资产插件）
 

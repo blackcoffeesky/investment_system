@@ -15,7 +15,6 @@ import pandas as pd
 
 from shared.adapter import Panel, tables_of
 from shared.utils import data_processing as dp
-from shared.utils.calendar import merge_shared_nodes
 from causual.causual_core import snapshot
 from causual.causual_core.estimators import EdgeModel, fit_all
 from causual.web.render import build_card, build_console

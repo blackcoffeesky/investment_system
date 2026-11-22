@@ -51,7 +51,7 @@ causual/
 │   ├── narrative.py             # 卡片渲染（总览 / 详情 / 控制台）
 │   ├── card_split.py            # 把完整卡拆成日频卡 / 月频卡
 │   ├── snapshot.py / evaluate.py
-│   └── utils/{calendar,zscore}.py
+│   └── （原 utils/ 已迁到 shared/utils/：time_align.py、data_processing.py）
 ├── causual_assets/
 │   ├── common.py                # 面板组装公用件（列名映射 + 公布滞后）
 │   ├── ashare/{pipeline,config}.py
