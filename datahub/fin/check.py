@@ -133,6 +133,11 @@ def run(path: Path | None = None, recent_days: int = 90) -> pd.DataFrame:
     import datahub.fin as fin
 
     cutoff = str((pd.Timestamp.today() - pd.Timedelta(days=recent_days)).date())
+    # **有意冻结的表**（`SOURCES` 里 `enabled=False`）不参与 check：
+    # 它们不是"忘了跑"，报出来只会和 `freshness` 的结论互相打脸
+    # （2026-11-22 回归：切分 check 时把这段过滤丢了，冻结表又回到问题清单）。
+    frozen = _frozen_tables()
+    skipped_frozen: list[str] = []
     rows = []
     for m in meta.to_dict("records"):
         name = m["name"]
@@ -155,6 +160,9 @@ def run(path: Path | None = None, recent_days: int = 90) -> pd.DataFrame:
                 print(f"  {name}: ok（eav，{info.get('rows'):,} 行 / "
                       f"{info.get('entities', '?')} 只 / {info.get('periods', '?')} 期，"
                       f"最新 {info.get('latest')}）")
+            continue
+        if name in frozen:
+            skipped_frozen.append(name)
             continue
         try:
             obj = fin.read(name, path=path)
@@ -227,6 +235,7 @@ def run(path: Path | None = None, recent_days: int = 90) -> pd.DataFrame:
                 issues.append(hint)
             rows.append({"name": name, "freq": freq, "market": market,
                          "n": len(obj), "issues": "；".join(issues)})
+    _announce_frozen(frozen, skipped_frozen)
     df = pd.DataFrame(rows)
     if len(df):
         # `status`：`data` = 数据真有问题；`check_failed` = 检查本身没跑成。
@@ -287,7 +296,8 @@ def _announce_frozen(frozen: set[str], skipped: list[str]) -> None:
     if _FROZEN_ANNOUNCED or not skipped:
         return
     _FROZEN_ANNOUNCED = True
-    print(f"[新鲜度] 跳过 {len(skipped)} 张已冻结的表（源 enabled=False，有意停更）："
+    # 前缀用 `[datahub]` 而不是 `[新鲜度]`：`freshness` 和 `check` 共用这一条通知
+    print(f"[datahub] 跳过 {len(skipped)} 张已冻结的表（源 enabled=False，有意停更）："
           f"{' / '.join(sorted(skipped))}", file=sys.stderr)
 
 

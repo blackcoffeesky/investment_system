@@ -278,3 +278,39 @@ def test_unacked_filters_by_day_and_by_period():
     assert unacked(["2026-09-30", "2026-10-31"], {"2026-09-15"}, "M") == ["2026-10-31"]
     # Q：按季
     assert unacked(["2026-06-30", "2026-09-30"], {"2026-05-01"}, "Q") == ["2026-09-30"]
+
+
+def test_run_skips_frozen_tables():
+    """**有意冻结**的表不进 `check.run()`（2026-11-22 回归：切分 check 时丢过这段）。
+
+    用户要求"eav / frozen 的处理函数照旧"。丢了过滤的后果是同一张表
+    `freshness` 说"有意冻结、跳过"、`check` 说"缺 24 天"——两处结论互相打脸。
+
+    造两张都停更的表：`industrial_yoy`（`SOURCES` 里 `enabled=False`，冻结）
+    和 `cpi_yoy`（正常源，真缺数）→ `run()` **只报后者**。
+    """
+    from datahub.core.schema import DATA_DDL
+    from datahub.fin.check import _frozen_tables, run
+
+    assert "industrial_yoy" in _frozen_tables(), "前提：industrial_yoy 是冻结源"
+    assert "cpi_yoy" not in _frozen_tables(), "前提：cpi_yoy 不是冻结源"
+
+    db = Path(tempfile.gettempdir()) / "dh_frozen_run.sqlite"
+    if db.exists():
+        db.unlink()
+    con = sqlite3.connect(str(db))
+    con.executescript(DATA_DDL)
+    for name in ("industrial_yoy", "cpi_yoy"):
+        con.execute(f'CREATE TABLE "{name}" (date TEXT PRIMARY KEY, value REAL)')
+        con.executemany(f'INSERT INTO "{name}" VALUES (?,1.0)',
+                        [("2025-06-30",), ("2025-07-31",), ("2025-08-31",)])
+        con.execute("INSERT INTO metadata(name, kind, freq, market, start_date, end_date, n_rows) "
+                    "VALUES (?,?, 'M', 'CN', '2025-06-30', '2025-08-31', 3)", (name, "single"))
+    con.commit()
+    con.close()
+
+    rows = run(path=db)
+    names = set(rows["name"]) if len(rows) else set()
+    assert "industrial_yoy" not in names, f"冻结表不该被报：{rows.to_string()}"
+    assert "cpi_yoy" in names, f"正常源缺数却没报：{rows.to_string()}"
+    db.unlink()

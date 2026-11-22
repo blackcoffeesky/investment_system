@@ -1278,3 +1278,41 @@ SPARSE 表的「最近一条停在 X」也**统一成了 `stale`**，不再两�
 - `find_gaps` 在 `check.py`、`write_guard` 在 `sources/guard.py`，`write_guard` **不许**在 `check.py`
 - `trading_days` / `expected_periods` / `is_trading_day` / `last_closed_trading_day`
   的 `__module__` 必须是 `shared.utils.trading_calendar`
+
+### 26.5 回归：`run()` 丢了冻结表过滤（2026-11-22）
+
+切分 `check` 时我把「冻结表不进问题清单」这段过滤丢了，结果同一张表：
+
+```
+freshness  : 有意冻结、跳过
+check.run  : industrial_yoy 最新停在 2025-08-31，应到 2026-10-31；近期缺 3 天
+```
+
+**两处结论互相打脸。** 用户对 eav / frozen 的处理明确说过"照旧"，
+所以这是偏离要求，不是设计选择。
+
+修法：`run()` 开头算一次 `_frozen_tables()`，循环里 `continue` 并记下，
+返回前复用 `_announce_frozen()` 打一次通知（**不另造一套打印**）；
+通知前缀从 `[新鲜度]` 改成 `[datahub]`（`freshness` 与 `check` 共用这一条）。
+
+修后：问题表 **30 → 27、零冻结表**。剩下的 27 张里：
+
+| 性质 | 张数 |
+|---|---|
+| 真该看（`overdue=True`） | 20 |
+| **源还没发布**（`overdue=False`：`gold_etf_flow` / `vix` / `usdcny` / `usd_index` / `fed_rate` / `real_yield_10y`） | 6 |
+| `freshness` 里没有（`gold_cot_net_long` 周频） | 1 |
+
+后 6 张是"`find_gaps` 不吃 `lag_days`"的直接后果——**原则我认同**（否则就有两套 lag），
+但页面层需要能区分「缺，但源还没发」与「缺，且已超宽限」。
+**候选方案（等用户拍板，未做）**：`run()` 每行加一列 `within_grace: bool`
+（该表在 `freshness` 里 `overdue=False` 即 `True`），`/data` 据此分开展示。
+
+### 26.6 记录：`finances` 的 metadata 频率是错的
+
+`find_gaps("finances")` 返回 `freq=D`、`expected_latest=""`。查 `metadata`：
+`freq=D, market=NONE, kind=eav` —— **metadata 自己把频率写错了**（原始数据是季报）。
+
+现在被 `_frozen_tables()` 挡着，没造成误报；但**等 `finances` 解冻那天**，这个 `freq=D`
+会让它天天报缺口。**记录在案，不现在改**：改 `metadata.freq` 会连带影响 `freshness` 的
+lag 判定（那是另一条链）。
