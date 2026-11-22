@@ -146,16 +146,16 @@ def test_is_trading_day_saturday_is_false():
 
 # --------------------------------------------------- 交易日历（2026-11-22 修复）
 def test_expected_dates_cn_has_no_weekends():
-    """`expected_dates` 依赖的 `trading_days` **只能有一份**。
+    """`expected_periods` 依赖的 `trading_days` **只能有一份**（现在在 shared）。
 
     2026-11-22 的 bug：`check.py` 里出现了第二个同名 `trading_days`（返回 `list[str]`），
     把带 `market` 的那个**覆盖**了 → `expected_dates` 按位置传参变成
     `trading_days("CN", "2026-11-10", ...)` → `DateParseError` →
     `check.run()` 里 17 张日频表全报「日历失败」，**逐日缺口检查整体失效**。
     """
-    from datahub.fin.check import expected_dates
+    from shared.utils.trading_calendar import expected_periods
 
-    d = expected_dates("D", "CN", "2026-11-10", "2026-11-20")
+    d = expected_periods("D", "CN", "2026-11-10", "2026-11-20")
     assert len(d) >= 7, f"CN 交易日只有 {len(d)} 天"
     assert all(x.weekday() < 5 for x in d), "交易日里出现了周末"
     assert str(d[0].date()) == "2026-11-10" and str(d[-1].date()) == "2026-11-20"
@@ -163,9 +163,9 @@ def test_expected_dates_cn_has_no_weekends():
 
 def test_expected_dates_us_market():
     """`xau_usd` 是 US 市场（就是这个 market 在 11-22 报的 `DateParseError`）。"""
-    from datahub.fin.check import expected_dates
+    from shared.utils.trading_calendar import expected_periods
 
-    d = expected_dates("D", "US", "2026-11-10", "2026-11-20")
+    d = expected_periods("D", "US", "2026-11-10", "2026-11-20")
     assert len(d) >= 7, f"US 交易日只有 {len(d)} 天"
     assert all(x.weekday() < 5 for x in d)
 
