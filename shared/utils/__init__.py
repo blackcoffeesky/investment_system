@@ -7,11 +7,12 @@
 
 模块清单
 --------
+- `trading_calendar` 交易日历（哪几天开市 / 某频率应有哪些日期）
 - `time_align`     lag 推后 / 日频对齐 / 低频聚合（2026-11-15 由 panel_align 改名）
 - `panel_align`    **兼容 shim**，转发 time_align
 - `data_processing` 标准化、滚动 z
 """
 
-from shared.utils import data_processing, time_align
+from shared.utils import data_processing, time_align, trading_calendar
 
-__all__ = ["data_processing", "time_align"]
+__all__ = ["data_processing", "time_align", "trading_calendar"]

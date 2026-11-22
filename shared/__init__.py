@@ -11,6 +11,6 @@
 
 """
 
-from shared.utils import data_processing, time_align
+from shared.utils import data_processing, time_align, trading_calendar
 
-__all__ = ["data_processing", "time_align"]
+__all__ = ["data_processing", "time_align", "trading_calendar"]
