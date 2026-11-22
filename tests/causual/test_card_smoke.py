@@ -30,14 +30,13 @@ def _generate(asset: str) -> tuple[Path, str, list[Path]]:
     """
 
     from causual.causual_core import pipeline
-    from causual.causual_core.cli import _freshness, _load_panel
+    from causual.causual_core.cli import _freshness, _load_panel, state_view
     from causual.port import get_port as causal_port
-    from state_layer.port import get_port as state_port
 
-    sp = state_port()
-    # 装配点取一次面板，喂给状态层和因果层（2026-11-16 起两边都只收 DataFrame）
+    # 装配点取一次面板，喂给状态层和因果层（2026-11-16 起两边都只收 DataFrame）；
+    # `state_view()` 会把 v2 的画像表一起补进来（spec 里没有 profile）
     panel = _load_panel(asset)
-    view = sp.state_view(asset, panel)
+    view = state_view(asset, panel)
     rows = _freshness(asset, panel)
     path = pipeline.run(asset, panel, freshness=rows, state=view, quiet=True)
 

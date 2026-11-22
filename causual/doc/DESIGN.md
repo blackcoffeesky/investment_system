@@ -107,6 +107,25 @@ DERIVED_COLS = (...)   # 其中"耦合层算好、我只搬进来"的那几列
 - 但**别把运行时当唯一防线**：卡片是定时任务，崩在凌晨没人看得见。
   改了 adapter 的 `COLUMNS` 而没同步这里，测试当场红——这就是那条等式测试的意义。
 
+### 3.4 状态层的 `spec` 有两种结构（运行时两种都可能）
+
+状态层重构成"多分组"后，`state["spec"]` 有两种形状，`store.spec_any` 会回退读旧的
+`current.json`，所以 causual **必须两种都能吃**：
+
+| | legacy（`current.json`） | v2（`spec.json`，`schema="estimator-v2"`） |
+|---|---|---|
+| 签名 | `spec["data"]["label_signature"]` | `spec["groups"][spec["primary"]]["label_signature"]` |
+| 分组 | 无 | `groups`：A 股 `short_price`、黄金 `raw`。**每资产每分组各一个签名**——"这个资产只有一个签名"这句话不再成立 |
+| 画像 | `spec["data"]["profile"]`（fit 时的快照） | **不在 spec 里**——由 `StatePort.profile(asset, panel)` 现算 |
+
+读法：**按 `schema` 分支**，不靠 `try/except KeyError` 猜（那会把"结构写错"和"结构是旧版"
+混成同一件事）。这一层收在 `causual_core/spec.py`：4 处读签名、2 处读画像都调它。
+
+**画像怎么进卡片**：`profile` 是现算的，所以由**装配点**放进 `state["profile"]`——
+`cli.state_view()` 这个 helper 三个装配点共用（CLI、`web/routes.py`、测试）。
+核心代码只读 `state["profile"]`；两样都没有时打一行 stderr 并给空表，
+不许静默渲染一张空画像表还装作正常。
+
 ---
 
 ## 4. 文件职责
@@ -123,6 +142,7 @@ DERIVED_COLS = (...)   # 其中"耦合层算好、我只搬进来"的那几列
 | ~~`freshness.py`~~ | **已删（2026-11-18）**：判定口径搬回数据层（见 §8.1）；本模块只剩 `pipeline._notes`（拼句子）与 `_month_of`（归档月） |
 | `narrative.py` | 渲染总览卡与详情卡（Markdown） |
 | `snapshot.py` | 边快照的读写（`causual/data/snapshots/`） |
+| `spec.py` | **吃两种状态层 spec 结构**：`label_signature_of(spec)` / `primary_group(spec)` / `profile_of(spec)`（见 §3.4） |
 | `regime_fit.py` | 拟合 HMM 状态模型并落盘 |
 | `regime_infer.py` | 用已拟合模型外推最新标签 |
 | `pipeline.py` | **出卡编排**：面板 → 状态 → 信号 → 卡片（数据由调用方传入） |

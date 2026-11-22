@@ -16,6 +16,7 @@ import pandas as pd
 from shared.adapter import Panel, tables_of
 from shared.utils import data_processing as dp
 from causual.causual_core import snapshot
+from causual.causual_core.spec import label_signature_of
 from causual.causual_core.estimators import EdgeModel, fit_all
 from causual.web.render import build_card, build_console
 from causual.causual_core.signal_layer import build_bundle
@@ -178,7 +179,7 @@ def fit_edges(df: pd.DataFrame, spec: dict, seed: int = 42, verbose: bool = True
         target=C.TARGET, label_col=LABEL_COL, return_col="GOLD_RET",
         train=train, seed=seed,
     )
-    path = snapshot.save(C.ASSET, models, spec["data"]["label_signature"], fit_date=str(df.index[-1].date()))
+    path = snapshot.save(C.ASSET, models, label_signature_of(spec), fit_date=str(df.index[-1].date()))
     if verbose:
         from causual.causual_core.evaluate import sign_audit
         print(sign_audit(models).round(4).to_string(index=False))
@@ -187,14 +188,14 @@ def fit_edges(df: pd.DataFrame, spec: dict, seed: int = 42, verbose: bool = True
 
 
 def make_card(df: pd.DataFrame, spec: dict, models: dict, when: pd.Timestamp,
+              profile: pd.DataFrame,
               data_notes: list[str] | None = None,
               state_line: str | None = None) -> list:
     bundle = build_bundle(
         df, models, EDGES, label_col=LABEL_COL,
         treatment_col=TREATMENT_COL, target=C.TARGET, signal_lag=SIGNAL_LAG,
     )
-    bundle.label_signature = spec["data"]["label_signature"]
-    profile = pd.DataFrame(spec["data"]["profile"]).set_index("label")
+    bundle.label_signature = label_signature_of(spec)
     return build_card(
         C.ASSET, C.TITLE, df, when,
         label_col=LABEL_COL, label_name=LABEL_NAME, label_order=list(LABELS),
@@ -230,15 +231,15 @@ def supply_items(df: pd.DataFrame) -> list[dict]:
     ]
 
 
-def make_detail_card(df: pd.DataFrame, spec: dict, models: dict, when: pd.Timestamp) -> list:
+def make_detail_card(df: pd.DataFrame, spec: dict, models: dict, when: pd.Timestamp,
+                      profile: pd.DataFrame) -> list:
     from causual.web.render import build_detail_card
 
     bundle = build_bundle(
         df, models, EDGES, label_col=LABEL_COL,
         treatment_col=TREATMENT_COL, target=C.TARGET, signal_lag=SIGNAL_LAG,
     )
-    bundle.label_signature = spec["data"]["label_signature"]
-    profile = pd.DataFrame(spec["data"]["profile"]).set_index("label")
+    bundle.label_signature = label_signature_of(spec)
     return build_detail_card(
         C.ASSET, C.TITLE, df, when,
         label_col=LABEL_COL, label_name=LABEL_NAME, profile=profile,

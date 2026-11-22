@@ -39,12 +39,9 @@ def cmd_edges(args) -> int:
     `build_panel` 需要状态层的 spec（标签口径），所以这里和 `cmd_daily` 一样
     先把状态视图装配好——CLI 是允许跨模块取数的唯一地点。
     """
-    from state_layer.port import get_port as state_port
-
     pkg = load_asset(args.asset)
-    sp = state_port()
     panel = _load_panel(args.asset)
-    view = sp.state_view(args.asset, panel)
+    view = state_view(args.asset, panel)
     df, spec = pkg.build_panel(args.asof, panel, state=view)
     pkg.fit_edges(df, spec, seed=args.seed, verbose=True)
     return 0
@@ -90,15 +87,33 @@ def _freshness(asset: str, panel: pd.DataFrame, asof: str | None = None) -> list
     return panel_freshness(load_asset(asset).PANEL_KIND, today=when)
 
 
+def state_view(asset: str, panel: pd.DataFrame) -> dict:
+    """装配状态视图：`state_view` + **画像表**（三个装配点共用）。
+
+    为什么画像不跟 `state_view` 一起返回：v2 的 `spec` 里**没有** profile，
+    画像要按标签对观测面板做统计（`StatePort.profile(asset, panel)`），是"现算"；
+    而 `state_view` 的契约是"一次给全状态标签那一套"。causual 不 import 状态层，
+    所以由装配点补上这一项，核心代码只读 `state["profile"]`。
+    """
+    from state_layer.port import get_port as state_port
+
+    sp = state_port()
+    view = sp.state_view(asset, panel)
+    prof = sp.profile(asset, panel)
+    # 端口给的表是 `0..K-1` 的数字索引 + 一列 `label`（标签名）；卡片按标签名做索引，
+    # 所以这里转成 `index=label`（legacy spec 里的 profile 本来就是这么存的）。
+    if isinstance(prof, pd.DataFrame) and "label" in prof.columns:
+        prof = prof.set_index(prof["label"].astype(str)).drop(columns=["label"])
+    view["profile"] = prof
+    return view
+
+
 def cmd_daily(args) -> int:
     from causual.causual_core import pipeline
 
     # CLI 是允许直接取数的：这里把面板和状态视图一起装配好传下去
-    from state_layer.port import get_port as state_port
-
-    sp = state_port()
     panel = _load_panel(args.asset)
-    view = sp.state_view(args.asset, panel)
+    view = state_view(args.asset, panel)
     try:
         pipeline.run(args.asset, panel, freshness=_freshness(args.asset, panel, args.asof),
                      state=view, asof=args.asof, force=getattr(args, "force", False))

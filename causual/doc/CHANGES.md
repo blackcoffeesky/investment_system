@@ -2,6 +2,41 @@
 
 ---
 
+# v5.53（2026-11-22）：跟进状态层 `spec` 的 v2 结构（多分组）
+
+状态层重构成"多分组"，`state["spec"]` 变成 `schema="estimator-v2"` 的形状：
+`label_signature` 落在 `spec["groups"][spec["primary"]]["label_signature"]`，
+画像（`profile`）**不再放在 spec 里**。causual 之前只认 legacy 三段式，于是
+`KeyError: 'data'` / 卡片 500。
+
+## 改动
+
+| 位置 | 改动 |
+|---|---|
+| **新增 `causual_core/spec.py`** | `is_v2` / `primary_group` / `label_signature_of` / `profile_of`：**按 `schema` 分支**读签名（不靠 `try/except KeyError` 猜结构），legacy 的画像也从这里读 |
+| `causual_core/pipeline.py` | 签名比对改用 `label_signature_of(spec)`；画像取 `state["profile"]`，缺失时回退 legacy 的 `spec["data"]["profile"]`，两者都没有 → stderr + 空表 |
+| `ashare/pipeline.py` / `gold/pipeline.py` | `spec["data"]["label_signature"]` → `label_signature_of(spec)`（共 4 处）；`make_card` / `make_detail_card` 增加 `profile` 参数（不再从 spec 取） |
+| `causual_core/cli.py` | 新增 `state_view(asset, panel)`：`state_view` + `StatePort.profile(asset, panel)`，并把端口给的 `0..K-1` 索引转成 `index=label` |
+| `causual/web/routes.py` | `/card/…/regenerate` 用同一个 `state_view()` 装配（改完 500 消失） |
+| `tests/causual/test_card_smoke.py` | 改用 `state_view()` 装配 |
+
+跨模块接口（按 AGENTS §2③ 记录）：状态层 spec 从三段式 → `estimator-v2`；
+causual 读 `spec["groups"][primary]`；`profile` 由 `StatePort.profile(asset, panel)` 提供，
+**经 `state["profile"]` 传给核心代码**（causual 核心不 import 状态层）。service 侧要补一行
+`view["profile"] = st.profile(asset, panel)`，否则详情卡的画像表会是空的（有 stderr 提示）。
+
+## 验证
+
+| 项 | 结果 |
+|---|---|
+| legacy spec | `ashare ce378e8af201` / `gold c461745fadc5`；`profile_of` 给 (6,5) |
+| v2 spec | `ashare 17d71dc0d795`（primary `short_price`）/ `gold d6bb30daaaaf`（primary `raw`）；`profile_of` → None（v2 没有） |
+| `state_view()` | `{label_name, labels, labels_order, line, profile, spec, version}`；profile 索引 = 标签名、`share` 合计 1.0 |
+| pyright | 0 error（17 warning 全在 `state_layer/`） |
+| 测试 | `test_card_smoke` ×2 与 `test_e2e::test_regenerate_card_returns_303` **仍红**：`CardRejected: 标签体系不一致：状态模型 17d71dc0d795 vs 边快照 ce378e8af201` —— 状态层重拟合换了标签，**边必须重估**（`cli edges`）；这一步会改边快照、不是我的活，等 lead 跑 |
+
+---
+
 # v5.52（2026-11-18）：`GEOPOLITIC_RISK` 从 GPRC 换成世界紧张度（WTM）
 
 数据层把 `geopolitic_risk`（GPRC，2383 行、2016-12 → 2026-10-19、50–450 分制）换成了

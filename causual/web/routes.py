@@ -93,7 +93,10 @@ def regenerate(request: Request, asset: str, date: str):
 
         panel = _panel_for(request, asset)
         rows = panel_freshness(get_port().panel_kind(asset), today=date)
-        view = request.app.state.services["state"].state_view(asset, panel)
+        # 状态视图 + 画像表：和 CLI 同一套装配（`state["profile"]` 是 v2 卡片的画像来源）
+        from causual.causual_core.cli import state_view
+
+        view = state_view(asset, panel)
         get_port().regenerate(asset, date, panel, state=view, freshness=rows)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(500, f"重生成失败：{type(e).__name__}: {e}") from e

@@ -22,6 +22,10 @@ import pandas as pd
 
 from causual.causual_assets import load as load_asset
 from causual.causual_core import snapshot
+from causual.causual_core.spec import (
+    label_signature_of as spec_label_signature,
+    profile_of,
+)
 from causual.web.render import build_console
 from causual.causual_core.signal_layer import build_bundle
 
@@ -57,10 +61,11 @@ def run(
     except FileNotFoundError as e:
         raise CardRejected(f"没有边快照：{e}") from e
 
-    if snap_meta["label_signature"] != spec["data"]["label_signature"]:
+    sig = spec_label_signature(spec)
+    if snap_meta["label_signature"] != sig:
         raise CardRejected(
             "标签体系不一致："
-            f"状态模型 {spec['data']['label_signature']} vs 边快照 {snap_meta['label_signature']}；"
+            f"状态模型 {sig} vs 边快照 {snap_meta['label_signature']}；"
             f"先跑 `python -m causual.causual_core.cli edges --asset {asset}`")
 
     fit_date = pd.Timestamp(snap_meta["fit_date"])
@@ -88,10 +93,20 @@ def run(
     # 市场状态由调用方算好传来（state["line"]），因果层不碰状态层
     state_line = (state or {}).get("line")
 
-    full = pkg.make_card(df, spec, models, when, data_notes=data_notes,
-                         state_line=state_line)
-    full_macro = pkg.make_card(df, spec, models, when, data_notes=macro_notes,
-                               state_line=state_line)
+    # 画像表：v2 的 spec 里**没有** profile，由状态层端口现算后经 `state["profile"]`
+    # 传进来（装配点负责）；legacy spec 自带一份，兜底用它。两样都没有就空表 + 出声。
+    profile = (state or {}).get("profile")
+    if profile is None:
+        profile = profile_of(spec)
+    if profile is None:
+        print(f"[卡片] {asset} 没有画像表（state['profile'] 没传、spec 里也没有）——"
+              "详情卡的「状态模型」那张画像表会是空的", file=sys.stderr)
+        profile = pd.DataFrame()
+
+    full = pkg.make_card(df, spec, models, when, profile=profile,
+                         data_notes=data_notes, state_line=state_line)
+    full_macro = pkg.make_card(df, spec, models, when, profile=profile,
+                               data_notes=macro_notes, state_line=state_line)
 
     from causual.web import render as narrative
 
@@ -119,7 +134,8 @@ def run(
     _write_fingerprint(freshness, macro_path, when, kind="macro")
 
     if hasattr(pkg, "make_detail_card"):
-        detail_sections = pkg.make_detail_card(df, spec, models, when)
+        detail_sections = pkg.make_detail_card(df, spec, models, when,
+                                               profile=profile)
         detail = narrative.render(
             detail_sections,
             keep=("edges", "betas", "lags", "contrib", "freshness"))
