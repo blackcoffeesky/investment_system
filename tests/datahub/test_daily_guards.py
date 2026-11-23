@@ -45,34 +45,21 @@ def _db_with(dates, freq: str = "D") -> Path:
     return db
 
 
-def _pin_today(monkeypatch_end="2026-11-20"):
-    """把"最后一个已收盘交易日"钉死，测试不依赖真实日期。"""
-    orig = C.last_closed_trading_day
-    C.last_closed_trading_day = lambda *a, **k: monkeypatch_end   # type: ignore[assignment]
-    return orig
-
-
 # ---------------------------------------------------------------- find_gaps
 def test_find_gaps_catches_hole_in_the_middle():
     """**核心用例**：11-18 有、11-19 没有、11-20 有 —— `MAX(date)` 完全正常。"""
-    orig = _pin_today("2026-11-20")
-    try:
+    if True:
         db = _db_with(["2026-11-16", "2026-11-17", "2026-11-18", "2026-11-20"])
-        gaps = find_gaps("t", lookback=5, path=db)["missing"]
+        gaps = find_gaps("t", lookback=5, today="2026-11-21 16:00", path=db)["missing"]
         assert gaps == ["2026-11-19"], gaps
-    finally:
-        C.last_closed_trading_day = orig     # type: ignore[assignment]
         db.unlink()
 
 
 def test_find_gaps_empty_when_table_complete():
-    orig = _pin_today("2026-11-20")
-    try:
+    if True:
         days = C.trading_days("2026-10-01", "2026-11-20")
         db = _db_with(days)
-        assert find_gaps("t", lookback=10, path=db)["missing"] == []
-    finally:
-        C.last_closed_trading_day = orig     # type: ignore[assignment]
+        assert find_gaps("t", lookback=10, today="2026-11-21 16:00", path=db)["missing"] == []
         db.unlink()
 
 
@@ -212,10 +199,10 @@ def test_find_gaps_agrees_with_check_run():
     con.commit()
     con.close()
 
-    gaps = find_gaps("t", lookback=10, path=db)["missing"]
+    gaps = find_gaps("t", lookback=10, today="2026-11-21 16:00", path=db)["missing"]
     assert set(holes) <= set(gaps), f"find_gaps 没报出洞：{gaps}"
 
-    rows = run(path=db)
+    rows = run(path=db, today="2026-11-21 16:00")
     row = rows[rows["name"] == "t"]
     assert len(row) == 1, f"check.run 没报这张表：{rows.to_string()}"
     issues = str(row.iloc[0]["issues"])
@@ -240,7 +227,7 @@ def test_check_run_marks_calendar_failure_separately():
 def test_find_gaps_monthly_compares_by_period_not_date():
     """月表按**周期**比：数据日期是"披露日"（如 10-15），不是月末 → 不能算缺口。"""
     db = _db_with(["2026-08-31", "2026-09-15", "2026-10-15"], freq="M")
-    g = find_gaps("t", lookback=3, path=db)
+    g = find_gaps("t", lookback=3, today="2026-11-21 16:00", path=db)
     # 8/9/10 月都有数据 → 不该报这三个月的缺口；期望 10 月是最后一个已结束的月
     assert g["missing"] == [], g["missing"]
     assert g["expected_latest"] == "2026-10-31", g
@@ -251,7 +238,7 @@ def test_find_gaps_monthly_compares_by_period_not_date():
 def test_find_gaps_quarterly_reports_missing_period():
     """季表：缺 2026Q2 → `missing` 里是 2026-06-30。"""
     db = _db_with(["2026-03-31", "2026-09-30"], freq="Q")
-    g = find_gaps("t", lookback=3, path=db)
+    g = find_gaps("t", lookback=3, today="2026-11-21 16:00", path=db)
     assert "2026-06-30" in g["missing"], g["missing"]
     db.unlink()
 
@@ -261,7 +248,7 @@ def test_find_gaps_reports_stale_tail():
     days = [d for d in C.trading_days("2026-10-01", "2026-11-20")
             if str(d.date()) <= "2026-11-13"]
     db = _db_with(days)
-    g = find_gaps("t", lookback=10, path=db)
+    g = find_gaps("t", lookback=10, today="2026-11-21 16:00", path=db)
     assert g["stale"] == "2026-11-13", g
     assert g["expected_latest"] == "2026-11-20", g
     # 缺口里包含 11-16 之后的所有交易日

@@ -114,11 +114,15 @@ def _check_eav(con, name: str, spec: dict) -> tuple[dict, list[str]]:
     return info, issues
 
 
-def run(path: Path | None = None, recent_days: int = 90) -> pd.DataFrame:
+def run(path: Path | None = None, recent_days: int = 90,
+        today: str | pd.Timestamp | None = None) -> pd.DataFrame:
     """返回问题清单。
 
     `recent_days`：只有最近这么多天内的缺口算"问题"（多半是忘了更新）；
     更早的缺口单独计数——那是历史源数据留下的，不是运维该天天盯的。
+
+    `today`：**可指定"今天是哪天"**（默认现在）。不传的话整个结果随真实日期变，
+    测试与回归都不复现（2026-11-23 的日期依赖红就是这么来的）。
     """
     con = _conn(path)
     meta = cast(pd.DataFrame, pd.read_sql("SELECT * FROM metadata", con))
@@ -132,7 +136,8 @@ def run(path: Path | None = None, recent_days: int = 90) -> pd.DataFrame:
 
     import datahub.fin as fin
 
-    cutoff = str((pd.Timestamp.today() - pd.Timedelta(days=recent_days)).date())
+    _today = _as_now(today).normalize()
+    cutoff = str((_today - pd.Timedelta(days=recent_days)).date())
     # **有意冻结的表**（`SOURCES` 里 `enabled=False`）不参与 check：
     # 它们不是"忘了跑"，报出来只会和 `freshness` 的结论互相打脸
     # （2026-11-22 回归：切分 check 时把这段过滤丢了，冻结表又回到问题清单）。
@@ -187,7 +192,7 @@ def run(path: Path | None = None, recent_days: int = 90) -> pd.DataFrame:
         freq = str(m["freq"] or "D")
         market = str(m["market"] or "CN")
         try:
-            gaps = find_gaps(name, max_age_days=recent_days, path=path)
+            gaps = find_gaps(name, max_age_days=recent_days, today=today, path=path)
         except Exception as e:  # noqa: BLE001
             # **检查本身没跑成**，不是"数据有问题"：标成 check_failed，
             # 调用方要能分清（2026-11-22：17 张日频表全报「日历失败」，页面上
@@ -414,8 +419,22 @@ _LOOKBACK: dict[str, int] = {
 }
 
 
+def _as_now(today: "str | pd.Timestamp | None" = None) -> pd.Timestamp:
+    """`today` 参数 → 带时区的 `Timestamp`（默认现在）。
+
+    ⚠️ **保留时间部分**：`last_closed_trading_day` 用"是否过 15:30"判断当天算不算
+    "已收盘"。只保留日期会把它变成 00:00 → 永远算"未收盘" → 退回**前一个**交易日
+    （`today="2026-11-20"` 会得到 `expected_latest=2026-11-19`，差一天）。
+    """
+    if today is None:
+        return pd.Timestamp.now(tz="Asia/Shanghai")
+    ts = pd.Timestamp(today)
+    return ts.tz_localize("Asia/Shanghai") if ts.tzinfo is None else ts
+
+
 def find_gaps(table: str, *, lookback: int | None = None,
               max_age_days: int | None = None,
+              today: str | pd.Timestamp | None = None,
               path: Path | None = None) -> dict:
     """`table` 的**原始缺口事实**：区间内的洞 + 尾部是否过期。
 
@@ -445,7 +464,9 @@ def find_gaps(table: str, *, lookback: int | None = None,
     market = str((row["market"] if row else "") or "CN")
     kind = kind_of(table, path)
 
-    now = pd.Timestamp.now(tz="Asia/Shanghai")
+    # `today` 可指定：**否则这个函数的结果随真实日期变**，测试只能靠"今天恰好是什么"，
+    # 一天红一次（2026-11-23：`expected_latest` 从 11-20 变成 11-23 导致测试红）。
+    now = _as_now(today)
     end = last_closed_trading_day(now, market if market != "NONE" else "CN")
     n = int(lookback if lookback is not None else _LOOKBACK.get(freq, 20))
 
@@ -516,9 +537,10 @@ def find_gaps(table: str, *, lookback: int | None = None,
 
 
 def find_gaps_list(table: str, *, lookback: int | None = None,
+                   today: str | pd.Timestamp | None = None,
                    path: Path | None = None) -> list[str]:
     """兼容薄包装：只要 `missing` 的调用方用它（别把调用点改散）。"""
-    return find_gaps(table, lookback=lookback, path=path)["missing"]
+    return find_gaps(table, lookback=lookback, today=today, path=path)["missing"]
 
 
 def _period_of(day: str, freq: str) -> object:
