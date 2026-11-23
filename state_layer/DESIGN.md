@@ -385,3 +385,12 @@ A 股一加组，`routes.py`、causual、测试都要各算一遍，特征定义
 | `port` 第二参数传 features 矩阵 | 改为传 **panel**（特征属于分组，见 §11） |
 | `features.build()`（旧 9 特征） | 改成分组构造 `build_groups()`；旧特征（log_return/vol20/volume_z/ma20_slope/size_mom/margin_chg_z/rv_ratio/shibor_chg_z/etf_dispersion）退役 |
 | `align.name_states` 作为 A 股的命名方式 | A 股改"序位命名"（`align.order_labeler`）；`label_churn` **保留**为稳定性度量 |
+
+---
+
+## 16. `align.py` 已移除（2026-11-23）
+
+逐窗命名对齐（`make_labeler` / `reference_mapping`）与 `label_churn` 度量**随新命名机制退役**：
+A 股改为"按训练画像序位 + 固定词表"（`state_assets/labels.py::order_labeler`），
+黄金 K=4 的命名留在 `state_assets/gold/config.py`（实现走 `gold/labels.py`）。
+`port.availability` 已删，观测矩阵功能整体移除。

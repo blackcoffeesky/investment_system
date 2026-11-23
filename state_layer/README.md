@@ -117,6 +117,6 @@ K 写死而不是自动选：**拟合要可复现**，让数据自己选 K 只�
 A 股出 **3 组**状态：短期价格（3 态，primary）/ 短期波动（3 态）/ 中长期价格（2 态）。
 九宫格由 `analysis/combine.py::grid()` 合成（唯一实现）。黄金仍只有 1 组。
 
-- 训练/落盘：`python -m state_layer.cli fit --asset ashare`（或 `from state_layer.fit import fit_asset; fit_asset("ashare")`）
+- 训练/落盘：`python -m state_layer.cli fit --asset ashare`（或 `from state_layer.cli import fit_asset; fit_asset("ashare")`）
 - 下游（causual）只读 **primary**（`short_price`）；加组**不会**改变 `label_signature`
 - 页面上四张图的区间不完全相同（各组预热不同，九宫格取交集）

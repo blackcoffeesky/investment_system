@@ -108,7 +108,7 @@
     } else { bind(document); }
   }
   if (typeof module !== "undefined" && module.exports) {
-    module.exports = { clampWindow: clampWindow, xAt: xAt, visible: visible, segSpan: segSpan };
+    module.exports = { clampWindow: clampWindow, xAt: xAt, visible: visible, segSpan: segSpan, paint: paint, bind: bind };
   }
   global.ChartLayout = { clampWindow: clampWindow, xAt: xAt, visible: visible, segSpan: segSpan };
 })(typeof window !== "undefined" ? window : globalThis);
