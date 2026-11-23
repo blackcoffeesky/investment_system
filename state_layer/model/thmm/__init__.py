@@ -102,6 +102,7 @@ class StudentTHMM(Model):
 
         cols = list(sub.columns)
         states = pd.Series(np.nan, index=sub.index, name="state")
+        labels = pd.Series(np.nan, index=sub.index, dtype=object, name="label")
         proba = pd.DataFrame(np.nan, index=sub.index, columns=list(range(k)))
         f = None
         mean = scale = None
@@ -125,13 +126,17 @@ class StudentTHMM(Model):
                  for j in range(k)])
             post, _ = filtered_predict(log_b, f["a"], f["pi"])
             proba.iloc[i] = post[-1]
-            states.iloc[i] = int(np.argmax(post[-1]))
+            sid = int(np.argmax(post[-1]))
+            states.iloc[i] = sid
+            labels.iloc[i] = label_map.get(sid)
 
         self.proba_ = proba.dropna(how="all").loc[:, :]
         self.states_ = states.dropna().astype(int)
         self.last_window = self._window(f, mean, scale, cols, label_map)
         self.last_window["refit_dates"] = refit_dates
-        self.labels_ = self.states_.map(label_map)
+        # ⚠️ 必须用**逐日**标签：拿最后一次 refit 的映射去重写整段历史，
+        # 会让追加数据改变所有历史标签（2026-11-23 的 A 股 prefix_diff 事故）。
+        self.labels_ = labels.dropna()
 
     @staticmethod
     def _window(f: dict, mean: np.ndarray, scale: np.ndarray,
