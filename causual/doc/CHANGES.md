@@ -2,6 +2,64 @@
 
 ---
 
+# v5.56（2026-11-23）：状态层改滚动窗口后重估 A 股边
+
+状态层把 `WALK_FORWARD` 从 `min_train=250 / refit_every=60 / window=250` 改成
+`1000 / 125 / 1000`（用户要治"状态漂移"），标签起点从 2013-07-09 推到 **2016-08-02**，
+新签名 `ashare 8890155f7213`（旧 `b7f0879d7c3d`）。黄金参数未动、签名未变，**不重估**。
+
+## 重估结果（`edges_20261113.json`，fit_date 2026-11-13）
+
+| 边 | 估计器 | 旧 n | 新 n | 变化 |
+|---|---|---|---|---|
+| 6 条 causal_forest（RY/USDCNY/USD_INDEX/VIX/SHIBOR/MARGIN） | DML | 2999 | **2287** | β 变了（见下） |
+| NATIONAL_ETF | event_study | 200 | 200 | **完全没变** |
+| AMOUNT_SHOCK | event_study | 34 | 34 | **完全没变** |
+| INSIDER_NET / EQUITY_SUPPLY | distributed_lag | 117 / 60 | 117 / 60 | **完全没变** |
+
+DML 六条边：**11 处 |Δβ|>0.05、4 处符号翻转**。最大的几处：
+
+```
+USDCNY  trend_up      −0.358 → −0.096   （Δ +0.262）
+SHIBOR3M range        −0.289 → −0.104   （Δ +0.185）
+USD_INDEX trend_up    −0.226 → −0.092   （Δ +0.134）
+VIX     trend_up      −0.194 → −0.078   （Δ +0.116）
+MARGIN  trend_up      +0.014 → −0.091   （翻转）
+MARGIN  trend_down    +0.033 → −0.019   （翻转）
+SHIBOR3M trend_down   −0.057 → +0.037   （翻转）
+RY      trend_up      +0.036 → −0.019   （翻转）
+```
+
+## ⚠️ 查出来一个口径不一致（**未修，待裁决**）
+
+`estimators.fit_all()` 只把**按标签窗口切过的** `sub` 交给 DML；`event_study` 与
+`distributed_lag` 拿到的是 `df`（**未切分**）：
+
+```python
+models[e.key] = fit_distributed_lag(df, ...)      # 用整张面板
+models[e.key] = fit_event_study(df, ...)          # 用整张面板
+models[e.key] = fit_dml_edge(sub, ...)            # 用标签窗口
+```
+
+所以 5/10 条边实际是从 **2012 年**起拟合的，与"标签 2016-08 起"不一致。
+也解释了为什么 `AMOUNT_SHOCK` 的事件数**没**按预判从 34 掉到 23——它根本不按标签窗口取样本。
+（`AMOUNT_SHOCK` 现在仍未激活：z=−0.03、β +70bp/事件，与重估前一致。）
+
+## 卡片
+
+`card_2026-11-13.md`：激活 **4/8**（关联 0）、α **−0.27 → −0.13**（归因 −14bp → −6bp）、
+状态仍是**震荡**（后验 99%，停留 6→5 天）。**无激活翻转**；6 条边的敏感度全部变小
+（如 银行间流动性 −29 → −10 bp/σ）。旧卡与快照都备份在
+`causual/data/_baseline_before_{edges,render}_20261123/`。
+
+## 另外发现（一行 bug，未修）
+
+`causual_assets/ashare/pipeline.py::validate_insider` 里 `target_col="CLOSE"`（大写遗留），
+每次 `edges` 都会打 `[分段] 失败：KeyError: ['CLOSE']`，`output/ashare/insider_segments.md`
+因此不再更新。改成 `"close"` 即可，但不在本轮范围内（不阻塞），留给 lead 决定。
+
+---
+
 # v5.55（2026-11-22）：重估边后重出正式卡 + 修两处"看不出来"的问题
 
 边重估（`b7f0879d7c3d` / `0660ba2fa38b`）之后重出 `causual/data/output` 里的正式卡。
