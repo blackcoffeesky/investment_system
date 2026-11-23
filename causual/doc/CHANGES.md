@@ -2,6 +2,52 @@
 
 ---
 
+# v5.58（2026-11-23）：弃用 `INSIDER_NET` 边（只在宏观层用）
+
+用户拍板：**内部人增持从边层弃用，只在宏观层使用**。
+
+## 删了什么
+
+| 位置 | 内容 |
+|---|---|
+| `ashare/config.py` | `INSIDER_NET` 的 `Edge`（它本来就不进 α，tier=supply）+ `TREATMENT_COL` / `SOURCE_COL` 两条映射 + `LOCAL_NODES` 里的节点（slow 标签只为那条边选估计器）|
+| `ashare/pipeline.py` | `validate_insider`（**210 行**：分段稳健性）+ `fit_edges` 里的调用点 |
+| `causual/data/output/ashare/insider_segments.md` | 该诊断的产物，函数没了就不再生成 |
+
+A 股边数 10 → 9。
+
+## 保留（宏观层仍在用）
+
+- `insider_net` 仍在 `PANEL_COLS` 里，`prepare()` 用它算 `NET_SUPPLY`（融资−增持）
+- 月频卡的「净供给（融资−增持）」一行照常出数（实测 2685.32、44% 分位）
+
+## 连带修的一处**真 bug**：配置删边会让出卡崩
+
+`INSIDER_NET` 从配置里消失后，卡立刻 `KeyError: 快照里的边 ('INSIDER_NET','CSI_ALL')
+已不在该资产的 DAG 中`——因为快照里还留着它的模型，而 `snapshot.load` 遇到这种记录
+**直接抛异常**。
+
+改 DAG 是正常操作，不该把出卡整个打断；静默丢掉又会让人以为那条边还在参与计算。
+所以 `snapshot.load` 现在**跳过并出声**：
+
+```
+[快照] 1 条边的模型已不在 DAG 里，本次忽略：['INSIDER_NET→CSI_ALL']；要彻底清掉请重估：… edges --asset ashare
+```
+
+## 验证
+
+```
+tests/run_tests.py causual   → 25/25
+daily --asset ashare / gold  → 都 exit 0
+卡片（日频/详情/月频/月频明细）里 grep「内部人增持」「INSIDER」→ 0 命中
+宏观层「净供给（融资−增持）」仍在
+```
+
+⚠️ **快照里那条模型还在**（`edges_20261113.json` 有 10 条，DAG 只有 9 条）。
+要物理清掉得重估 edges（会重新估 9 条边、动数字），**等 lead 发令**；在那之前每次出卡都会打上面那行提示。
+
+---
+
 # v5.57（2026-11-23）：修 `validate_insider` 三处遗留 + 把"各边样本区间不一致"写进卡片
 
 ## ① `validate_insider`（内部人增持·分段稳健性）其实是**三重**坏

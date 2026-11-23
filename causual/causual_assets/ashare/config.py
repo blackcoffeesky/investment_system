@@ -20,7 +20,6 @@ LOCAL_NODES: dict[str, Node] = {
     "SHIBOR3M": Node("SHIBOR3M", "D", "asset", "fast", 1, "Shibor 3M"),
     "PMI": Node("PMI", "M", "natural", "slow", 3, "制造业 PMI"),
     "MARGIN_BALANCE": Node("MARGIN_BALANCE", "D", "asset", "fast", 1, "两融余额"),
-    "INSIDER_NET": Node("INSIDER_NET", "M", "natural", "slow", 3, "内部人净增持"),
     "NATIONAL_ETF": Node("NATIONAL_ETF", "D", "asset", "fast", 0, "国家队 ETF 份额"),
     "EQUITY_SUPPLY": Node("EQUITY_SUPPLY", "M", "natural", "slow", 6, "月度净融资额"),
     "AMOUNT_SHOCK": Node("AMOUNT_SHOCK", "D", "asset", "fast", 0, "放量冲击"),
@@ -58,7 +57,6 @@ TREATMENT_COL: dict[str, str] = {
     "SHIBOR3M": "SHIBOR_CHG_BP",
     "PMI": "PMI_CHG",
     "MARGIN_BALANCE": "MARGIN_NET",
-    "INSIDER_NET": "insider_net",
     "NATIONAL_ETF": "national_etf_event",
     "EQUITY_SUPPLY": "SUPPLY_Z",
     "AMOUNT_SHOCK": "AMOUNT_SHOCK",
@@ -73,7 +71,6 @@ SOURCE_COL: dict[str, str] = {
     "SHIBOR3M": "SHIBOR_CHG_BP",
     "PMI": "pmi",
     "MARGIN_BALANCE": "MARGIN_NET",
-    "INSIDER_NET": "insider_net",
     "NATIONAL_ETF": "national_etf",
     "EQUITY_SUPPLY": "equity_fin_monthly",
     "AMOUNT_SHOCK": "VOLUME_Z",
@@ -130,14 +127,9 @@ EDGES: list[Edge] = [
          reading_mode="net_flow", reading_desc="当日融资净买入（亿元）",
          confounders=("vix",), layer="associative",
          falsifier="去杠杆阶段，两融下降反而加速下跌"),
-    Edge(source="INSIDER_NET", target=TARGET,
-         mechanism="内部人净增持（股东+高管，亿元/月）", direction=+1, magnitude=0.50,
-         latency="1-3 月", regime_valid=ALL, estimator=None,   # slow 节点 → 自动用分布滞后
-         reading_mode="level_z", reading_desc="净增持金额（亿元/月）",
-         confounders=("vix",),
-         freq="ME", max_lag=3, split_contemp=True,
-         tier="supply", use_in_alpha=False,   # 大股东态度 = 供需层，不进 α
-         falsifier="增持是护盘行为，同期正相关但后续无支撑"),
+    # INSIDER_NET 边已于 2026-11-23 弃用（用户：内部人增持只在宏观层用）。
+    # 分段稳健性（四等分）在当前样本密度下结构性失效，且两等分实测两段符号相反——
+    # 这条边本来也不进 α，留着只会让人以为它是"已验证的机制"。见 CHANGES v5.58。
     # SIZE_FLOW 已移除（v5.4）：份额差测的是"资金分歧/避险偏好"，不是涨跌方向，
     # 改作 HMM 特征 ETF_DISPERSION，不再当因果边。
     Edge(source="NATIONAL_ETF", target=TARGET,

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -136,9 +137,23 @@ def load(asset: str, edges: list[Edge]) -> tuple[dict[tuple[str, str], EdgeModel
         )
 
     models = {}
+    idx = edge_index(edges)
+    stale: list[str] = []
     for rec in payload["edges"]:
+        key = (rec["source"], rec["target"])
+        if key not in idx:
+            # 配置里删了这条边、但快照还是旧的：**忽略它的模型并出声**。
+            # 直接抛 KeyError 会让"改 DAG"这种正常操作把出卡整个打断
+            # （2026-11-23 删 INSIDER_NET 边时踩过）；静默丢掉则会让人以为
+            # 那条边还在参与计算。
+            stale.append(f"{key[0]}→{key[1]}")
+            continue
         m = _decode(rec, edges)
         models[m.key] = m
+    if stale:
+        print(f"[快照] {len(stale)} 条边的模型已不在 DAG 里，本次忽略：{stale}；"
+              f"要彻底清掉请重估：python -m causual.causual_core.cli edges --asset {asset}",
+              file=sys.stderr)
     return models, {
         "fit_date": payload.get("fit_date", ""),
         "label_signature": payload.get("label_signature", ""),
