@@ -36,7 +36,6 @@ MODEL_DIR = ROOT / "state_layer" / "saved_models"
 SCHEMA_V2 = "estimator-v2"
 
 #: legacy 四件套（迁移时搬进 `legacy/`）
-LEGACY_FILES = ("current.json", "labels.csv", "chain.pkl", "hmm.pkl")
 
 
 def asset_dir(asset: str) -> Path:
@@ -44,133 +43,10 @@ def asset_dir(asset: str) -> Path:
 
 
 # ---------------------------------------------------------------- spec
-def save_spec(asset: str, spec: dict) -> Path:
-    d = asset_dir(asset)
-    d.mkdir(parents=True, exist_ok=True)
-    p = d / "current.json"
-    p.write_text(json.dumps(spec, ensure_ascii=False, indent=2), encoding="utf-8")
-    return p
-
-
-def load_spec(asset: str) -> dict:
-    p = asset_dir(asset) / "current.json"
-    if not p.exists():
-        raise FileNotFoundError(f"没有 {asset} 的状态模型：{p}；先跑 state_layer.cli regime")
-    spec = json.loads(p.read_text(encoding="utf-8"))
-    return _migrate(spec, asset)
-
-
-def _migrate(spec: dict, asset: str) -> dict:
-    """旧的扁平 spec（k / features 在顶层）→ 新的三段式（model / data / metrics）。
-
-    老文件是历史产物，不能要求用户重跑一遍拟合才能看图。
-    """
-    if "model" in spec and "data" in spec:
-        return spec
-    k = spec.get("k")
-    features = list(spec.get("features") or [])
-    fit_date = spec.get("fit_date")
-    sig = spec.get("label_signature")
-    return {
-        "asset": asset,
-        "model": {
-            "kind": "hmm",
-            "k": k,
-            "version": f"hmm-k{k}-{sig}-{fit_date}",
-        },
-        "data": {
-            "features": features,
-            "fit_date": fit_date,
-            "label_signature": sig,
-            "used_labels": spec.get("used_labels", []),
-            "fit_id": spec.get("fit_id"),
-            # 卡片要的状态画像（每个标签的占比、持续、收益、波动）
-            "profile": spec.get("profile", []),
-        },
-        "metrics": {
-            "method": "bhattacharyya",
-            "min": float(spec.get("min_bhattacharyya", 0.0)),
-            "passed": float(spec.get("min_bhattacharyya", 0.0)) >= 0.4,
-        },
-    }
-
-
-# ---------------------------------------------------------------- 标签
-def save_labels(asset: str, labels: pd.Series) -> Path:
-    d = asset_dir(asset)
-    d.mkdir(parents=True, exist_ok=True)
-    p = d / "labels.csv"
-    pd.DataFrame({"date": labels.index, "label": labels.values}).to_csv(
-        p, index=False, encoding="utf-8-sig")
-    return p
-
-
-def load_labels(asset: str) -> pd.Series:
-    """（legacy）逐日标签。**只读**；新产物请用 `load_group_labels`。"""
-    p = asset_dir(asset) / "labels.csv"
-    if not p.exists():
-        return pd.Series(dtype=str)
-    df = pd.read_csv(p)
-    idx = pd.DatetimeIndex(pd.to_datetime(df["date"]))
-    vals = [str(x) if x == x else "" for x in df["label"]]
-    out = pd.Series(vals, index=idx, name="label", dtype=object)
-    kept = out[out != ""]
-    return cast(pd.Series, kept.astype(str))
-
-
-# ---------------------------------------------------------------- 模型参数
-def save_model(asset: str, name: str, data: dict) -> Path:
-    d = asset_dir(asset)
-    d.mkdir(parents=True, exist_ok=True)
-    p = d / name
-    with p.open("wb") as f:
-        pickle.dump(data, f, protocol=4)
-    return p
-
-
-def save_chain(asset: str, chain: list[dict]) -> Path:
-    """保存整条模型链（顺序即处理次序）。"""
-    return save_model(asset, "chain.pkl", {"chain": chain})
-
-
-def load_chain(asset: str) -> list:
-    """读模型链；没有 chain.pkl 时回退到旧的单模型 hmm.pkl。"""
-    try:
-        return load_model(asset, "chain.pkl")["chain"]
-    except FileNotFoundError:
-        return [load_model(asset, "hmm.pkl")]
-
-
-def load_model(asset: str, name: str) -> dict:
-    p = asset_dir(asset) / name
-    if not p.exists():
-        raise FileNotFoundError(f"没有 {asset} 的模型文件：{p}")
-    with p.open("rb") as f:
-        return pickle.load(f)
-
-
-# ================================================================ v2（多分组）
 def has_v2(asset: str) -> bool:
     """v2 产物齐不齐（spec.json + params.pkl 都在才算）。**只读**。"""
     d = asset_dir(asset)
     return (d / "spec.json").exists() and (d / "params.pkl").exists()
-
-
-def _migrate_legacy(asset: str) -> Path | None:
-    """把上一代四件套移进 `legacy/`（**只在写路径调用**，幂等）。
-
-    读路径绝不做这件事：页面刷新不能改文件树。旧文件不删——它们是历史产物，
-    排查"当时为什么这么标"要靠它们。
-    """
-    d = asset_dir(asset)
-    todo = [n for n in LEGACY_FILES if (d / n).exists()]
-    if not todo:
-        return None
-    legacy = d / "legacy"
-    legacy.mkdir(parents=True, exist_ok=True)
-    for name in todo:
-        (d / name).replace(legacy / name)
-    return legacy
 
 
 def save_estimate(asset: str, *, spec: dict, params: dict,
@@ -190,7 +66,6 @@ def save_estimate(asset: str, *, spec: dict, params: dict,
 
     d = asset_dir(asset)
     d.mkdir(parents=True, exist_ok=True)
-    _migrate_legacy(asset)
 
     meta = {**spec, "schema": SCHEMA_V2, "asset": asset}
     (d / "spec.json").write_text(
@@ -263,24 +138,4 @@ def load_group_labels(asset: str, group: str | None = None) -> pd.Series:
             f"{asset} 没有组 {g!r}；可用：{sorted(names)}（primary={meta.get('primary')!r}）")
     return series_of(load_groups(asset), g)
 
-
-def labels_any(asset: str, group: str | None = None) -> pd.Series:
-    """**过渡期**读标签：v2 优先，没有 v2 回退 legacy `labels.csv`。
-
-    回退只发生在"读标签"——推断/外推仍要求 v2（不造假的分组）。
-    """
-    if has_v2(asset):
-        return load_group_labels(asset, group)
-    return load_labels(asset)
-
-
-def spec_any(asset: str) -> dict:
-    """**过渡期**读 spec：v2 的 `spec.json` 原样返回，否则回退 legacy `current.json`。
-
-    两者的字段布局不同，调用方按 `schema` 判断（`estimator-v2` 有 `groups`/`primary`，
-    legacy 有 `model`/`data`/`metrics`）。
-    """
-    if has_v2(asset):
-        return load_meta(asset)
-    return load_spec(asset)
 

@@ -17,7 +17,7 @@ from typing import cast
 import numpy as np
 import pandas as pd
 
-from state_layer import state_assets, store
+from state_layer import state_assets, profile as core_profile, store
 
 # 页面观测用到的表。
 REQUIRED_TABLES = (
@@ -81,10 +81,10 @@ class StatePort:
     # ---------------- 读
     def labels(self, asset: str = "ashare", group: str | None = None) -> pd.Series:
         """状态标签（date → label）。默认给 `primary` 组；legacy 产物回退读旧文件。"""
-        return store.labels_any(asset, group)
+        return store.load_group_labels(asset, group)
 
     def spec(self, asset: str = "ashare") -> dict:
-        return store.spec_any(asset)
+        return store.load_meta(asset)
 
     def states(self, asset: str = "ashare", start: str | None = None,
                end: str | None = None) -> pd.DataFrame:
@@ -240,21 +240,8 @@ class StatePort:
         }
 
     # ---------------- 展示（面板由装配点传进来，这里不取数）
-    def availability(self, panel: pd.DataFrame) -> list[dict]:
-        from state_layer.analysis import observations
-
-        return observations.availability(panel)
-
     def profile(self, asset: str, panel: pd.DataFrame) -> pd.DataFrame:
-        from state_layer.analysis import observations, stats
-
-        return stats.profile(asset, observations.panel(panel))
-
-    def timeline(self, asset: str, panel: pd.DataFrame, days: int = 250) -> list[dict]:
-        from state_layer.analysis import observations, stats
-
-        return stats.timeline(asset, observations.panel(panel), days)
-
+        return core_profile.profile(asset, core_profile.observations(panel))
 
 _INSTANCE: StatePort | None = None
 

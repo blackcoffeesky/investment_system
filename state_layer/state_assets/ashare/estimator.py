@@ -14,7 +14,8 @@ from __future__ import annotations
 
 import pandas as pd
 
-from state_layer import align, state_assets, store
+from state_layer import state_assets, store
+from state_layer.state_assets.labels import order_labeler
 from state_layer.model import GaussianHMM, StudentTHMM
 from state_layer.state_assets import base
 from state_layer.state_assets.ashare import config as C
@@ -61,7 +62,7 @@ class Estimator(base.Estimator):
         feats = feats[cols]
         cls = StudentTHMM if C.GROUP_MODEL[name] == "thmm" else GaussianHMM
         model = cls(self._model_params(name))
-        model.fit(feats, labeler=align.order_labeler(C.ORDER_COL[name],
+        model.fit(feats, labeler=order_labeler(C.ORDER_COL[name],
                                                      C.GROUP_LABELS[name]))
         self._models[name] = model
         labels = {int(k): str(v) for k, v in

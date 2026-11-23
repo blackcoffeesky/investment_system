@@ -108,7 +108,7 @@ def name_states(means: pd.DataFrame, allowed: tuple[str, ...] | list[str] | None
 
     ``allowed`` 限定可用标签集合：先由全样本模型定词表，再逐窗命名。
     """
-    from state_layer.align import name_states as _name
+    from state_layer.state_assets.gold.labels import name_states as _name
 
     ok = set(allowed) if allowed else set(VALUES)
 
@@ -137,8 +137,3 @@ def name_states(means: pd.DataFrame, allowed: tuple[str, ...] | list[str] | None
             RuntimeWarning,
         )
     return mapping
-
-
-def signature(used: tuple[str, ...] | list[str]) -> str:
-    """只哈希"用到了哪些标签"。下游 pin 的就是这个。"""
-    return hashlib.sha1(",".join(sorted(used)).encode("utf-8")).hexdigest()[:12]

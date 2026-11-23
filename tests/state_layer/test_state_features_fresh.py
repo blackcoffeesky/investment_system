@@ -57,7 +57,9 @@ def test_feature_columns_reach_latest_trading_day():
     anchor = close.index[-1]
 
     bad: dict[str, str] = {}
-    for col in pkg.config.FEATURES:
+    cols = [c for g in pkg.config.GROUPS_ENABLED
+            for c in pkg.config.GROUP_FEATURES[g]]
+    for col in cols:
         if col not in feats:
             bad[col] = "特征矩阵里没有这一列"
             continue

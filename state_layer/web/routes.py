@@ -16,7 +16,6 @@ from fastapi.responses import HTMLResponse
 from shared.adapter import get_data
 
 from state_layer import state_assets, store
-from state_layer.analysis import observations
 from state_layer.port import get_port
 from service.registry import Module, register
 
@@ -56,11 +55,10 @@ def _tpl(request: Request):
 
 def _profiles(asset: str, panel) -> list[dict]:
     """每组一张画像表（2026-11-23 用户要求：三组都要有）。"""
-    from state_layer.analysis import observations, stats
+    from state_layer import profile as core_profile
 
     if not store.has_v2(asset):
         return []
-    obs = observations.panel(panel)
     meta = store.load_meta(asset)
     out = []
     for name in CHART_ORDER.get(asset, ()):
@@ -68,7 +66,7 @@ def _profiles(asset: str, panel) -> list[dict]:
             continue
         labels = store.load_group_labels(asset, name)
         out.append({"title": str(meta["groups"][name].get("title") or name),
-                    "table": stats.profile(asset, obs, labels=labels)})
+                    "table": core_profile.profile(asset, core_profile.observations(panel), labels=labels)})
     return out
 
 
@@ -91,7 +89,7 @@ def _rows(panel, labels) -> list[dict]:
 
 def _grid_labels(asset: str, price: pd.Series, vol: pd.Series):
     """九宫格：格 → 「下跌 - 低波」中文图注（颜色 key 与 hover 用同一套字符串）。"""
-    from state_layer.analysis import combine
+    from state_layer.web import combine
 
     names = {"trend_down": "下跌", "range": "震荡", "trend_up": "上涨",
              "low": "低波", "normal": "中波", "high": "高波"}
@@ -247,8 +245,6 @@ def index(request: Request, asset: str = "ashare", days: int = 250):
     panel = get_data(state_assets.panel_of(asset))
 
     prof = port.profile(asset, panel)
-    tl = port.timeline(asset, panel, days)
-    avail = port.availability(panel)
     try:
         cur = port.current_state(asset)
     except FileNotFoundError:
@@ -273,11 +269,11 @@ def index(request: Request, asset: str = "ashare", days: int = 250):
 
     return _tpl(request).TemplateResponse(
         request, "diagnose.html",
-        {"asset": asset, "profile": prof, "charts": charts, "avail": avail,
+        {"asset": asset, "profile": prof, "charts": charts, "avail": [],
          "profiles": _profiles(asset, panel),
          "current": cur, "spec": spec, "transition": trans, "assets": ASSETS,
-         "groups": observations.GROUPS,
-         "excluded": observations.EXCLUDED_TABLES, "days": days})
+         "groups": {},
+         "excluded": [], "days": days})
 
 
 @router.get("/diagnose")

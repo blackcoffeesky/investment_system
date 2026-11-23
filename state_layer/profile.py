@@ -1,4 +1,4 @@
-"""状态画像：把 HMM 标签和观测矩阵拼起来，看每个状态"长什么样"。
+"""状态画像（核心计算）：把标签和面板拼起来，看每个状态"长什么样"。
 
 这一层只做**描述**，不做判断。目的是回答一个问题：
 
@@ -27,30 +27,34 @@ LABEL_NAME = {
 }
 
 
-def _current(asset: str, features=None) -> dict:
-    """延迟导入 port：port 会 import stats，模块级互相引用会成环。"""
-    from state_layer.port import get_port
-
-    return get_port().current_state(asset, features)
-
-
 def load_labels(asset: str) -> pd.Series:
     """读状态标签：v2 优先（primary 组），没有 v2 回退 legacy。"""
     return store.labels_any(asset)
 
 
-def current(asset: str) -> dict:
-    """当前 spec（v2 的 spec.json 或 legacy 的 current.json）。"""
-    try:
-        return store.spec_any(asset)
-    except FileNotFoundError:
-        return {}
+def observations(panel: pd.DataFrame) -> pd.DataFrame:
+    """从面板自建画像用的观测列（2026-11-23 起 `analysis/observations.py` 已删）。"""
+    idx = pd.DatetimeIndex(panel.index)
+    out = pd.DataFrame(index=idx)
+    close = panel["close"]
+    out["close"] = close
+    out["ret"] = close.pct_change() * 100
+    out["vol20"] = out["ret"].rolling(20, min_periods=10).std() * 100
+    out["amount"] = panel["amount"] if "amount" in panel else float("nan")
+    out["turnover"] = panel["turnover"] if "turnover" in panel else float("nan")
+    if "csi1000" in panel and "csi300" in panel:
+        out["small_large"] = (panel["csi1000"].pct_change()
+                              - panel["csi300"].pct_change()) * 100
+    else:
+        out["small_large"] = float("nan")
+    return out
 
 
 def profile(asset: str, obs: pd.DataFrame,
             labels: pd.Series | None = None) -> pd.DataFrame:
     """各状态的天数、持续、收益、波动、成交、换手、大小盘差。"""
-    labels = load_labels(asset) if labels is None else labels.dropna().astype(str)
+    labels = (store.load_group_labels(asset) if labels is None
+              else labels.dropna().astype(str))
     if labels.empty or obs.empty:
         return pd.DataFrame()
 
@@ -78,28 +82,3 @@ def profile(asset: str, obs: pd.DataFrame,
 
     out.insert(0, "name", [LABEL_NAME.get(i, i) for i in out.index])
     return out.reset_index().rename(columns={"index": "label"})
-
-
-def timeline(asset: str, obs: pd.DataFrame, days: int = 250) -> list[dict]:
-    """时间轴用的数据：日期、收盘、成交额、状态。
-
-    市场宽度（涨跌家数比）已从数据层移除，时间轴暂不画宽度。
-    """
-    labels = load_labels(asset)
-    if obs.empty:
-        return []
-    df = obs.tail(days).copy()
-    df["label"] = labels.reindex(df.index).fillna("")
-    close = obs["close"] if "close" in obs else None
-    rows = []
-    for d, r in df.iterrows():
-        ts = pd.Timestamp(str(d))
-        c = close.get(d) if close is not None else None
-        a = r.get("amount")
-        rows.append({
-            "date": str(ts.date()),
-            "close": None if c is None or pd.isna(c) else float(c),
-            "amount": None if a is None or pd.isna(a) else float(a),
-            "label": str(r.get("label") or ""),
-        })
-    return rows

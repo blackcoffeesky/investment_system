@@ -6,8 +6,6 @@
 
 from __future__ import annotations
 
-import json
-import pickle
 import tempfile
 from pathlib import Path
 
@@ -109,45 +107,6 @@ def test_reads_never_write():
         store.load_groups("ashare")
         store.load_group_labels("ashare")
         assert _tree(d) == before, f"读路径改了文件树：{set(_tree(d)) ^ set(before)}"
-
-
-def test_reads_do_not_migrate_legacy():
-    """legacy 只读：读它不能把文件搬进 legacy/——搬迁是写路径的事。"""
-    with _TmpModelDir() as root:
-        d = root / "ashare"
-        d.mkdir(parents=True)
-        (d / "labels.csv").write_text("date,label\n2026-11-10,range\n", encoding="utf-8")
-        (d / "current.json").write_text(json.dumps({"k": 3}), encoding="utf-8")
-        (d / "chain.pkl").write_bytes(pickle.dumps({"chain": []}))
-        before = _tree(d)
-
-        assert store.has_v2("ashare") is False
-        assert store.group_names("ashare") == ()
-        assert list(store.load_labels("ashare")) == ["range"]   # 旧接口仍可读
-
-        assert not (d / "legacy").exists(), "读路径触发了 legacy 迁移"
-        assert _tree(d) == before
-
-
-def test_save_migrates_legacy_and_keeps_it():
-    """首次 v2 写入把旧四件套移进 legacy/，内容不变、不删；重复写幂等。"""
-    with _TmpModelDir() as root:
-        d = root / "ashare"
-        d.mkdir(parents=True)
-        (d / "labels.csv").write_text("date,label\n2026-11-10,range\n", encoding="utf-8")
-        (d / "chain.pkl").write_bytes(pickle.dumps({"chain": ["old"]}))
-
-        store.save_estimate("ashare", spec=_spec(), params=_params(),
-                            groups=_groups_df())
-
-        assert not (d / "labels.csv").exists() and not (d / "chain.pkl").exists()
-        legacy = d / "legacy"
-        assert (legacy / "labels.csv").read_text(encoding="utf-8").startswith("date,label")
-        assert pickle.loads((legacy / "chain.pkl").read_bytes())["chain"] == ["old"]
-
-        store.save_estimate("ashare", spec=_spec(), params=_params(),
-                            groups=_groups_df())
-        assert (legacy / "chain.pkl").exists(), "重复写入把 legacy 弄丢了"
 
 
 def test_missing_v2_raises_with_hint():
