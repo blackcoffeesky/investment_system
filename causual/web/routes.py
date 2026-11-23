@@ -113,22 +113,47 @@ def _age_days(iso: str | None) -> int | None:
         return None
 
 
-def _asset_state(asset: str, meta) -> dict:
-    """一个资产的产物状态：状态模型、边快照、数据覆盖。"""
-    out: dict = {"asset": asset}
+def _asset_state(asset: str, meta, st) -> dict:
+    """一个资产的产物状态：状态模型、边快照、数据覆盖。
 
-    cur = DATA / "regime" / asset / "current.json"
-    if cur.exists():
-        j = json.loads(cur.read_text(encoding="utf-8"))
-        out["regime_fit"] = j.get("fit_date")
-        out["regime_age"] = _age_days(j.get("fit_date"))
-        out["k"] = j.get("k")
-        out["signature"] = j.get("label_signature")
+    **状态模型的信息一律走 `StatePort`**（`spec` / `labels`）。这里以前直接读
+    `causual/data/regime/{asset}/current.json` + `labels.csv` —— 状态层把产物搬到
+    `state_layer/saved_models/{asset}/spec.json` + `groups.csv` 之后，那两个文件
+    永远不存在，于是「状态模型 / K / 签名 / 标签」一栏**永远空白且不报错**（静默失败）。
+    2026-11-23 修。
 
-    lab = DATA / "regime" / asset / "labels.csv"
-    if lab.exists():
-        lines = lab.read_text(encoding="utf-8").strip().splitlines()
-        out["labels_end"] = lines[-1].split(",")[0] if len(lines) > 1 else ""
+    v2 的 `spec` 里**没有拟合日期**（只有 `fit_id`），所以「状态模型拟合」那行
+    v2 下显示 `—`，「模型 ID」另起一行显示 `fit_id`；不拿文件 mtime 冒充拟合时间。
+    """
+    out: dict = {"asset": asset, "regime_age": None, "edges_age": None}
+
+    try:
+        spec = st.spec(asset)
+    except Exception:  # noqa: BLE001  （没拟合过就是没产物，不是错误）
+        spec = None
+    if spec:
+        if spec.get("schema") == "estimator-v2":
+            prim = spec.get("primary")
+            grp = (spec.get("groups") or {}).get(prim, {}) if prim else {}
+            out["group"] = prim
+            out["k"] = grp.get("k")
+            out["signature"] = grp.get("label_signature")
+            out["model_id"] = grp.get("fit_id")
+        else:                       # legacy 三段式
+            data = spec.get("data") or {}
+            out["k"] = spec.get("k") or (spec.get("model") or {}).get("k")
+            out["signature"] = data.get("label_signature")
+            out["model_id"] = data.get("fit_id")
+            out["regime_fit"] = data.get("fit_date")
+            out["regime_age"] = _age_days(data.get("fit_date"))
+
+    try:
+        lab = st.labels(asset)
+        if len(lab):
+            out["labels_end"] = str(pd.DatetimeIndex(lab.index)[-1].date())
+            out["labels_n"] = int(len(lab))
+    except Exception:  # noqa: BLE001
+        pass
 
     snap = DATA / "snapshots" / asset / "latest.json"
     if snap.exists():
@@ -157,7 +182,7 @@ def _asset_state(asset: str, meta) -> dict:
 def fit_index(request: Request):
     services = request.app.state.services
     meta = services["datahub"].metadata()
-    assets = [_asset_state(a, meta) for a in ("ashare", "gold")]
+    assets = [_asset_state(a, meta, services["state"]) for a in ("ashare", "gold")]
     log_tail = ""
     if FIT_LOG.exists():
         log_tail = "\n".join(

@@ -18,8 +18,12 @@
   <tr><td>状态模型拟合</td><td>
     {{ a.regime_fit or '—' }}
     {% if a.regime_age is not none %}<span class="muted">（{{ a.regime_age }} 天前）</span>{% endif %}
+    {% if not a.regime_fit and a.model_id %}<span class="muted">（v2 spec 只存 fit_id，不存拟合日期）</span>{% endif %}
   </td></tr>
-  <tr><td>标签覆盖到</td><td>{{ a.labels_end or '—' }}</td></tr>
+  {% if a.group %}<tr><td>分组 / K</td><td>{{ a.group }} · K={{ a.k or '—' }}</td></tr>{% endif %}
+  {% if a.model_id %}<tr><td>模型 ID</td><td class="muted">{{ a.model_id }}</td></tr>{% endif %}
+  <tr><td>标签覆盖到</td><td>{{ a.labels_end or '—' }}
+    {% if a.labels_n %}<span class="muted">（{{ a.labels_n }} 天）</span>{% endif %}</td></tr>
   <tr><td>边快照</td><td>
     {{ a.edges_fit or '—' }}
     {% if a.edges_age is not none %}<span class="muted">（{{ a.edges_age }} 天前）</span>{% endif %}

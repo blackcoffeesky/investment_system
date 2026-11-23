@@ -2,6 +2,57 @@
 
 ---
 
+# v5.59（2026-11-23）：清理 13 个零调用符号 + 修 `/fit` 页的静默空白
+
+## ① 删掉的 13 个符号（`c8525a9`，纯删除、不动逻辑）
+
+全库 `grep` 确认 0 调用，用户逐项核过后批准：
+
+| 符号 | 位置 | 行数 |
+|---|---|---|
+| `console` | `ashare/pipeline.py` / `gold/pipeline.py` | 5 + 5 |
+| `build_console` | `web/render.py` | 28（只被上面两个死 `console` 调） |
+| `forward_returns` / `rank_ic` / `rank_ic_table` | `causual_core/evaluate.py` | 7 + 5 + 17 |
+| `is_shared` / `natural_day_nodes` | `causual_core/nodes.py` | 2 + 2 |
+| `describe_series` | `causual_core/macro_layer.py` | **89**（唯一引用是那行 `# noqa: F401`） |
+| `Edge.validate` | `causual_core/edge.py` | 10 |
+| `_warn` | `ashare` / `gold` `pipeline.py` | 3 + 2 |
+
+连带删掉 4 处只为它们存在的 import。`causual/` 的 `.py` 从 **4289 → 4119 行**（净 −170，
+其中符号本体 −187 行、import 合并 +3 行、空行归并 −/−；`git diff` 为 +3 / −191）。
+
+## ② `/fit` 页的静默失败（修）
+
+页面读的是状态层的**旧路径** `causual/data/regime/{asset}/current.json` 与 `labels.csv`——
+状态层把产物搬到 `state_layer/saved_models/{asset}/spec.json` + `groups.csv` 之后，
+这两个文件**永远不存在**，于是「状态模型 / K / 签名 / 标签」一栏**永远空白且不报错**。
+
+改成走 `StatePort`（`spec()` / `labels()`），并把 v2 的分组信息显示出来：
+
+```
+ashare  分组/K = short_price · K=3   模型 ID = 55d2bf54aceb
+        标签覆盖到 = 2026-11-13（2496 天）   签名 = 8890155f7213
+gold    分组/K = raw · K=4           模型 ID = 5060f481470e
+        标签覆盖到 = 2026-11-16（4069 天）   签名 = 0660ba2fa38b
+```
+
+v2 的 `spec` **不存拟合日期**（只有 `fit_id`），所以「状态模型拟合」那行的日期显示 `—`
+并注明原因——**不拿文件 mtime 冒充拟合时间**。
+
+## ③ 快照里的 `INSIDER_NET` 模型：**待下次重估时自然清掉**
+
+`edges_20261113.json` 里还有 10 条模型、DAG 只有 9 条（`INSIDER_NET` 已从配置删除）。
+`snapshot.load` 现在**跳过并出声**，所以不影响出卡：
+
+```
+[快照] 1 条边的模型已不在 DAG 里，本次忽略：['INSIDER_NET→CSI_ALL']；要彻底清掉请重估：…
+```
+
+**不为清这一条去重估 edges**（重估会再动一遍全部 β，用户正要 review 结果）。
+下次因别的原因重估时，它会自然从文件里消失。
+
+---
+
 # v5.58（2026-11-23）：弃用 `INSIDER_NET` 边（只在宏观层用）
 
 用户拍板：**内部人增持从边层弃用，只在宏观层使用**。
