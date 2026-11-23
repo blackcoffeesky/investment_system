@@ -98,14 +98,4 @@ def index(edges: list[Edge]) -> dict[tuple[str, str], Edge]:
     return {e.key: e for e in edges}
 
 
-def validate(edges: list[Edge], target: str, allowed_labels: tuple[str, ...]) -> None:
-    """装配期自检：标签拼错会静默失效，必须在这里拦住。"""
-    allowed = set(allowed_labels)
-    for e in edges:
-        for lbl in e.regime_valid:
-            if lbl not in allowed:
-                raise ValueError(f"{e} 的 regime_valid 含未知标签 {lbl!r}；可选：{sorted(allowed)}")
-        for lbl in e.direction_by_label:
-            if lbl not in allowed:
-                raise ValueError(f"{e} 的 direction_by_label 含未知标签 {lbl!r}")
         # 上游边的 target 不是资产主标的（如 USD_INDEX→USDCNY），所以不校验 target

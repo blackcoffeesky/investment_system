@@ -675,31 +675,3 @@ def build_detail_card(
     return _b.sections()
 
 
-def build_console(
-    df: pd.DataFrame,
-    when: pd.Timestamp,
-    models: dict[tuple[str, str], EdgeModel],
-    bundle: SignalBundle,
-    edges: list[Edge],
-    *,
-    label_col: str,
-    source_col: dict[str, str],
-    target: str,
-) -> str:
-    contribs = contributions_at(
-        df, models, bundle, edges, when, label_col=label_col, source_col=source_col
-    )
-    direct = [c for c in contribs if c.edge.target == target]
-    label = str(df.loc[when, label_col])
-    lines = [
-        f"{when.date()}  {label}  预期次日={_bp(float(bundle.predicted.loc[when]))} "
-        f"(α={float(bundle.alpha.loc[when]):+.2f})",
-        "-" * 78,
-    ]
-    for c in sorted(direct, key=lambda x: -abs(x.contrib)):
-        flag = "OK" if c.sign_ok else "FLIP"
-        lines.append(
-            f"{str(c.edge):>28s}  z={c.reading_z:+.2f}  beta={c.beta * 100:+6.1f}bp  "
-            f"contrib={c.contrib * 100:+6.1f}bp  {flag}"
-        )
-    return "\n".join(lines)

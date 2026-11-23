@@ -19,7 +19,7 @@ from shared.utils import data_processing as dp
 from causual.causual_core import snapshot
 from causual.causual_core.spec import label_signature_of
 from causual.causual_core.estimators import EdgeModel, fit_all
-from causual.web.render import build_card, build_console
+from causual.web.render import build_card
 from causual.causual_core.signal_layer import build_bundle
 from causual.causual_assets.ashare import config as C
 
@@ -71,11 +71,6 @@ SOURCE_COL = C.SOURCE_COL
 # `causual_assets.load(asset)` 返回的就是这个模块，测试只看得见这里的东西。
 NOT_CONNECTED = C.NOT_CONNECTED
 SIGNAL_LAG = 0
-
-
-def _warn(msg: str) -> None:
-    """装配降级**要响**：不抛异常（下游还能跑），但必须说出来。"""
-    print(f"[面板] {msg}", file=sys.stderr)
 
 
 def _derived(df: pd.DataFrame, base: pd.DataFrame) -> dict[str, pd.Series]:
@@ -348,7 +343,7 @@ def make_card(df: pd.DataFrame, spec: dict, models: dict, when: pd.Timestamp,
               profile: pd.DataFrame,
               data_notes: list[str] | None = None,
               state_line: str | None = None) -> list:
-    from causual.causual_core.macro_layer import structural_state, describe_series  # noqa: F401
+    from causual.causual_core.macro_layer import structural_state
 
     bundle = build_bundle(
         df, models, EDGES, label_col=LABEL_COL,
@@ -388,8 +383,3 @@ def make_detail_card(df: pd.DataFrame, spec: dict, models: dict, when: pd.Timest
     )
 
 
-def console(df: pd.DataFrame, models: dict, bundle) -> str:
-    return build_console(
-        df, df.index[df[LABEL_COL] != ""][-1], models, bundle, EDGES,
-        label_col=LABEL_COL, source_col=SOURCE_COL, target=C.TARGET,
-    )

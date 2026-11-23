@@ -62,36 +62,3 @@ def sign_audit(models: dict[tuple[str, str], EdgeModel]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def forward_returns(close: pd.Series, open_: pd.Series | None, horizons=(1, 5, 10)) -> pd.DataFrame:
-    out = pd.DataFrame(index=close.index)
-    for h in horizons:
-        out[f"fwd{h}"] = (close.shift(-h) / close - 1.0) * 100.0
-        if open_ is not None:
-            out[f"fwd_oc{h}"] = (close.shift(-h) / open_.shift(-1) - 1.0) * 100.0
-    return out
-
-
-def rank_ic(alpha: pd.Series, fwd: pd.Series) -> float:
-    d = pd.concat([alpha.rename("a"), fwd.rename("f")], axis=1).dropna()
-    if len(d) < 30:
-        return float("nan")
-    return float(d["a"].corr(d["f"], method="spearman"))
-
-
-def rank_ic_table(alpha: pd.Series, fwd: pd.DataFrame, n_boot: int = 300, seed: int = 42) -> pd.DataFrame:
-    rng = np.random.default_rng(seed)
-    rows = []
-    for col in fwd.columns:
-        d = pd.concat([alpha.rename("a"), fwd[col].rename("f")], axis=1).dropna()
-        if len(d) < 30:
-            continue
-        ic = float(d["a"].corr(d["f"], method="spearman"))
-        vals = []
-        n = len(d)
-        for _ in range(n_boot):
-            idx = rng.integers(0, n, n)
-            s = d.iloc[idx]
-            vals.append(float(s["a"].corr(s["f"], method="spearman")))
-        lo, hi = np.nanpercentile(vals, [2.5, 97.5])
-        rows.append({"horizon": col, "n": n, "rank_ic": ic, "ci_low": lo, "ci_high": hi})
-    return pd.DataFrame(rows)

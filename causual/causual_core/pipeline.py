@@ -26,7 +26,6 @@ from causual.causual_core.spec import (
     label_signature_of as spec_label_signature,
     profile_of,
 )
-from causual.web.render import build_console
 from causual.causual_core.signal_layer import build_bundle
 
 OUT = Path("causual/data/output")

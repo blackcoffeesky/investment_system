@@ -79,9 +79,3 @@ def freq_of(name: str, local: dict[str, Node] | None = None, default: str = "D")
     return n.freq if n else default
 
 
-def is_shared(name: str) -> bool:
-    return name in SHARED
-
-
-def natural_day_nodes() -> list[str]:
-    return [n.name for n in SHARED.values() if n.calendar == "natural"]
