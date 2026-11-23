@@ -13,7 +13,8 @@
     "datahub/fin/write.py",
     "state_layer/port.py",
     "state_layer/web",
-    "state_layer/analysis",
+    "state_layer/profile.py",
+    "state_layer/web/combine.py",
     // 契约层：store 是落盘格式的定义处，base 是 Estimator/GroupResult 协议的定义处。
     // 它们类型不清楚，上面所有调用方都不清楚。
     "state_layer/store.py",

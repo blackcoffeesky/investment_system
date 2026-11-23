@@ -202,7 +202,11 @@ def test_modules_have_web_package():
 
 
 def test_state_page_renders():
-    """诊断页：画像表 + SVG 时间轴 + 观测矩阵都要出来。"""
+    """诊断页：分组画像 + 多张 SVG 状态图。
+
+    2026-11-23：**观测矩阵整体移除**（用户要求），所以这里反过来了——
+    断言它**不在**页面上。删功能要能证明它真从页面消失了，不是"我以为删了"。
+    """
     from fastapi.testclient import TestClient
 
     from service.app import app
@@ -210,7 +214,10 @@ def test_state_page_renders():
     r = TestClient(app).get("/state")
     assert r.status_code == 200
     assert "<svg" in r.text, "时间轴没画出来"
-    assert "各状态画像" in r.text and "观测矩阵" in r.text
+    assert "各状态画像" in r.text, "分组画像没出来"
+    assert "观测矩阵" not in r.text, "观测矩阵已移除，不该再出现"
+    # A 股三组 + 九宫格 = 4 张图
+    assert r.text.count("<svg") >= 4, f"图数不足：{r.text.count('<svg')}"
 
 
 def test_regenerate_card_returns_303():
@@ -240,11 +247,19 @@ def test_regenerate_card_returns_303():
 
 
 def test_state_excludes_causual_inputs():
-    """诊断层不许读 causual 的信号输入（两套系统输入不相交）。"""
-    from state_layer.analysis import observations
+    """诊断层不许读 causual 的信号输入（两套系统输入不相交）。
 
-    used = {t for o in observations.OBSERVATIONS for t in o.sources}
-    assert not (used & set(observations.EXCLUDED_TABLES)), used
+    2026-11-23：观测矩阵（`state_layer/analysis/observations.py`）已整体移除，
+    这条测试原先靠遍历 `OBSERVATIONS` 证明"不读 causual 表"。
+    断言对象换成**状态层实际读的表**（`port.required_tables`）——
+    原来查的是"意图清单"，现在查"真读了什么"，更直接。
+    """
+    from state_layer.port import get_port
+
+    causual_only = {"vix", "usdcny", "usd_index", "fed_rate", "real_yield_10y",
+                    "shibor3m", "margin_balance", "etf_shares", "insider_net"}
+    used = set(get_port().required_tables("ashare"))
+    assert not (used & causual_only), f"状态层读了 causual 的表：{used & causual_only}"
 
 
 def test_state_contract_fields():
