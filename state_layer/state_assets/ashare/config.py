@@ -53,7 +53,8 @@ GROUP_LABELS = {
 WARMUP_BARS = {"short_price": 10, "short_vol": 5, "long_price": 120}
 
 # walk-forward 参数（**只在这里**；代码里不写死）。用户 2026-11-22 定的默认值。
-WALK_FORWARD = {"min_train": 250, "refit_every": 60, "window": 250}
+# 2026-11-23 用户：窗口太小导致状态漂移严重 → 1000 天窗口 / 每 125 交易日重估
+WALK_FORWARD = {"min_train": 1000, "refit_every": 125, "window": 1000}
 
 # 评价用哪个指标、及格线多少。模型不评价自己，由 state_layer.metrics 算。
 # 注意：分离度只作参考，**不作门槛**（硬约束是占比/持续/ES5 三件套）。

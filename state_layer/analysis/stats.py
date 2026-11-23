@@ -47,9 +47,10 @@ def current(asset: str) -> dict:
         return {}
 
 
-def profile(asset: str, obs: pd.DataFrame) -> pd.DataFrame:
+def profile(asset: str, obs: pd.DataFrame,
+            labels: pd.Series | None = None) -> pd.DataFrame:
     """各状态的天数、持续、收益、波动、成交、换手、大小盘差。"""
-    labels = load_labels(asset)
+    labels = load_labels(asset) if labels is None else labels.dropna().astype(str)
     if labels.empty or obs.empty:
         return pd.DataFrame()
 

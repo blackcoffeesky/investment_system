@@ -162,6 +162,7 @@ class RegimeFit:
         scaler: dict | None = None
         lo = hi = None
         label_map: dict[int, object] = {}
+        refit_dates: list[str] = []   # 每次重估的截止日（页面画竖虚线用）
 
         for i in range(min_train, len(valid)):
             if model is None or (i - min_train) % refit_every == 0:
@@ -171,6 +172,7 @@ class RegimeFit:
                 scaler = _scaler_of(hist, lo, hi)
                 Xtr = prep_features(hist, scaler, lo, hi)
                 model = _fit_gauss(Xtr, self.k, seed=self.seed)
+                refit_dates.append(str(pd.Timestamp(cutoff).date()))
                 label_map = labeler(_raw_means(model, scaler, feat.columns))
 
             tail = feat.loc[: valid.index[i]].dropna().tail(window)
@@ -190,6 +192,7 @@ class RegimeFit:
             "clip_hi": hi.to_numpy(dtype=float),
             "features": list(feat.columns),
             "state_labels": {int(k_): str(v) for k_, v in label_map.items()},
+            "refit_dates": refit_dates,
         }
         return out, proba, last
 

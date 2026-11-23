@@ -107,6 +107,7 @@ class Estimator(base.Estimator):
                     str(pd.Timestamp(model.states_.index[-1]).date())),
                 # **只由本组标签决定**；primary 那份就是 causual 读的签名
                 "label_signature": base.label_fingerprint(model.labels_),
+                "refit_dates": list((model.last_window or {}).get("refit_dates") or []),
             }
         return {"primary": C.PRIMARY_GROUP, "groups": meta}
 

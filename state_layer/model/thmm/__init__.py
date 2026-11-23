@@ -106,6 +106,7 @@ class StudentTHMM(Model):
         f = None
         mean = scale = None
         label_map: dict[int, str] = {}
+        refit_dates: list[str] = []
 
         for i in range(min_train, len(sub)):
             if f is None or (i - min_train) % refit_every == 0:
@@ -115,6 +116,7 @@ class StudentTHMM(Model):
                               max_iter=int(p["max_iter"]), rtol=float(p["rtol"]))
                 raw = f["means"] * scale + mean
                 label_map = labeler(pd.DataFrame(raw, columns=cols))
+                refit_dates.append(str(pd.Timestamp(sub.index[i]).date()))
 
             tail = sub.iloc[: i + 1].tail(window)
             Xt = (tail.to_numpy(dtype=float) - mean) / scale
@@ -128,6 +130,7 @@ class StudentTHMM(Model):
         self.proba_ = proba.dropna(how="all").loc[:, :]
         self.states_ = states.dropna().astype(int)
         self.last_window = self._window(f, mean, scale, cols, label_map)
+        self.last_window["refit_dates"] = refit_dates
         self.labels_ = self.states_.map(label_map)
 
     @staticmethod

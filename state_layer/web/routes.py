@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pandas as pd
+
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
@@ -34,6 +36,14 @@ COLORS = {
 }
 
 #: 每个资产要画几张图、按什么顺序（2026-11-22 用户指定）
+# 九宫格 9 格：按**波动档**分三个色系（蓝/橙/红），价格档给浅/中/深
+# 目标：相邻格一眼可分辨（用户 2026-11-23：「没有区分度」）
+GRID_COLORS = {
+    "0-0": "#a8c4e0", "0-1": "#e8b98a", "0-2": "#e89a9a",
+    "1-0": "#5d8ec4", "1-1": "#d98b3f", "1-2": "#cf5b5b",
+    "2-0": "#2f5f96", "2-1": "#a85c12", "2-2": "#8f1f1f",
+}
+
 CHART_ORDER = {
     "ashare": ("short_price", "short_vol", "grid", "long_price"),
     "gold": ("raw",),
@@ -44,140 +54,182 @@ def _tpl(request: Request):
     return request.app.state.templates
 
 
-def _rows(panel, labels, days: int) -> list[dict]:
-    """面板尾部 days 行 + 给定标签 → `_svg` 认的行结构（没有标签就是空串）。"""
-    if panel is None or panel.empty:
+def _profiles(asset: str, panel) -> list[dict]:
+    """每组一张画像表（2026-11-23 用户要求：三组都要有）。"""
+    from state_layer.analysis import observations, stats
+
+    if not store.has_v2(asset):
         return []
-    tail = panel.tail(days)
-    lab = labels.reindex(tail.index).fillna("").astype(str) if len(labels) else None
-    amount = tail["amount"] if "amount" in tail.columns else None
+    obs = observations.panel(panel)
+    meta = store.load_meta(asset)
+    out = []
+    for name in CHART_ORDER.get(asset, ()):
+        if name == "grid" or name not in (meta.get("groups") or {}):
+            continue
+        labels = store.load_group_labels(asset, name)
+        out.append({"title": str(meta["groups"][name].get("title") or name),
+                    "table": stats.profile(asset, obs, labels=labels)})
+    return out
+
+
+def _rows(panel, labels) -> list[dict]:
+    """按**该组自己的日期**取行（各组区间不同，不能拿整段面板铺）。"""
+    if panel is None or panel.empty or not len(labels):
+        return []
+    sub = panel.reindex(labels.index)
+    amount = sub["amount"] if "amount" in sub.columns else None
     rows = []
-    for i, d in enumerate(tail.index):
+    for i, d in enumerate(labels.index):
         rows.append({
             "date": str(d)[:10],
-            "close": float(tail["close"].iloc[i]),
+            "close": float(sub["close"].iloc[i]),
             "amount": float(amount.iloc[i]) if amount is not None else 0.0,
-            "label": lab.iloc[i] if lab is not None else "",
+            "label": str(labels.iloc[i]),
         })
     return rows
 
 
-def _charts(asset: str, panel, days: int) -> list[dict]:
-    """按 `CHART_ORDER` 组装图；`grid` 走 `analysis.combine.grid`（唯一实现）。"""
+def _grid_labels(asset: str, price: pd.Series, vol: pd.Series):
+    """九宫格：格 → 「下跌 - 低波」中文图注（颜色 key 与 hover 用同一套字符串）。"""
     from state_layer.analysis import combine
 
+    names = {"trend_down": "下跌", "range": "震荡", "trend_up": "上涨",
+             "low": "低波", "normal": "中波", "high": "高波"}
+    raw = combine.grid(price, vol)          # 形如 "range-low"
+
+    def to_cn(s: str) -> str:
+        a, _, b = str(s).partition("-")
+        return f"{names.get(a, a)} - {names.get(b, b)}"
+
+    return raw.map(to_cn)
+
+
+def _charts(asset: str, panel) -> list[dict]:
+    """按 `CHART_ORDER` 组装图（**全段数据**，默认区间由前端取最近一年）。"""
     if not store.has_v2(asset):
         return []
     df = store.load_groups(asset)
-    cfg = state_assets.load(asset).config
     meta = store.load_meta(asset)
     out: list[dict] = []
 
     for name in CHART_ORDER.get(asset, ()):
+        colors = None
         if name == "grid":
-            price = store.series_of(df, "short_price")
-            vol = store.series_of(df, "short_vol")
-            labels = combine.grid(price, vol,
-                                  price_order=tuple(cfg.GROUP_LABELS["short_price"]),
-                                  vol_order=tuple(cfg.GROUP_LABELS["short_vol"]))
-            order = [f"{i}-{j}" for i in range(3) for j in range(3)]
-            names = {f"{i}-0": "下跌" if i == 0 else ("震荡" if i == 1 else "上涨")
-                     for i in range(3)}
-            out.append({
-                "title": "短期九宫格（价格档 × 波动档）",
-                "svg": _svg(_rows(panel, labels, days)),
-                "range": f"{labels.index.min():%Y-%m-%d} ~ {labels.index.max():%Y-%m-%d}"
-                         if len(labels) else "—",
-                "note": "两组合成：格号 = 价格档-波动档；"
-                        "区间取 short_price ∩ short_vol（比其他三张窄）",
-            })
-            continue
-        if name not in (meta.get("groups") or {}):
-            continue
-        labels = store.series_of(df, name)
+            labels = _grid_labels(asset,
+                                  store.series_of(df, "short_price"),
+                                  store.series_of(df, "short_vol"))
+            title = "短期九宫格（价格档 × 波动档）"
+            note = ("格号 = 价格档-波动档（0=下跌/低波，2=上涨/高波）；"
+                    "区间取 short_price ∩ short_vol")
+            refit: list[str] = []
+            pn = {"下跌": "0", "震荡": "1", "上涨": "2"}
+            vn = {"低波": "0", "中波": "1", "高波": "2"}
+            colors = {f"{pk} - {vk}": GRID_COLORS[pn[pk] + "-" + vn[vk]]
+                      for pk in pn for vk in vn}
+        else:
+            if name not in (meta.get("groups") or {}):
+                continue
+            labels = store.series_of(df, name)
+            g = meta["groups"][name]
+            title = str(g.get("title") or name)
+            note = (f"{name} · K={g.get('k')} · 该组自己的区间"
+                    f"（各组不同，九宫格取交集）")
+            refit = list(g.get("refit_dates") or [])
+        cid = f"{asset}-{name}"
         out.append({
-            "title": str((meta["groups"][name] or {}).get("title") or name),
-            "svg": _svg(_rows(panel, labels, days)),
+            "cid": cid,
+            "title": title,
             "range": f"{labels.index.min():%Y-%m-%d} ~ {labels.index.max():%Y-%m-%d}"
                      if len(labels) else "—",
-            "note": f"{name} · K={meta['groups'][name].get('k')} · "
-                    f"自己那组的区间（四张图不完全相同）",
+            "note": note,
+            "svg": _svg(_rows(panel, labels), refit=refit, cid=cid, colors=colors),
         })
     return out
 
 
-def _svg(rows: list[dict], width: int = 900, height: int = 218) -> str:
-    """两段式时间轴：上=收盘+状态色带，中=成交额柱。
+def _svg(rows: list[dict], refit: list[str] | None = None, cid: str = "c",
+         colors: dict | None = None, width: int = 900, height: int = 210) -> str:
+    """跑段粗线时间轴：**每段一条带色粗线**（首尾共用切换点 → 天然无缝）。
 
-    市场宽度（涨跌家数比）已从数据层移除，第三段不画了；
-    要恢复就在这里再加一段，数据由 `datahub.fin.derive.breadth()` 现算。
+    为什么不用点/背景色块：点阵在切换处会露出背景（看着像黑缝），背景色块在频繁切换时糊成一片。
+    粗线段用 `stroke-width=3` + `round` 端帽，颜色就是状态色，视觉上"折线本身有颜色"。
     """
+    import json
+
     if not rows:
         return "<p class='muted'>没有可画的数据</p>"
-
-    xs = list(range(len(rows)))
     closes = [r["close"] for r in rows]
-    closes_ok = [c for c in closes if c is not None]
-    if not closes_ok:
+    if not any(c is not None for c in closes):
         return "<p class='muted'>缺少收盘价</p>"
 
-    pad_l, pad_r, pad_t = 44, 8, 10
-    h1, h2 = 130, 50
-    gap = 14
+    cmap = dict(COLORS)
+    cmap.update(colors or {})
+    pad_l, pad_r, pad_t = 44, 10, 10
+    h1, h2, gap = 130, 40, 14
+    n = len(rows)
     plot_w = width - pad_l - pad_r
-    x_at = lambda i: pad_l + (plot_w * i / max(1, len(xs) - 1))  # noqa: E731
-
-    cmin, cmax = min(closes_ok), max(closes_ok)
+    cmin, cmax = min(closes), max(closes)
     span = (cmax - cmin) or 1.0
-    y1 = lambda v: pad_t + h1 - (v - cmin) / span * h1  # noqa: E731
+    amounts = [r["amount"] for r in rows]
+    amax = max(amounts) or 1.0
 
-    parts = [f'<svg viewBox="0 0 {width} {height}" width="100%" '
-             f'style="background:#0f1115;border-radius:8px">']
+    def x(i: int) -> float:
+        return pad_l + plot_w * i / max(1, n - 1)
 
-    # ① 状态色带（背景分段）
-    seg_start = 0
-    for i in range(1, len(rows) + 1):
-        if i == len(rows) or rows[i]["label"] != rows[seg_start]["label"]:
-            lab = rows[seg_start]["label"]
-            if lab:
-                x0, x1 = x_at(seg_start), x_at(i - 1)
-                parts.append(
-                    f'<rect x="{x0:.1f}" y="{pad_t}" width="{max(1, x1 - x0):.1f}" '
-                    f'height="{h1}" fill="{COLORS.get(lab, "#333")}" opacity="0.22">'
-                    f'<title>{lab}</title></rect>')
-            seg_start = i
+    def y(v: float) -> float:
+        return pad_t + h1 * (1.0 - (v - cmin) / span)
 
-    # ② 收盘价
-    pts = " ".join(f"{x_at(i):.1f},{y1(c):.1f}"
-                   for i, c in enumerate(closes) if c is not None)
-    parts.append(f'<polyline points="{pts}" fill="none" stroke="#e6e6e6" '
-                 f'stroke-width="1.4"/>')
+    # 跑段：[a, b] 闭区间，颜色取该段标签
+    runs = []
+    a = 0
+    for i in range(1, n + 1):
+        if i == n or rows[i]["label"] != rows[a]["label"]:
+            runs.append((a, i - 1, rows[a]["label"]))
+            a = i
+    idx_of = {r["date"]: i for i, r in enumerate(rows)}
+    refit_idx = sorted(idx_of[d] for d in (refit or []) if d in idx_of)
 
-    # ③ 成交额柱
-    amts = [r["amount"] or 0 for r in rows]
-    amax = max(amts) or 1.0
-    base2 = pad_t + h1 + gap + h2
-    bw = max(1.0, plot_w / max(1, len(rows)) * 0.7)
-    for i, a in enumerate(amts):
-        h = (a / amax) * h2 if a else 0
-        parts.append(
-            f'<rect x="{x_at(i) - bw / 2:.1f}" y="{base2 - h:.1f}" width="{bw:.1f}" '
-            f'height="{h:.1f}" fill="#3d6b9e" opacity="0.7">'
-            f'<title>{rows[i]["date"]} 成交额 {a:.0f} 亿</title></rect>')
-
-    # ④ 轴的文字标注
-    parts.append(f'<text x="6" y="{pad_t + 10}" fill="#9aa0a6" font-size="10">'
-                 f'{cmax:.0f}</text>')
-    parts.append(f'<text x="6" y="{pad_t + h1}" fill="#9aa0a6" font-size="10">'
-                 f'{cmin:.0f}</text>')
-    parts.append(f'<text x="6" y="{pad_t + h1 + gap + 10}" fill="#9aa0a6" '
-                 f'font-size="10">成交额</text>')
-    parts.append(f'<text x="{pad_l}" y="{height - 4}" fill="#9aa0a6" font-size="10">'
-                 f'{rows[0]["date"]}</text>')
-    parts.append(f'<text x="{width - pad_r - 60}" y="{height - 4}" fill="#9aa0a6" '
-                 f'font-size="10">{rows[-1]["date"]}</text>')
+    parts = [f'<svg class="chart" data-cid="{cid}" viewBox="0 0 {width} {height}" '
+             f'width="100%" height="{height}" role="img">']
+    for i, amt in enumerate(amounts):
+        hh = (amt / amax) * h2
+        parts.append(f'<rect class="amt" data-t="{i}" x="{x(i) - 0.9:.2f}" '
+                     f'y="{pad_t + h1 + gap + h2 - hh:.2f}" width="1.8" '
+                     f'height="{hh:.2f}" fill="#2c3540"/>')
+    for a_, b_, lab in runs:
+        col = cmap.get(lab, "#6b7280")
+        txt = lab if lab else "（无状态）"
+        parts.append(f'<line class="seg" data-a="{a_}" data-b="{b_}" '
+                     f'x1="{x(a_):.2f}" y1="{y(closes[a_]):.2f}" '
+                     f'x2="{x(b_):.2f}" y2="{y(closes[b_]):.2f}" '
+                     f'stroke="{col}" stroke-width="3" stroke-linecap="round">'
+                     f'<title>{rows[a_]["date"]} ~ {rows[b_]["date"]} · {txt}</title></line>')
+    for i in refit_idx:
+        parts.append(f'<line class="rf" data-t="{i}" x1="{x(i):.2f}" x2="{x(i):.2f}" '
+                     f'y1="{pad_t}" y2="{pad_t + h1}" stroke="#e0a23a" '
+                     f'stroke-width="1" stroke-dasharray="3 3" opacity="0.55">'
+                     f'<title>重估 {rows[i]["date"]}</title></line>')
+    parts.append(f'<text x="6" y="{pad_t + 10}" fill="#9aa0a6" font-size="10">{cmax:.0f}</text>')
+    parts.append(f'<text x="6" y="{pad_t + h1}" fill="#9aa0a6" font-size="10">{cmin:.0f}</text>')
+    parts.append(f'<text x="6" y="{pad_t + h1 + gap + h2}" fill="#9aa0a6" font-size="10">成交额</text>')
     parts.append("</svg>")
+
+    blob = {"n": n, "amounts": amounts, "refit": refit_idx,
+            "dates": [r["date"] for r in rows],
+            "geo": {"h1": h1, "h2": h2, "gap": gap, "pad_l": pad_l, "pad_t": pad_t,
+                    "plot_w": plot_w, "cmin": cmin, "cmax": cmax, "amax": amax}}
+    parts.append(f'<script type="application/json" id="d-{cid}">'
+                 f'{json.dumps(blob, ensure_ascii=False)}</script>')
     return "".join(parts)
+
+
+@router.get("/state/chart.js")
+def chart_js():
+    """前端布局脚本（与 node 测试共用同一份源码）。"""
+    from fastapi.responses import FileResponse
+
+    return FileResponse(TEMPLATES.parent / "static" / "chart.js",
+                        media_type="application/javascript")
 
 
 @router.get("/state", response_class=HTMLResponse)
@@ -204,7 +256,7 @@ def index(request: Request, asset: str = "ashare", days: int = 250):
     trans = port.transition(asset, panel)
 
     # 四张图（黄金一张）。**单组用各组自己的区间；九宫格用交集**。
-    charts = _charts(asset, panel, days)
+    charts = _charts(asset, panel)
     spec = {}
     try:
         spec = store.spec_any(asset)
@@ -214,6 +266,7 @@ def index(request: Request, asset: str = "ashare", days: int = 250):
     return _tpl(request).TemplateResponse(
         request, "diagnose.html",
         {"asset": asset, "profile": prof, "charts": charts, "avail": avail,
+         "profiles": _profiles(asset, panel),
          "current": cur, "spec": spec, "transition": trans, "assets": ASSETS,
          "groups": observations.GROUPS,
          "excluded": observations.EXCLUDED_TABLES, "days": days})

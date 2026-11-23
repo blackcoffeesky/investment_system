@@ -1,5 +1,7 @@
 {% extends "base.html" %}
-{% block title %}状态{% endblock %}
+{% block title %}状态
+
+{% endblock %}
 {% block content %}
 
 <div class="row" style="margin-bottom:10px">
@@ -38,26 +40,40 @@
 {% if charts %}
 {% for c in charts %}
 <h2>{{ c.title }}</h2>
-<p class="muted">区间 {{ c.range }} · {{ c.note }}</p>
+<p class="muted">全段 {{ c.range }} · {{ c.note }}</p>
+<div class="rngbar" data-cid="{{ c.cid }}">
+  <div class="track">
+    <input type="range" class="lo" step="1" aria-label="起点">
+    <input type="range" class="hi" step="1" aria-label="终点">
+  </div>
+  <div class="rngfoot">
+    <span class="rlabel muted"></span>
+    <button type="button" class="yr">最近一年</button>
+    <button type="button" class="all">全段</button>
+  </div>
+</div>
 <div class="card-body">{{ c.svg | safe }}</div>
 {% endfor %}
-<p class="muted">上：收盘价 + 状态色带；下：成交额。悬停可看当天数值。
-四张图的区间**不完全相同**（各组的重估起点不同，九宫格取交集）。</p>
+<p class="muted">粗线段 = 状态（颜色见下方画像）；橙色竖虚线 = 该次 walk-forward 重估日。
+默认最近一年，拖动同一条轨道上的两个手柄改区间（纯前端，不请求服务端）。</p>
 {% else %}
-<h2>时间轴（近 {{ days }} 个交易日）</h2>
+<h2>时间轴</h2>
 <p class="muted">还没有 v2 产物，先跑 <code>python -m state_layer.cli fit --asset {{ asset }}</code>。</p>
 {% endif %}
 
 <h2>各状态画像</h2>
-{% if profile is not none and profile | length %}
-<table style="border-collapse:collapse;width:100%;font-size:13px">
+{% if profiles %}
+{% for p in profiles %}
+<h3 style="margin-bottom:4px">{{ p.title }}</h3>
+{% if p.table is not none and p.table | length %}
+<table style="border-collapse:collapse;width:100%;font-size:13px;margin-bottom:14px">
   <tr>
     <th align="left">状态</th><th align="right">天数</th><th align="right">占比</th>
     <th align="right">均持续</th><th align="right">日均收益</th><th align="right">日波动</th>
     <th align="right">成交额(亿)</th><th align="right">换手%</th>
     <th align="right">大小盘差</th>
   </tr>
-  {% for _, r in profile.iterrows() %}
+  {% for _, r in p.table.iterrows() %}
   <tr>
     <td><span class="pill">{{ r['name'] }}</span></td>
     <td align="right">{{ r['n'] }}</td>
@@ -71,11 +87,15 @@
   </tr>
   {% endfor %}
 </table>
-<p class="muted">「—」= 该指标没有覆盖到这段历史。</p>
 {% else %}
-<p class="muted">还没有状态标签，先跑一次 <code>cli regime</code>。</p>
+<p class="muted">这组还没有画像（标签为空）。</p>
+{% endif %}
+{% endfor %}
+{% else %}
+<p class="muted">还没有状态标签，先跑一次 <code>cli fit</code>。</p>
 {% endif %}
 
+<h2>各状态画像</h2>
 <h2>观测矩阵</h2>
 <table style="border-collapse:collapse;width:100%;font-size:13px">
   <tr><th align="left">组</th><th align="left">观测</th><th align="left">状态</th>
@@ -101,4 +121,27 @@
   这样诊断结论和因果归因互相矛盾时，矛盾本身才是信息。
 </p>
 
+{% block extra_head %}{% endblock %}
+<style>
+.rngbar { margin: 6px 0 10px; }
+.rngbar .track { position: relative; height: 30px; }
+.rngbar .track input[type=range] {
+  position: absolute; left: 0; width: 100%; height: 30px; margin: 0;
+  background: none; pointer-events: none; -webkit-appearance: none; appearance: none;
+}
+.rngbar .track input[type=range]::-webkit-slider-thumb {
+  pointer-events: auto; -webkit-appearance: none; appearance: none;
+  width: 14px; height: 22px; border-radius: 3px; background: #c9853a;
+  border: 1px solid #6b4a1f; cursor: pointer; margin-top: 4px;
+}
+.rngbar .track input[type=range]::-moz-range-thumb {
+  pointer-events: auto; width: 14px; height: 22px; border-radius: 3px;
+  background: #c9853a; border: 1px solid #6b4a1f; cursor: pointer;
+}
+.rngbar .track input[type=range]::-webkit-slider-runnable-track {
+  height: 4px; background: #2c3540; border-radius: 2px;
+}
+.rngbar .rngfoot { display: flex; gap: 10px; align-items: center; font-size: 12px; }
+</style>
+<script src="/state/chart.js"></script>
 {% endblock %}

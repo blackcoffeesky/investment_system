@@ -96,6 +96,7 @@ class Estimator(base.Estimator):
                     self.asset, name, GOLD_WALK_FORWARD["k"], C.FEATURES, labels,
                     str(pd.Timestamp(model.states_.index[-1]).date())),
                 "label_signature": base.label_fingerprint(model.labels_),
+                "refit_dates": list((model.last_window or {}).get("refit_dates") or []),
             }
         return {"primary": C.PRIMARY_GROUP, "groups": meta}
 
