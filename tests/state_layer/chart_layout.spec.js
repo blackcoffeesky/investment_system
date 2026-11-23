@@ -56,4 +56,19 @@ const L = require("../../state_layer/web/static/chart.js");
   console.log("visible segs  all=%d year=%d mid=%d", all, year, half);
 }
 
+// ---- ⑤ 相邻点对连线：段数 = 点数-1，且 x 首尾相接
+{
+  const n = 60, padL = 44, plotW = 846;
+  const xs = [];
+  for (let i = 0; i < n - 1; i++) {
+    xs.push([L.xAt(i, 0, n - 1, padL, plotW), L.xAt(i + 1, 0, n - 1, padL, plotW)]);
+  }
+  assert.strictEqual(xs.length, n - 1, "段数应为点数-1");
+  for (let i = 0; i < xs.length - 1; i++) {
+    assert.ok(Math.abs(xs[i][1] - xs[i + 1][0]) < 1e-9,
+      `相邻点对 x 断开：${xs[i][1]} vs ${xs[i + 1][0]}`);
+  }
+  console.log("pair segs %d, continuous OK", xs.length);
+}
+
 console.log("chart_layout OK");

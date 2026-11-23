@@ -33,7 +33,7 @@
     lo = Math.max(0, Math.min(lo, hi));
     hi = Math.min(d.n - 1, Math.max(hi, lo));
 
-    svg.querySelectorAll(".seg").forEach(function (el) {
+    svg.querySelectorAll(".seg, .hit").forEach(function (el) {
       var a = +el.dataset.a, b = +el.dataset.b;
       var s = segSpan(a, b, lo, hi);
       if (!s) { el.style.display = "none"; return; }

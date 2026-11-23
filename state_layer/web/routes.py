@@ -179,7 +179,7 @@ def _svg(rows: list[dict], refit: list[str] | None = None, cid: str = "c",
     def y(v: float) -> float:
         return pad_t + h1 * (1.0 - (v - cmin) / span)
 
-    # 跑段：[a, b] 闭区间，颜色取该段标签
+    # 只用来做 hover 的跑段（能一次说清"这段是什么状态"）
     runs = []
     a = 0
     for i in range(1, n + 1):
@@ -196,13 +196,21 @@ def _svg(rows: list[dict], refit: list[str] | None = None, cid: str = "c",
         parts.append(f'<rect class="amt" data-t="{i}" x="{x(i) - 0.9:.2f}" '
                      f'y="{pad_t + h1 + gap + h2 - hh:.2f}" width="1.8" '
                      f'height="{hh:.2f}" fill="#2c3540"/>')
+    # **按相邻点对画线段**：第 i 段终点 = 第 i+1 段起点，天然无缝。
+    # 颜色取该段**起点**的状态（全图统一），切换日颜色就换。
+    for i in range(n - 1):
+        col = cmap.get(rows[i]["label"], "#6b7280")
+        parts.append(f'<line class="seg" data-a="{i}" data-b="{i + 1}" '
+                     f'x1="{x(i):.2f}" y1="{y(closes[i]):.2f}" '
+                     f'x2="{x(i + 1):.2f}" y2="{y(closes[i + 1]):.2f}" '
+                     f'stroke="{col}" stroke-width="1.8" stroke-linecap="butt"/>')
+    # hover 载体：跑段透明粗线（只负责 <title>，不参与视觉）
     for a_, b_, lab in runs:
-        col = cmap.get(lab, "#6b7280")
         txt = lab if lab else "（无状态）"
-        parts.append(f'<line class="seg" data-a="{a_}" data-b="{b_}" '
+        parts.append(f'<line class="hit" data-a="{a_}" data-b="{b_}" '
                      f'x1="{x(a_):.2f}" y1="{y(closes[a_]):.2f}" '
                      f'x2="{x(b_):.2f}" y2="{y(closes[b_]):.2f}" '
-                     f'stroke="{col}" stroke-width="3" stroke-linecap="round">'
+                     f'stroke="transparent" stroke-width="9">'
                      f'<title>{rows[a_]["date"]} ~ {rows[b_]["date"]} · {txt}</title></line>')
     for i in refit_idx:
         parts.append(f'<line class="rf" data-t="{i}" x1="{x(i):.2f}" x2="{x(i):.2f}" '
