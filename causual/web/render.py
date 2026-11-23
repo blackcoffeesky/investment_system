@@ -403,6 +403,11 @@ def build_card(
     if excluded:
         a("* 标星的机制不进 α（样本不足或方向不可靠），仅作结构参考。")
         a("")
+    a("> ⚠ **敏感度（β）的样本区间不一致**：`causal_forest` 用有标签的交易日"
+      "（A 股 2016-08 起）、`event_study` 的样本是事件、`distributed_lag` 是月度观测。"
+      "跨边比较 β、以及把它们相加得到的 α，都只是分段成立的粗略合成——"
+      "各边的 n 与拟合截止见详情卡。")
+    a("")
 
     return _b.sections()
 
@@ -461,15 +466,23 @@ def build_detail_card(
 
     _b.s("edges", "边清单")
     a("")
-    a("| 边 | 估计器 | 频率 | 最大滞后 | 层 | 进α | 时滞 | n |")
-    a("|---|---|---|---|---|---|---|---|")
+    a("| 边 | 估计器 | 频率 | 最大滞后 | 层 | 进α | 时滞 | n | 拟合到 |")
+    a("|---|---|---|---|---|---|---|---|---|")
     for e in edges:
         m = models.get(e.key)
         freq = e.freq if e.estimator == "distributed_lag" else "—"
         lag = e.max_lag if e.estimator == "distributed_lag" else "—"
         a(f"| {e.source}→{e.target} | {e.estimator} | {freq} | {lag} | "
           f"{e.layer} | {'是' if e.use_in_alpha else '否'} | {e.latency} | "
-          f"{m.n_obs if m else '—'} |")
+          f"{m.n_obs if m else '—'} | "
+          f"{(str(m.fitted_until)[:10] if m and m.fitted_until else '—')} |")
+    a("")
+    a("> ⚠ **各边的样本区间不同**，`β` 不能跨边直接比："
+      "`causal_forest` 用**有标签的交易日**（A 股 2016-08 起）；"
+      "`event_study` 的样本是**事件**（可回溯到 2012）；"
+      "`distributed_lag` 的样本是**月度观测**（受各自数据可得性限制，"
+      "`EQUITY_SUPPLY` 2020 年才开始）。α 是把这些分段 β 相加得到的，"
+      "只能看作「各段各自成立」的粗略合成。详见 DESIGN §3.5。")
     a("")
 
     if supply_detail is not None and len(supply_detail):

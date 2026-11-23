@@ -126,6 +126,40 @@ DERIVED_COLS = (...)   # 其中"耦合层算好、我只搬进来"的那几列
 核心代码只读 `state["profile"]`；两样都没有时打一行 stderr 并给空表，
 不许静默渲染一张空画像表还装作正常。
 
+### 3.5 ⚠️ 各条边的样本区间**不一致**（已知，暂不统一）
+
+`estimators.fit_all()` 只把**按标签窗口切过**的 `sub` 交给 DML；另外两类估计器拿的是
+**整张面板**：
+
+```python
+fit_distributed_lag(df,  …)   # 整张面板
+fit_event_study(df, …)        # 整张面板
+fit_dml_edge(sub, …)          # 标签窗口（有标签的日子）
+```
+
+这不是笔误：三类估计器的**样本单位不同**——DML 的样本是"带标签的交易日"，
+事件研究的样本是**事件**，分布滞后是**月度观测**。硬切到"有标签的日子"没有口径上的道理。
+但后果必须让人知道：**α 是把不同样本区间上估出来的 β 加在一起**。
+
+| 资产 | 边 | 估计器 | 频率 | n_obs | 实际拟合到 |
+|---|---|---|---|---|---|
+| ashare | RY / USDCNY / USD_INDEX / VIX / SHIBOR / MARGIN | causal_forest | D | 2287 | 2026-05-12（起点 = 首个标签日 2016-08-02）|
+| ashare | NATIONAL_ETF | event_study | D | 200 | 2026-11-13（事件 2016-03 起）|
+| ashare | AMOUNT_SHOCK | event_study | D | 34 | 2026-11-13（事件 2012-12 起）|
+| ashare | INSIDER_NET | distributed_lag | ME | 117 | 2026-10-31（月度 2015-12 起）|
+| ashare | EQUITY_SUPPLY | distributed_lag | ME | 60 | 2026-11-30（月度 2020-01 起）|
+| gold | REAL_YIELD / USD_INDEX / VIX | causal_forest | D | 3781 | 2026-01-08（整段历史）|
+| gold | USDCNY / OPEN_INTEREST / COT_NET_LONG | causal_forest | D | 2202 | 2026-01-08 |
+| gold | FED_RATE / CPI_SURPRISE / ETF_FLOW | distributed_lag | ME | 175 / 212 / 119 | 2025-06-30 ~ 2026-11-30 |
+| gold | GEOPOLITIC_RISK（= `world_tension`）| event_study | D | 26 | 2026-11-16 |
+| gold | CB_GOLD_BUY | distributed_lag | ME | **0** | **—（样本不足，未估计）** |
+
+⇒ 引用某条边的 β 时，要说清它是**哪个区间、什么样本单位**上估的；跨边相加得到的 α
+（以及不同边之间的 β 比较）都只能是"各段各自成立"的粗略合成。
+
+快照里每条边都带 `n_obs` / `fitted_until`（`CB_GOLD_BUY` 未估计时为空），
+卡片详情页脚注也标了这件事。**要不要真正统一口径，等用户拍板**——统一前不要"顺手"改。
+
 ---
 
 ## 4. 文件职责

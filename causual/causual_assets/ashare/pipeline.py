@@ -276,29 +276,42 @@ def validate_insider(df: pd.DataFrame, seed: int = 42, n_seg: int = 4) -> pd.Dat
     for i in range(n_seg):
         seg = sub.iloc[bounds[i]:bounds[i + 1]]
         m = fit_distributed_lag(
-            seg, e, tcol=TREATMENT_COL["INSIDER_NET"], target_col="CLOSE",
+            seg, e, tcol=TREATMENT_COL["INSIDER_NET"], target_col="close",
             is_price_target=True,
         )
+        # `EdgeModel` 没有 `cumulative` 字段（这行以前写的是 `m.cumulative`，一直抛
+        # AttributeError，被 fit_edges 的 try/except 吞掉）。累积口径与
+        # `evaluate.sign_audit` 的「lag1..N」一致：把 lag1 及以后逐期相加。
+        cum = sum(v for k, v in (m.path or {}).items() if int(k) >= 1)
         rows.append({
             "segment": f"{seg.index[0].date()} ~ {seg.index[-1].date()}",
             "n": m.n_obs,
-            "cum": m.cumulative,
+            "cum": cum,
             "p": m.p_value,
             "lag0": m.path.get(0, float("nan")),
+            # 估计器跳过时 `path` 是空的（`cum` 会是 0）——把原因写进表里，
+            # 否则读者会把"没估"看成"估出来是 0"
+            "notes": m.notes,
         })
 
     out = pd.DataFrame(rows)
-    path = ROOT / "output" / C.ASSET / "insider_segments.md"
+    # 产物路径 = `causual/data/output/…`（`DATA`），不是仓库根的 `output/`
+    # ——以前写的是 `ROOT / "output"`，会在仓库根建一个游离目录。
+    path = DATA / "output" / C.ASSET / "insider_segments.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = ["# 内部人增持：分段稳健性", "",
-             "| 区间 | n | lag1-3 累积 | p | lag0 | 同号 |", "|---|---|---|---|---|---|"]
+             "| 区间 | n | lag1-3 累积 | p | lag0 | 同号 | 备注 |",
+             "|---|---|---|---|---|---|---|"]
     sign0 = np.sign(out["cum"].iloc[0])
     for _, r in out.iterrows():
         same = "是" if np.sign(r["cum"]) == sign0 else "**否**"
         lines.append(f"| {r['segment']} | {int(r['n'])} | {r['cum']:+.2f}% | "
-                     f"{r['p']:.3f} | {r['lag0']:+.2f}% | {same} |")
+                     f"{r['p']:.3f} | {r['lag0']:+.2f}% | {same} | {r.get('notes') or ''} |")
     lines.append("")
     lines.append("> 四段同号且都显著才算稳健；否则该边的纯度应打折扣。")
+    lines.append("> ⚠️ 备注里写「样本不足，跳过」的段**没有估计结果**（`cum=0` 只是缺省值，"
+                 "不是「效应为零」）——`fit_distributed_lag` 要求月度数 ≥ `max_lag+16`，"
+                 "四等分后每段只有 16~18 个月，够不到这条线。")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n[分段] 内部人增持：")
     print(out.round(3).to_string(index=False))
