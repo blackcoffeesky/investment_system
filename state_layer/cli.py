@@ -19,7 +19,9 @@ import pandas as pd
 
 from shared.adapter import get_data
 
-from state_layer import state_assets, store
+from state_layer import state_assets
+from state_layer import store
+from state_layer.state_assets import base as _base
 from state_layer.model import base
 
 
@@ -41,7 +43,7 @@ def fit_asset(asset: str, panel: pd.DataFrame | None = None,
     spec = est.spec()
 
     path = store.save_estimate(asset, spec=spec, params=est.to_params(),
-                               groups=base.to_long_df(results))
+                               groups=_base.to_long_df(results))
     if verbose:
         summary = ", ".join(
             f"{n}(k={g.k}, {len(g.states)} 天)" for n, g in results.items())

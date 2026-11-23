@@ -107,10 +107,13 @@ class Estimator(base.Estimator):
                     self.asset, name, C.K[name], cols, labels,
                     str(pd.Timestamp(model.states_.index[-1]).date())),
                 # **只由本组标签决定**；primary 那份就是 causual 读的签名
+                "fit_date": str(pd.Timestamp(model.states_.index[-1]).date()),
                 "label_signature": base.label_fingerprint(model.labels_),
                 "refit_dates": list((model.last_window or {}).get("refit_dates") or []),
             }
-        return {"primary": C.PRIMARY_GROUP, "groups": meta}
+        return {"primary": C.PRIMARY_GROUP,
+                "fit_date": meta[C.PRIMARY_GROUP]["fit_date"],
+                "groups": meta}
 
     def to_params(self) -> dict:
         return {"groups": {n: {"model": m.to_dict(), "window": m.last_window}

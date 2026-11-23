@@ -95,10 +95,13 @@ class Estimator(base.Estimator):
                 "fit_id": base.make_fit_id(
                     self.asset, name, GOLD_WALK_FORWARD["k"], C.FEATURES, labels,
                     str(pd.Timestamp(model.states_.index[-1]).date())),
+                "fit_date": str(pd.Timestamp(model.states_.index[-1]).date()),
                 "label_signature": base.label_fingerprint(model.labels_),
                 "refit_dates": list((model.last_window or {}).get("refit_dates") or []),
             }
-        return {"primary": C.PRIMARY_GROUP, "groups": meta}
+        return {"primary": C.PRIMARY_GROUP,
+                "fit_date": meta[C.PRIMARY_GROUP]["fit_date"],
+                "groups": meta}
 
     def to_params(self) -> dict:
         return {"groups": {n: {"model": m.to_dict(), "window": m.last_window}
