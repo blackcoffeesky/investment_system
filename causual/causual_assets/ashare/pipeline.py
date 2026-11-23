@@ -286,6 +286,7 @@ def validate_insider(df: pd.DataFrame, seed: int = 42, n_seg: int = 4) -> pd.Dat
         rows.append({
             "segment": f"{seg.index[0].date()} ~ {seg.index[-1].date()}",
             "n": m.n_obs,
+            "est": bool(m.path),          # 有没有真估出来（`path` 空 = 估计器跳过了）
             "cum": cum,
             "p": m.p_value,
             "lag0": m.path.get(0, float("nan")),
@@ -302,16 +303,28 @@ def validate_insider(df: pd.DataFrame, seed: int = 42, n_seg: int = 4) -> pd.Dat
     lines = ["# 内部人增持：分段稳健性", "",
              "| 区间 | n | lag1-3 累积 | p | lag0 | 同号 | 备注 |",
              "|---|---|---|---|---|---|---|"]
-    sign0 = np.sign(out["cum"].iloc[0])
+    # 只有**真估出来**的段参与"同号"判定基准；跳过的段一律 `—`，
+    # 别让缺省值（`cum=0`）看起来像"效应为零"、更别让"没跑"看起来像"同号"。
+    estimated = out[out["est"]]
+    sign0 = np.sign(estimated["cum"].iloc[0]) if len(estimated) else 0
+
+    def _f(x: float, fmt: str) -> str:
+        return format(x, fmt) if np.isfinite(x) else "—"
+
     for _, r in out.iterrows():
-        same = "是" if np.sign(r["cum"]) == sign0 else "**否**"
-        lines.append(f"| {r['segment']} | {int(r['n'])} | {r['cum']:+.2f}% | "
-                     f"{r['p']:.3f} | {r['lag0']:+.2f}% | {same} | {r.get('notes') or ''} |")
+        if r["est"]:
+            same = "是" if np.sign(r["cum"]) == sign0 else "**否**"
+            body = (f"{int(r['n'])} | {_f(r['cum'], '+.2f')}% | {_f(r['p'], '.3f')} | "
+                    f"{_f(r['lag0'], '+.2f')}% | {same}")
+        else:
+            body = f"{int(r['n'])} | — | — | — | —"
+        lines.append(f"| {r['segment']} | {body} | {r.get('notes') or ''} |")
     lines.append("")
     lines.append("> 四段同号且都显著才算稳健；否则该边的纯度应打折扣。")
-    lines.append("> ⚠️ 备注里写「样本不足，跳过」的段**没有估计结果**（`cum=0` 只是缺省值，"
-                 "不是「效应为零」）——`fit_distributed_lag` 要求月度数 ≥ `max_lag+16`，"
-                 "四等分后每段只有 16~18 个月，够不到这条线。")
+    lines.append("> ⚠️ 「备注」里写「样本不足，跳过」的段**没有估计结果**（表里是 `—`）。"
+                 "`fit_distributed_lag` 要求月度数 ≥ `max_lag+16`（=22），"
+                 "四等分后每段只有 16~18 个月，够不到这条线——**这是方法在当前样本密度下"
+                 "的结构性失效，不是数据缺失**。")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n[分段] 内部人增持：")
     print(out.round(3).to_string(index=False))
