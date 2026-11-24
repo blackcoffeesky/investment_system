@@ -120,25 +120,30 @@ def _window(n: int, lo, hi) -> tuple[int, int]:
 
 
 def _charts(asset: str, panel, lo=None, hi=None) -> list[dict]:
-    """按 `CHART_ORDER` 组装图。
+    """图表数据：存盘标签 + **尾部预测**（只喂 window+warmup 行，绝不整段预测）。
 
-    标签 = **存盘标签 + 一次性 predict 外推到面板最后一天**。
-    每组只算一次（整页只跑一次 `estimator.predict`），外推段单独标出。
+    图上只画两件事：
+    - 一条阴影带 = **当前拟合所用训练窗口**（最后一次 refit 的 cutoff 往前数 window 行）
+    - 阴影右侧的天数 = 预测（模型未重拟合）
     """
     if not store.has_v2(asset):
         return []
     df = store.load_groups(asset)
     meta = store.load_meta(asset)
-    cfg = state_assets.load(asset).config
-    out: list[dict] = []
+    pkg = state_assets.load(asset)
+    cfg = pkg.config
+    win = int((getattr(cfg, "WALK_FORWARD", {}) or {}).get("window", 250))
 
-    # 整页只预测一次（以前每组各调一次 extend → 一次请求 15 次预测，页面几十秒）
+    est = pkg.estimator.load(asset)
+    warm = int(getattr(est, "warmup_bars", 0))
+    tail = panel.tail(win + warm + 20)          # 宁多勿少
     try:
-        est = state_assets.load(asset).estimator.load(asset)
-        predicted = {n: g.label_series() for n, g in est.predict(panel).items()}
+        predicted = {n: g.label_series() for n, g in est.predict(tail).items()}
     except Exception as exc:  # noqa: BLE001
-        print(f"[state] {asset} 外推预测失败：{type(exc).__name__}: {exc}")
+        print(f"[state] {asset} 尾部预测失败：{type(exc).__name__}: {exc}")
         predicted = {}
+
+    out: list[dict] = []
 
     def _extended(name: str):
         stored = store.load_group_labels(asset, name)
@@ -152,25 +157,24 @@ def _charts(asset: str, panel, lo=None, hi=None) -> list[dict]:
     for name in CHART_ORDER.get(asset, ()):
         colors = None
         if name == "grid":
-            _, p_lab, p_ext = _extended("short_price")
+            p_stored, p_lab, p_ext = _extended("short_price")
             _, v_lab, v_ext = _extended("short_vol")
             labels = _grid_labels(asset, p_lab, v_lab)
             ext_dates = p_ext | v_ext
+            band_end_abs = len(p_stored) - 1          # 最后一次 refit 的 cutoff
+            fit_date = meta["groups"]["short_price"].get("fit_date")
             title = "短期九宫格（价格档 × 波动档）"
             note = "格号 = 价格档-波动档（0=下跌/低波，2=上涨/高波）；区间取 short_price ∩ short_vol"
-            refit: list[str] = []
-            pn = {"下跌": "0", "震荡": "1", "上涨": "2"}
-            vn = {"低波": "0", "中波": "1", "高波": "2"}
-            colors = {f"{pk} - {vk}": GRID_COLORS[pn[pk] + "-" + vn[vk]]
-                      for pk in pn for vk in vn}
         else:
             if name not in (meta.get("groups") or {}):
                 continue
             stored, labels, ext_dates = _extended(name)
             g = meta["groups"][name]
+            band_end_abs = len(stored) - 1
+            fit_date = g.get("fit_date")
             title = str(g.get("title") or name)
             note = f"{name} · K={g.get('k')} · 该组自己的区间"
-            refit = list(g.get("refit_dates") or [])
+        band_start_abs = max(0, band_end_abs - win + 1)
 
         n = len(labels)
         if not n:
@@ -178,24 +182,41 @@ def _charts(asset: str, panel, lo=None, hi=None) -> list[dict]:
         w_lo, w_hi = _window(n, lo, hi)
         rows = _rows(panel, labels)[w_lo:w_hi + 1]
         n_ext_in_win = sum(1 for r in rows if r["date"] in ext_dates)
-        tail = f"（末 {n_ext_in_win} 天为外推）" if n_ext_in_win else ""
+        tail_txt = f" · 阴影右侧 = 预测（{n_ext_in_win} 天）" if n_ext_in_win else ""
+        band = None
+        if band_end_abs >= w_lo:
+            b0 = max(band_start_abs, w_lo) - w_lo
+            b1 = min(band_end_abs, w_hi) - w_lo
+            band = (b0, b1, band_start_abs < w_lo)
         out.append({
             "title": title,
             "n": n, "lo": w_lo, "hi": w_hi, "max": max(0, n - 1),
-            "full": f"{labels.index.min():%Y-%m-%d} ~ {labels.index.max():%Y-%m-%d}{tail}",
-            "range": (f"{rows[0]['date']} ~ {rows[-1]['date']}（{len(rows)} 天）{tail}"
+            "full": f"{labels.index.min():%Y-%m-%d} ~ {labels.index.max():%Y-%m-%d}",
+            "range": (f"{rows[0]['date']} ~ {rows[-1]['date']}（{len(rows)} 天）"
                       if rows else "—"),
             "note": note,
             "n_ext": n_ext_in_win,
-            "svg": _svg(rows, refit=refit, colors=colors, ext_dates=ext_dates),
+            "band_text": (f"当前拟合训练窗口 {labels.index[band_start_abs]:%Y-%m-%d} ~ "
+                          f"{labels.index[band_end_abs]:%Y-%m-%d}"
+                          + ("（起点在窗口外）" if band_start_abs < w_lo else "")
+                          + tail_txt),
+            "fit_date": fit_date,
+            "svg": _svg(rows, colors=colors, band=band, band_text=(
+                f"训练窗口 {labels.index[band_start_abs]:%Y-%m-%d}~"
+                f"{labels.index[band_end_abs]:%Y-%m-%d}"
+                + ("（起点在窗口外）" if band_start_abs < w_lo else "")), n_ext=n_ext_in_win),
         })
     return out
 
 
-def _svg(rows: list[dict], refit: list[str] | None = None,
-         colors: dict | None = None, ext_dates: set[str] | None = None,
-         width: int = 900, height: int = 210) -> str:
-    """跑段/点对坐标 + 成交额 + 重估虚线。**只画传进来的这些行**（窗口由调用方决定）。"""
+def _svg(rows: list[dict], colors: dict | None = None,
+         band: tuple[int, int, bool] | None = None, band_text: str = "",
+         n_ext: int = 0, width: int = 900, height: int = 210) -> str:
+    """折线按状态染色（点对连线，无缝）+ 成交额 + **训练窗口阴影带**。
+
+    不再画每次重估的竖虚线（`refit_dates` 仍留在 spec，只是不画）：
+    用户要看的是"这次拟合用的是哪段训练数据"，一条带子比 61 条竖线清楚。
+    """
     if not rows:
         return "<p class='muted'>没有可画的数据</p>"
     closes = [r["close"] for r in rows]
@@ -219,43 +240,39 @@ def _svg(rows: list[dict], refit: list[str] | None = None,
     def y(v: float) -> float:
         return pad_t + h1 * (1.0 - (v - cmin) / span)
 
-    runs = []
-    a = 0
-    for i in range(1, n + 1):
-        if i == n or rows[i]["label"] != rows[a]["label"]:
-            runs.append((a, i - 1, rows[a]["label"]))
-            a = i
-    idx_of = {r["date"]: i for i, r in enumerate(rows)}
-    refit_idx = sorted(idx_of[d] for d in (refit or []) if d in idx_of)
-
     parts = [f'<svg class="chart" viewBox="0 0 {width} {height}" width="100%" '
              f'height="{height}" role="img">']
+    # 训练窗口阴影带（画在最底层，不盖折线）
+    if band is not None:
+        b0, b1 = band[0], band[1]
+        parts.append(f'<rect class="trainband" x="{x(b0):.2f}" y="{pad_t}" '
+                     f'width="{max(1.0, x(b1) - x(b0)):.2f}" height="{h1}" '
+                     f'fill="#5d8ec4" opacity="0.12"/>')
+        parts.append(f'<text x="{x(b0) + 4:.2f}" y="{pad_t + 11}" fill="#7f8b99" '
+                     f'font-size="10">{band_text}</text>')
     for i, amt in enumerate(amounts):
         hh = (amt / amax) * h2
         parts.append(f'<rect class="amt" x="{x(i) - 0.9:.2f}" '
                      f'y="{pad_t + h1 + gap + h2 - hh:.2f}" width="1.8" '
                      f'height="{hh:.2f}" fill="#2c3540"/>')
-    ext = ext_dates or set()
     for i in range(n - 1):
         col = cmap.get(rows[i]["label"], "#6b7280")
-        # 外推段（模型没重拟合、当下补出来的）用虚线 + 半透明，绝不与拟合段同形
-        is_ext = rows[i]["date"] in ext or rows[i + 1]["date"] in ext
-        cls = "seg ext" if is_ext else "seg"
-        extra = (' stroke-dasharray="3 2" opacity="0.5"' if is_ext else "")
-        parts.append(f'<line class="{cls}" x1="{x(i):.2f}" y1="{y(closes[i]):.2f}" '
+        parts.append(f'<line class="seg" x1="{x(i):.2f}" y1="{y(closes[i]):.2f}" '
                      f'x2="{x(i + 1):.2f}" y2="{y(closes[i + 1]):.2f}" '
-                     f'stroke="{col}" stroke-width="1.8" stroke-linecap="butt"{extra}/>')
-    for a_, b_, lab in runs:
-        txt = lab if lab else "（无状态）"
-        parts.append(f'<line class="hit" x1="{x(a_):.2f}" y1="{y(closes[a_]):.2f}" '
-                     f'x2="{x(b_):.2f}" y2="{y(closes[b_]):.2f}" '
-                     f'stroke="transparent" stroke-width="9">'
-                     f'<title>{rows[a_]["date"]} ~ {rows[b_]["date"]} · {txt}</title></line>')
-    for i in refit_idx:
-        parts.append(f'<line class="rf" x1="{x(i):.2f}" x2="{x(i):.2f}" '
-                     f'y1="{pad_t}" y2="{pad_t + h1}" stroke="#e0a23a" '
-                     f'stroke-width="1" stroke-dasharray="3 3" opacity="0.55">'
-                     f'<title>重估 {rows[i]["date"]}</title></line>')
+                     f'stroke="{col}" stroke-width="1.8" stroke-linecap="butt"/>')
+    # hover 文案载体（透明粗线）
+    a = 0
+    for i in range(1, n + 1):
+        if i == n or rows[i]["label"] != rows[a]["label"]:
+            txt = rows[a]["label"] or "（无状态）"
+            parts.append(f'<line class="hit" x1="{x(a):.2f}" y1="{y(closes[a]):.2f}" '
+                         f'x2="{x(i - 1):.2f}" y2="{y(closes[i - 1]):.2f}" '
+                         f'stroke="transparent" stroke-width="9">'
+                         f'<title>{rows[a]["date"]} ~ {rows[i - 1]["date"]} · {txt}</title></line>')
+            a = i
+    if n_ext:
+        parts.append(f'<text x="{width - pad_r - 96}" y="{pad_t + h1 + gap + h2 + 12}" '
+                     f'fill="#e0a23a" font-size="10">→ 预测 {n_ext} 天</text>')
     parts.append(f'<text x="6" y="{pad_t + 10}" fill="#9aa0a6" font-size="10">{cmax:.0f}</text>')
     parts.append(f'<text x="6" y="{pad_t + h1}" fill="#9aa0a6" font-size="10">{cmin:.0f}</text>')
     parts.append(f'<text x="6" y="{pad_t + h1 + gap + h2}" fill="#9aa0a6" font-size="10">成交额</text>')

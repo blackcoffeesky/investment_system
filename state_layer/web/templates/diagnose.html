@@ -56,9 +56,10 @@
   </div>
 </form>
 <div class="card-body">{{ c.svg | safe }}</div>
+<p class="muted">{{ c.band_text }} · 历史标签来自各自那次重估；最后一次重估后的日子是预测</p>
 {% endfor %}
-<p class="muted">粗线段 = 状态（颜色见下方画像）；橙色竖虚线 = 该次 walk-forward 重估日。
-滑块松手后提交表单，**服务端按窗口重新渲染**（不依赖任何前端脚本）。</p>
+<p class="muted">粗线段 = 状态（颜色见下方画像）；阴影带 = 当前拟合所用训练窗口。
+滑块松手后提交表单，服务端按窗口重新渲染。</p>
 {% else %}
 <h2>时间轴</h2>
 <p class="muted">还没有 v2 产物，先跑 <code>python -m state_layer.cli fit --asset {{ asset }}</code>。</p>

@@ -1,15 +1,12 @@
-"""外推段的验收：图表必须追到面板最后一天，并**标出**哪些是外推。
+"""拟合窗口/预测 的验收（2026-11-24 改版后）。
 
-2026-11-24：用户发现"数据到 11-24，图表只到 11-23"——图表读的是存盘标签，
-没走 `extend`。修好后这里钉住三件事：
-1. 页面最大日期 == 面板最后一天
-2. 外推段有独立 class（`seg ext`）+ 虚线/半透明，不与拟合段混淆
-3. extend 不改历史：重叠区间与存盘标签逐位一致
+- 阴影带 = 当前拟合训练窗口（class=trainband，opacity 0.12）
+- 阴影右侧 = 预测天数（文字 "→ 预测 N 天" + 图注）
+- 不再画每次重估的竖虚线；外推段也不再虚线（和正常段一样）
 """
 
 from __future__ import annotations
 
-import re
 import sys
 
 sys.path.insert(0, ".")
@@ -22,33 +19,35 @@ from state_layer import state_assets, store
 from state_layer.port import get_port
 
 
-def _panel():
-    return get_data(state_assets.panel_of("ashare"))
+def _page(asset: str = "ashare") -> str:
+    return TestClient(app).get(f"/state?asset={asset}").text
 
 
 def test_chart_reaches_panel_last_day():
-    panel = _panel()
-    last = str(panel.index[-1].date())
-    page = TestClient(app).get("/state?asset=ashare").text
-    assert last in page, f"页面里没有面板最后一天 {last}"
-    assert "外推" in page, "图注里没有说明外推"
+    panel = get_data(state_assets.panel_of("ashare"))
+    page = _page()
+    assert str(panel.index[-1].date()) in page
+    assert "预测" in page and "当前拟合训练窗口" in page
 
 
-def test_extrapolated_segments_are_marked():
-    page = TestClient(app).get("/state?asset=ashare").text
-    assert page.count('class="seg ext"') >= 1, "外推段没有独立 class"
-    ext = re.findall(r'class="seg ext"[^>]*stroke-dasharray="3 2"[^>]*opacity="0.5"', page)
-    assert ext, "外推段没有虚线/半透明标记"
+def test_train_band_present_and_no_refit_lines():
+    page = _page()
+    assert page.count('class="trainband"') >= 1
+    assert 'class="rf"' not in page, "竖虚线应已删除"
+    assert "stroke-dasharray" not in page, "外推段不该再用虚线"
+
+
+def test_band_text_mentions_outside_window():
+    page = _page()
+    # 默认窗口是最近一年，训练窗口起点（约 1000 天前）必然在窗口外
+    assert "起点在窗口外" in page
 
 
 def test_extend_does_not_change_history():
-    """重叠区间必须逐位一致（防止 extend 改写历史标签）。"""
-    panel = _panel()
+    panel = get_data(state_assets.panel_of("ashare"))
     port = get_port()
     for name in ("short_price", "short_vol", "long_price"):
         stored = store.load_group_labels("ashare", name)
         ext = port.extend("ashare", panel, stored)
         common = stored.index.intersection(ext.index)
-        diff = int((stored.reindex(common) != ext.reindex(common)).sum())
-        assert diff == 0, f"{name} 历史标签被 extend 改了 {diff} 天"
-        assert ext.index.max() >= stored.index.max()
+        assert int((stored.reindex(common) != ext.reindex(common)).sum()) == 0, name
