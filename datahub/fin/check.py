@@ -205,6 +205,12 @@ def run(path: Path | None = None, recent_days: int = 90,
             continue
 
         issues: list[str] = []
+        # ⓪ 脏数据：窗口内出现了非交易日（守卫只管"写入前"，已入库的它不管）
+        if gaps.get("non_trading"):
+            nt = gaps["non_trading"]
+            sample = "、".join(nt[:5])
+            more = f" 等 {len(nt)} 天" if len(nt) > 5 else ""
+            issues.append(f"非交易日数据 {len(nt)} 天（{sample}{more}）")
         # ① 尾部：最新 < 应到（**不套 lag_days**——宽限是 freshness 的事）
         if gaps["stale"]:
             tail = (f"最新停在 {gaps['stale']}" +
@@ -238,8 +244,13 @@ def run(path: Path | None = None, recent_days: int = 90,
             hint = hint_for(name)
             if hint:
                 issues.append(hint)
+            # 只有"非交易日脏数据"时给 `warning`（脏数据该显眼，但不该让整个检查 fail）；
+            # 还缺数/停更的，仍然算 `data`。
+            only_dirty = (gaps.get("non_trading") and not gaps["missing"]
+                          and not gaps["stale"] and len(issues) == 1)
             rows.append({"name": name, "freq": freq, "market": market,
-                         "n": len(obj), "issues": "；".join(issues)})
+                         "n": len(obj), "issues": "；".join(issues),
+                         "status": "warning" if only_dirty else "data"})
     _announce_frozen(frozen, skipped_frozen)
     df = pd.DataFrame(rows)
     if len(df):
@@ -432,6 +443,32 @@ def _as_now(today: "str | pd.Timestamp | None" = None) -> pd.Timestamp:
     return ts.tz_localize("Asia/Shanghai") if ts.tzinfo is None else ts
 
 
+def _non_trading_dates(have: set[str], start: str, end: str, market: str) -> list[str]:
+    """窗口内**存在但不是交易日**的日期（脏数据）。
+
+    2026-11-24 发现服务器上躺着 5,572 行 `2026-11-22`（**周日**）的 `stock_daily`
+    ——守卫补上之前写进去的，一直没人发现。**守卫是"写入前拦"，已入库的脏数据它不清、
+    也报不出来**，所以需要这条检查。
+
+    **只对 A 股（`market=CN`）的 `D` 表调用**，两条实测理由：
+
+    - 美股 / 全球序列**本来就有非交易日数据**：`fed_rate`（FRED DFF）每个日历日都有值、
+      FRED 在美股假日（如 Labor Day）照发、`world_tension` 是新闻指数（周末也有分数）。
+      对它们查非交易日 → 全是误报（2026-11-24 一开就报了 8 张表、几十天）。
+    - `W/M/Q/Y` 的数据日期是**周期末日**，落在周末是正常的。
+
+    **只对 `D` 表调用**：`W/M/Q/Y` 的数据日期是**周期末日**，本来就可能落在周末
+    （`cpi_yoy` 有月末是周六的；`gold_cot_net_long` 是周线、日期全在周日——
+    实测对 W 开启会一次报 33 天，全是误报）。
+
+    ⚠️ 判定必须用 `is_trading_day()`（走交易所日历）：A 股有**调休开市**（周末上班）、
+    也有**节假日休市**（工作日关门），`weekday() < 5` 是错的。
+    """
+    mkt = market if market != "NONE" else "CN"
+    return sorted(d for d in have
+                  if start <= d <= end and not is_trading_day(d, mkt))
+
+
 def find_gaps(table: str, *, lookback: int | None = None,
               max_age_days: int | None = None,
               today: str | pd.Timestamp | None = None,
@@ -480,7 +517,7 @@ def find_gaps(table: str, *, lookback: int | None = None,
         con.close()
 
     out: dict = {"table": table, "freq": freq, "missing": [],
-                 "stale": None, "expected_latest": ""}
+                 "stale": None, "expected_latest": "", "non_trading": []}
     if kind == "eav" or freq == "SPARSE":
         # 稀疏表：没有"每周该有几行"的定义 → `missing` 恒空，**只报 `stale`**：
         # 超过 `max_age_days`（默认 90）没更新就算 stale。这就是原来
@@ -511,6 +548,9 @@ def find_gaps(table: str, *, lookback: int | None = None,
         expected = expected[-n:] if len(expected) > n else expected
         out["expected_latest"] = expected[-1] if expected else end
         out["missing"] = [d for d in expected if d not in have]
+        if str(market).upper() in ("CN", "SSE", "SZSE"):
+            out["non_trading"] = _non_trading_dates(
+                have, start, expected[-1] if expected else end, market)
         latest = max(have) if have else None
         if latest is not None and latest < out["expected_latest"]:
             out["stale"] = latest
@@ -529,6 +569,8 @@ def find_gaps(table: str, *, lookback: int | None = None,
     expected = [str(p.end_time.date()) for p in window_p]
     out["expected_latest"] = expected[-1] if expected else ""
     out["missing"] = [str(p.end_time.date()) for p in window_p if p not in have_p]
+    # `W` **不查**非交易日：周线的日期本来就是"周期末日"（`gold_cot_net_long` 是周日），
+    # 实测一开就 33 天全误报——和 M/Q/Y 同一个道理。
     if have:
         latest_p = pd.Timestamp(max(have)).to_period(per)
         if expected and latest_p < last_ok_p:

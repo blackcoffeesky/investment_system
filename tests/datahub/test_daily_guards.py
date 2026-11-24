@@ -301,3 +301,71 @@ def test_run_skips_frozen_tables():
     assert "industrial_yoy" not in names, f"冻结表不该被报：{rows.to_string()}"
     assert "cpi_yoy" in names, f"正常源缺数却没报：{rows.to_string()}"
     db.unlink()
+
+
+# ------------------------------------------------ 非交易日脏数据（2026-11-24）
+def test_find_gaps_reports_non_trading_rows():
+    """库里存在**非交易日**的行 → `non_trading` 报出来。
+
+    背景：服务器上曾有 5,572 行 `2026-11-22`（周日）的 `stock_daily`，是守卫补上之前
+    写进去的。**守卫是"写入前拦"，已入库的脏数据它不清也报不出来**，所以要有这条检查。
+    """
+    days = [str(d.date()) for d in C.trading_days("2026-11-02", "2026-11-20")]
+    # 窗口 = [start, 最后一个已收盘交易日] = ...~11-20；塞一个窗口内的周六（11-14）
+    db = _db_with(days + ["2026-11-14"])
+    g = find_gaps("t", lookback=20, today="2026-11-21 16:00", path=db)
+    assert g["non_trading"] == ["2026-11-14"], g["non_trading"]
+    assert g["missing"] == [], "周六那两行不该被算成缺数"
+    db.unlink()
+
+
+def test_non_trading_uses_exchange_calendar_not_weekday():
+    """必须走 `is_trading_day`：A 股有**调休开市**（周末上班）。周末判断是错的。"""
+    from shared.utils.trading_calendar import is_trading_day
+
+    # 只断言"日历判定的结论被采用"：把日历认为非交易日的日期塞进表，必须被抓
+    day = "2026-11-14"                                        # 周六（非交易日）
+    assert is_trading_day(day) is False
+    days = [str(d.date()) for d in C.trading_days("2026-11-02", "2026-11-20")]
+    db = _db_with(days + [day])
+    g = find_gaps("t", lookback=20, today="2026-11-21 16:00", path=db)
+    assert day in g["non_trading"], g["non_trading"]
+    db.unlink()
+
+
+def test_non_trading_empty_on_real_db():
+    """当前库里**A 股**的 D 表不该有非交易日数据（2026-11-22 那批已删）。
+
+    只查 `market=CN`：美股/全球序列（`fed_rate` / `vix` / `world_tension`）本来就有
+    周末与假日数据，它们不算脏数据。
+    """
+    from datahub.core.conn import connect
+
+    con = connect()
+    try:
+        names = [r[0] for r in con.execute(
+            "SELECT name FROM metadata WHERE freq='D' AND kind!='eav' "
+            "AND market IN ('CN','SSE','SZSE')")]
+    finally:
+        con.close()
+    bad = {}
+    for n in names:
+        try:
+            nt = find_gaps(n, today="2026-11-24 16:00")["non_trading"]
+        except Exception:  # noqa: BLE001
+            continue
+        if nt:
+            bad[n] = nt
+    assert not bad, f"这些 D 表里有非交易日数据：{bad}"
+
+
+def test_monthly_tables_are_not_checked_for_non_trading():
+    """`M/Q/Y`（和 `W`）不查：它们的日期是**周期末日**，落在周末是正常的。
+
+    `gold_cot_net_long` 是周线、日期全在周日；`cpi_yoy` 有月末是周六的。
+    实测对 W 开启会一次报 33 天，全是误报。
+    """
+    db = _db_with(["2026-08-31", "2026-09-30"], freq="M")
+    g = find_gaps("t", lookback=3, today="2026-11-24 16:00", path=db)
+    assert g["non_trading"] == [], g["non_trading"]
+    db.unlink()
