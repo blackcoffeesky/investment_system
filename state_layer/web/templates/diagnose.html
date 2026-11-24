@@ -37,6 +37,7 @@
   {% endif %}
 </table>
 
+{% if fit_info %}<p class="muted">{{ fit_info }}</p>{% endif %}
 {% if charts %}
 {% for c in charts %}
 <h2>{{ c.title }}</h2>

@@ -85,9 +85,17 @@ class GaussianHMM(Model):
 
     # ---------------- 推断
     def predict(self, features: pd.DataFrame) -> ModelOutput:
+        """窗口内**一次前向过滤**（不再逐日跑循环——逐日那版一次页面要 30 秒）。
+
+        语义：取最后 `window` 行，按 `startprob` 做一次 forward 过滤，
+        取最后一点的后验即当日状态。与 fit 时 walk-forward 的"尾窗最后一点"同源。
+        """
         if self.last_window is None:
             raise RuntimeError("模型还没 fit / 没有 last_window")
+        from scipy.stats import multivariate_normal
+
         from shared.utils.data_processing import prep_features
+        from state_layer.model.thmm.numerics import filtered_predict
 
         lw = self.last_window
         cols = list(lw["features"])
@@ -95,27 +103,24 @@ class GaussianHMM(Model):
         if sub.empty:
             return ModelOutput(pd.Series(dtype="int64"), None)
 
-        hmm = rebuild(lw)
+        tail = sub.tail(int(self.params["window"]))
         lo = pd.Series(np.asarray(lw["clip_lo"], dtype=float), index=cols)
         hi = pd.Series(np.asarray(lw["clip_hi"], dtype=float), index=cols)
         scaler = {"mean": np.asarray(lw["scaler_mean"], dtype=float),
                   "scale": np.asarray(lw["scaler_scale"], dtype=float)}
-        window = int(self.params["window"])
+        X = prep_features(tail, scaler, lo, hi)
 
-        states: dict[pd.Timestamp, int] = {}
-        rows: dict[pd.Timestamp, np.ndarray] = {}
-        for d in sub.index:
-            tail = sub.loc[:d].tail(window)
-            X = prep_features(tail, scaler, lo, hi)
-            post = np.asarray(hmm.predict_proba(X)[-1], dtype=float)
-            states[d] = int(np.argmax(post))
-            rows[d] = post
-
-        k = len(next(iter(rows.values())))
+        means = np.asarray(lw["means"], dtype=float)
+        covars = np.asarray(lw["covars"], dtype=float)
+        k = len(means)
+        log_b = np.column_stack([
+            multivariate_normal.logpdf(X, mean=means[i], cov=covars[i])
+            for i in range(k)])
+        post, _ = filtered_predict(log_b, np.asarray(lw["transmat"], dtype=float),
+                                   np.asarray(lw["startprob"], dtype=float))
         return ModelOutput(
-            states=pd.Series(states, dtype="int64", name="state"),
-            proba=pd.DataFrame.from_dict(rows, orient="index",
-                                         columns=list(range(k))))
+            states=pd.Series(post.argmax(axis=1), index=tail.index, name="state"),
+            proba=pd.DataFrame(post, index=tail.index, columns=list(range(k))))
 
     # ---------------- 评价 / 序列化
     def state_params(self) -> dict[str, Any] | None:

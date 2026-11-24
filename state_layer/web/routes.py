@@ -120,7 +120,11 @@ def _window(n: int, lo, hi) -> tuple[int, int]:
 
 
 def _charts(asset: str, panel, lo=None, hi=None) -> list[dict]:
-    """按 `CHART_ORDER` 组装图；**服务端按 lo/hi 只渲染窗口内的段**。"""
+    """按 `CHART_ORDER` 组装图。
+
+    标签 = **存盘标签 + 一次性 predict 外推到面板最后一天**。
+    每组只算一次（整页只跑一次 `estimator.predict`），外推段单独标出。
+    """
     if not store.has_v2(asset):
         return []
     df = store.load_groups(asset)
@@ -128,12 +132,30 @@ def _charts(asset: str, panel, lo=None, hi=None) -> list[dict]:
     cfg = state_assets.load(asset).config
     out: list[dict] = []
 
+    # 整页只预测一次（以前每组各调一次 extend → 一次请求 15 次预测，页面几十秒）
+    try:
+        est = state_assets.load(asset).estimator.load(asset)
+        predicted = {n: g.label_series() for n, g in est.predict(panel).items()}
+    except Exception as exc:  # noqa: BLE001
+        print(f"[state] {asset} 外推预测失败：{type(exc).__name__}: {exc}")
+        predicted = {}
+
+    def _extended(name: str):
+        stored = store.load_group_labels(asset, name)
+        pred = predicted.get(name)
+        if pred is None or not len(pred):
+            return stored, stored, set()
+        add = pred.loc[pred.index > stored.index.max()]
+        merged = pd.concat([stored, add]).sort_index() if len(add) else stored
+        return stored, merged, {str(d)[:10] for d in add.index}
+
     for name in CHART_ORDER.get(asset, ()):
         colors = None
         if name == "grid":
-            labels = _grid_labels(asset,
-                                  store.series_of(df, "short_price"),
-                                  store.series_of(df, "short_vol"))
+            _, p_lab, p_ext = _extended("short_price")
+            _, v_lab, v_ext = _extended("short_vol")
+            labels = _grid_labels(asset, p_lab, v_lab)
+            ext_dates = p_ext | v_ext
             title = "短期九宫格（价格档 × 波动档）"
             note = "格号 = 价格档-波动档（0=下跌/低波，2=上涨/高波）；区间取 short_price ∩ short_vol"
             refit: list[str] = []
@@ -144,7 +166,7 @@ def _charts(asset: str, panel, lo=None, hi=None) -> list[dict]:
         else:
             if name not in (meta.get("groups") or {}):
                 continue
-            labels = store.series_of(df, name)
+            stored, labels, ext_dates = _extended(name)
             g = meta["groups"][name]
             title = str(g.get("title") or name)
             note = f"{name} · K={g.get('k')} · 该组自己的区间"
@@ -155,20 +177,24 @@ def _charts(asset: str, panel, lo=None, hi=None) -> list[dict]:
             continue
         w_lo, w_hi = _window(n, lo, hi)
         rows = _rows(panel, labels)[w_lo:w_hi + 1]
+        n_ext_in_win = sum(1 for r in rows if r["date"] in ext_dates)
+        tail = f"（末 {n_ext_in_win} 天为外推）" if n_ext_in_win else ""
         out.append({
             "title": title,
             "n": n, "lo": w_lo, "hi": w_hi, "max": max(0, n - 1),
-            "full": f"{labels.index.min():%Y-%m-%d} ~ {labels.index.max():%Y-%m-%d}",
-            "range": (f"{rows[0]['date']} ~ {rows[-1]['date']}（{len(rows)} 天）"
+            "full": f"{labels.index.min():%Y-%m-%d} ~ {labels.index.max():%Y-%m-%d}{tail}",
+            "range": (f"{rows[0]['date']} ~ {rows[-1]['date']}（{len(rows)} 天）{tail}"
                       if rows else "—"),
             "note": note,
-            "svg": _svg(rows, refit=refit, colors=colors),
+            "n_ext": n_ext_in_win,
+            "svg": _svg(rows, refit=refit, colors=colors, ext_dates=ext_dates),
         })
     return out
 
 
 def _svg(rows: list[dict], refit: list[str] | None = None,
-         colors: dict | None = None, width: int = 900, height: int = 210) -> str:
+         colors: dict | None = None, ext_dates: set[str] | None = None,
+         width: int = 900, height: int = 210) -> str:
     """跑段/点对坐标 + 成交额 + 重估虚线。**只画传进来的这些行**（窗口由调用方决定）。"""
     if not rows:
         return "<p class='muted'>没有可画的数据</p>"
@@ -209,11 +235,16 @@ def _svg(rows: list[dict], refit: list[str] | None = None,
         parts.append(f'<rect class="amt" x="{x(i) - 0.9:.2f}" '
                      f'y="{pad_t + h1 + gap + h2 - hh:.2f}" width="1.8" '
                      f'height="{hh:.2f}" fill="#2c3540"/>')
+    ext = ext_dates or set()
     for i in range(n - 1):
         col = cmap.get(rows[i]["label"], "#6b7280")
-        parts.append(f'<line class="seg" x1="{x(i):.2f}" y1="{y(closes[i]):.2f}" '
+        # 外推段（模型没重拟合、当下补出来的）用虚线 + 半透明，绝不与拟合段同形
+        is_ext = rows[i]["date"] in ext or rows[i + 1]["date"] in ext
+        cls = "seg ext" if is_ext else "seg"
+        extra = (' stroke-dasharray="3 2" opacity="0.5"' if is_ext else "")
+        parts.append(f'<line class="{cls}" x1="{x(i):.2f}" y1="{y(closes[i]):.2f}" '
                      f'x2="{x(i + 1):.2f}" y2="{y(closes[i + 1]):.2f}" '
-                     f'stroke="{col}" stroke-width="1.8" stroke-linecap="butt"/>')
+                     f'stroke="{col}" stroke-width="1.8" stroke-linecap="butt"{extra}/>')
     for a_, b_, lab in runs:
         txt = lab if lab else "（无状态）"
         parts.append(f'<line class="hit" x1="{x(a_):.2f}" y1="{y(closes[a_]):.2f}" '
@@ -256,6 +287,15 @@ def index(request: Request, asset: str = "ashare", days: int = 250,
 
     # 四张图（黄金一张）。**单组用各组自己的区间；九宫格用交集**。
     charts = _charts(asset, panel, lo, hi)
+    try:
+        _meta = store.load_meta(asset)
+        n_ext_all = max((c.get("n_ext") or 0) for c in charts) if charts else 0
+        fit_info = (f"最近一次拟合：{_meta.get(chr(102) + chr(105) + chr(116) + chr(95) + chr(100) + chr(97) + chr(116) + chr(101))}"
+                    f" · 之后 {n_ext_all} 天为外推（重跑 "
+                    f"python -m state_layer.cli fit --asset {asset} 可更新）")
+    except Exception as e:  # noqa: BLE001
+        print(f"[state] 读 spec 失败：{type(e).__name__}: {e}")
+        fit_info = ""
     spec = {}
     try:
         spec = store.spec_any(asset)
@@ -268,7 +308,8 @@ def index(request: Request, asset: str = "ashare", days: int = 250,
          "profiles": _profiles(asset, panel),
          "current": cur, "spec": spec, "transition": trans, "assets": ASSETS,
          "groups": {},
-         "excluded": [], "days": days, "lo": lo, "hi": hi})
+         "excluded": [], "days": days, "lo": lo, "hi": hi,
+         "fit_info": fit_info})
 
 
 @router.get("/diagnose")
