@@ -40,20 +40,24 @@
 {% if charts %}
 {% for c in charts %}
 <h2>{{ c.title }}</h2>
-<p class="muted">全段 {{ c.range }} · {{ c.note }}</p>
-<div class="rngbar" data-cid="{{ c.cid }}">
-  <div class="track">
-    <input type="range" class="lo" step="1" aria-label="起点">
-    <input type="range" class="hi" step="1" aria-label="终点">
+<p class="muted">全段 {{ c.full }} · 当前窗口 {{ c.range }} · {{ c.note }}</p>
+<form method="get" action="/state" onchange="this.form.submit()">
+  <input type="hidden" name="asset" value="{{ asset }}">
+  <div class="rngbar">
+    <div class="track">
+      <input type="range" name="lo" class="lo" min="0" max="{{ c.max }}" value="{{ c.lo }}">
+      <input type="range" name="hi" class="hi" min="0" max="{{ c.max }}" value="{{ c.hi }}">
+    </div>
+    <div class="rngfoot">
+      <span class="rlabel muted">起 {{ c.lo }} / 止 {{ c.hi }}（拖动松手后刷新）</span>
+      <button type="submit">更新</button>
+    </div>
   </div>
-  <div class="rngfoot">
-    <span class="rlabel muted"></span>
-  </div>
-</div>
+</form>
 <div class="card-body">{{ c.svg | safe }}</div>
 {% endfor %}
 <p class="muted">粗线段 = 状态（颜色见下方画像）；橙色竖虚线 = 该次 walk-forward 重估日。
-默认最近一年，拖动同一条轨道上的两个手柄改区间（纯前端，不请求服务端）。</p>
+滑块松手后提交表单，**服务端按窗口重新渲染**（不依赖任何前端脚本）。</p>
 {% else %}
 <h2>时间轴</h2>
 <p class="muted">还没有 v2 产物，先跑 <code>python -m state_layer.cli fit --asset {{ asset }}</code>。</p>
@@ -115,5 +119,4 @@
 }
 .rngbar .rngfoot { display: flex; gap: 10px; align-items: center; font-size: 12px; }
 </style>
-<script src="/state/chart.js"></script>
 {% endblock %}

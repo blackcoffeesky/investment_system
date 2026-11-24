@@ -102,12 +102,30 @@ def _grid_labels(asset: str, price: pd.Series, vol: pd.Series):
     return raw.map(to_cn)
 
 
-def _charts(asset: str, panel) -> list[dict]:
-    """按 `CHART_ORDER` 组装图（**全段数据**，默认区间由前端取最近一年）。"""
+def _window(n: int, lo, hi) -> tuple[int, int]:
+    """服务端夹紧窗口：默认最近一年，窗口至少 20 天。参数非法时退回默认。"""
+    if n <= 1:
+        return 0, max(0, n - 1)
+    try:
+        lo_i = int(lo) if lo not in (None, "") else None
+        hi_i = int(hi) if hi not in (None, "") else None
+    except (TypeError, ValueError):
+        lo_i = hi_i = None
+    lo_i = max(0, min(lo_i, n - 1)) if lo_i is not None else max(0, n - 251)
+    hi_i = max(0, min(hi_i, n - 1)) if hi_i is not None else n - 1
+    if hi_i - lo_i < 20:
+        hi_i = min(n - 1, lo_i + 20)
+        lo_i = max(0, hi_i - 20)
+    return lo_i, hi_i
+
+
+def _charts(asset: str, panel, lo=None, hi=None) -> list[dict]:
+    """按 `CHART_ORDER` 组装图；**服务端按 lo/hi 只渲染窗口内的段**。"""
     if not store.has_v2(asset):
         return []
     df = store.load_groups(asset)
     meta = store.load_meta(asset)
+    cfg = state_assets.load(asset).config
     out: list[dict] = []
 
     for name in CHART_ORDER.get(asset, ()):
@@ -117,8 +135,7 @@ def _charts(asset: str, panel) -> list[dict]:
                                   store.series_of(df, "short_price"),
                                   store.series_of(df, "short_vol"))
             title = "短期九宫格（价格档 × 波动档）"
-            note = ("格号 = 价格档-波动档（0=下跌/低波，2=上涨/高波）；"
-                    "区间取 short_price ∩ short_vol")
+            note = "格号 = 价格档-波动档（0=下跌/低波，2=上涨/高波）；区间取 short_price ∩ short_vol"
             refit: list[str] = []
             pn = {"下跌": "0", "震荡": "1", "上涨": "2"}
             vn = {"低波": "0", "中波": "1", "高波": "2"}
@@ -130,30 +147,29 @@ def _charts(asset: str, panel) -> list[dict]:
             labels = store.series_of(df, name)
             g = meta["groups"][name]
             title = str(g.get("title") or name)
-            note = (f"{name} · K={g.get('k')} · 该组自己的区间"
-                    f"（各组不同，九宫格取交集）")
+            note = f"{name} · K={g.get('k')} · 该组自己的区间"
             refit = list(g.get("refit_dates") or [])
-        cid = f"{asset}-{name}"
+
+        n = len(labels)
+        if not n:
+            continue
+        w_lo, w_hi = _window(n, lo, hi)
+        rows = _rows(panel, labels)[w_lo:w_hi + 1]
         out.append({
-            "cid": cid,
             "title": title,
-            "range": f"{labels.index.min():%Y-%m-%d} ~ {labels.index.max():%Y-%m-%d}"
-                     if len(labels) else "—",
+            "n": n, "lo": w_lo, "hi": w_hi, "max": max(0, n - 1),
+            "full": f"{labels.index.min():%Y-%m-%d} ~ {labels.index.max():%Y-%m-%d}",
+            "range": (f"{rows[0]['date']} ~ {rows[-1]['date']}（{len(rows)} 天）"
+                      if rows else "—"),
             "note": note,
-            "svg": _svg(_rows(panel, labels), refit=refit, cid=cid, colors=colors),
+            "svg": _svg(rows, refit=refit, colors=colors),
         })
     return out
 
 
-def _svg(rows: list[dict], refit: list[str] | None = None, cid: str = "c",
+def _svg(rows: list[dict], refit: list[str] | None = None,
          colors: dict | None = None, width: int = 900, height: int = 210) -> str:
-    """跑段粗线时间轴：**每段一条带色粗线**（首尾共用切换点 → 天然无缝）。
-
-    为什么不用点/背景色块：点阵在切换处会露出背景（看着像黑缝），背景色块在频繁切换时糊成一片。
-    粗线段用 `stroke-width=3` + `round` 端帽，颜色就是状态色，视觉上"折线本身有颜色"。
-    """
-    import json
-
+    """跑段/点对坐标 + 成交额 + 重估虚线。**只画传进来的这些行**（窗口由调用方决定）。"""
     if not rows:
         return "<p class='muted'>没有可画的数据</p>"
     closes = [r["close"] for r in rows]
@@ -177,7 +193,6 @@ def _svg(rows: list[dict], refit: list[str] | None = None, cid: str = "c",
     def y(v: float) -> float:
         return pad_t + h1 * (1.0 - (v - cmin) / span)
 
-    # 只用来做 hover 的跑段（能一次说清"这段是什么状态"）
     runs = []
     a = 0
     for i in range(1, n + 1):
@@ -187,31 +202,26 @@ def _svg(rows: list[dict], refit: list[str] | None = None, cid: str = "c",
     idx_of = {r["date"]: i for i, r in enumerate(rows)}
     refit_idx = sorted(idx_of[d] for d in (refit or []) if d in idx_of)
 
-    parts = [f'<svg class="chart" data-cid="{cid}" viewBox="0 0 {width} {height}" '
-             f'width="100%" height="{height}" role="img">']
+    parts = [f'<svg class="chart" viewBox="0 0 {width} {height}" width="100%" '
+             f'height="{height}" role="img">']
     for i, amt in enumerate(amounts):
         hh = (amt / amax) * h2
-        parts.append(f'<rect class="amt" data-t="{i}" x="{x(i) - 0.9:.2f}" '
+        parts.append(f'<rect class="amt" x="{x(i) - 0.9:.2f}" '
                      f'y="{pad_t + h1 + gap + h2 - hh:.2f}" width="1.8" '
                      f'height="{hh:.2f}" fill="#2c3540"/>')
-    # **按相邻点对画线段**：第 i 段终点 = 第 i+1 段起点，天然无缝。
-    # 颜色取该段**起点**的状态（全图统一），切换日颜色就换。
     for i in range(n - 1):
         col = cmap.get(rows[i]["label"], "#6b7280")
-        parts.append(f'<line class="seg" data-a="{i}" data-b="{i + 1}" '
-                     f'x1="{x(i):.2f}" y1="{y(closes[i]):.2f}" '
+        parts.append(f'<line class="seg" x1="{x(i):.2f}" y1="{y(closes[i]):.2f}" '
                      f'x2="{x(i + 1):.2f}" y2="{y(closes[i + 1]):.2f}" '
                      f'stroke="{col}" stroke-width="1.8" stroke-linecap="butt"/>')
-    # hover 载体：跑段透明粗线（只负责 <title>，不参与视觉）
     for a_, b_, lab in runs:
         txt = lab if lab else "（无状态）"
-        parts.append(f'<line class="hit" data-a="{a_}" data-b="{b_}" '
-                     f'x1="{x(a_):.2f}" y1="{y(closes[a_]):.2f}" '
+        parts.append(f'<line class="hit" x1="{x(a_):.2f}" y1="{y(closes[a_]):.2f}" '
                      f'x2="{x(b_):.2f}" y2="{y(closes[b_]):.2f}" '
                      f'stroke="transparent" stroke-width="9">'
                      f'<title>{rows[a_]["date"]} ~ {rows[b_]["date"]} · {txt}</title></line>')
     for i in refit_idx:
-        parts.append(f'<line class="rf" data-t="{i}" x1="{x(i):.2f}" x2="{x(i):.2f}" '
+        parts.append(f'<line class="rf" x1="{x(i):.2f}" x2="{x(i):.2f}" '
                      f'y1="{pad_t}" y2="{pad_t + h1}" stroke="#e0a23a" '
                      f'stroke-width="1" stroke-dasharray="3 3" opacity="0.55">'
                      f'<title>重估 {rows[i]["date"]}</title></line>')
@@ -219,27 +229,12 @@ def _svg(rows: list[dict], refit: list[str] | None = None, cid: str = "c",
     parts.append(f'<text x="6" y="{pad_t + h1}" fill="#9aa0a6" font-size="10">{cmin:.0f}</text>')
     parts.append(f'<text x="6" y="{pad_t + h1 + gap + h2}" fill="#9aa0a6" font-size="10">成交额</text>')
     parts.append("</svg>")
-
-    blob = {"n": n, "amounts": amounts, "refit": refit_idx,
-            "dates": [r["date"] for r in rows],
-            "geo": {"h1": h1, "h2": h2, "gap": gap, "pad_l": pad_l, "pad_t": pad_t,
-                    "plot_w": plot_w, "cmin": cmin, "cmax": cmax, "amax": amax}}
-    parts.append(f'<script type="application/json" id="d-{cid}">'
-                 f'{json.dumps(blob, ensure_ascii=False)}</script>')
     return "".join(parts)
 
 
-@router.get("/state/chart.js")
-def chart_js():
-    """前端布局脚本（与 node 测试共用同一份源码）。"""
-    from fastapi.responses import FileResponse
-
-    return FileResponse(TEMPLATES.parent / "static" / "chart.js",
-                        media_type="application/javascript")
-
-
 @router.get("/state", response_class=HTMLResponse)
-def index(request: Request, asset: str = "ashare", days: int = 250):
+def index(request: Request, asset: str = "ashare", days: int = 250,
+          lo: str | None = None, hi: str | None = None):
     port = get_port()
     # 装配点（AGENTS §4'③：web 路由与 cli 等价）：**取一次面板**，往下全传 DataFrame
     panel = get_data(state_assets.panel_of(asset))
@@ -260,7 +255,7 @@ def index(request: Request, asset: str = "ashare", days: int = 250):
     trans = port.transition(asset, panel)
 
     # 四张图（黄金一张）。**单组用各组自己的区间；九宫格用交集**。
-    charts = _charts(asset, panel)
+    charts = _charts(asset, panel, lo, hi)
     spec = {}
     try:
         spec = store.spec_any(asset)
@@ -273,7 +268,7 @@ def index(request: Request, asset: str = "ashare", days: int = 250):
          "profiles": _profiles(asset, panel),
          "current": cur, "spec": spec, "transition": trans, "assets": ASSETS,
          "groups": {},
-         "excluded": [], "days": days})
+         "excluded": [], "days": days, "lo": lo, "hi": hi})
 
 
 @router.get("/diagnose")

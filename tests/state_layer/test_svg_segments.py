@@ -20,7 +20,7 @@ def _rows(n: int = 60) -> list[dict]:
 
 
 def _segs(svg: str) -> list[tuple[float, float, float, float]]:
-    pat = re.compile(r'class="seg" data-a="\d+" data-b="\d+" '
+    pat = re.compile(r'<line class="seg" '
                      r'x1="([-\d.]+)" y1="([-\d.]+)" '
                      r'x2="([-\d.]+)" y2="([-\d.]+)"')
     return [(float(a), float(b), float(c), float(d))

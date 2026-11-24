@@ -1,37 +1,39 @@
-"""/state 页面的**注入点**回归（2026-11-23 两次踩坑后的自动化）。
+"""/state 页面的结构 guard（2026-11-24 改为服务端渲染后的版本）。
 
-两次坏都是同一形状：改模板的某个区块，连带删掉了别处的注入点。
-- 第一次：`<script>` 落进 `{% block title %}` → 字符串在、但不执行 → 拖动无反应
-- 第二次：删「观测矩阵」区块时把 `<style>` 与 `<script src=...>` 一起删了 → CSS/JS 都没了
-
-所以这里断言的是**真的会加载/生效的形式**，不是"页面里出现了这个字符串"。
+历史：前端 JS 版本三次"测试通过、浏览器不生效"，最终整体删除，改成
+「表单 + 服务端按 lo/hi 只渲染窗口内的段」。现在这里钉住的是**服务端可断言**的东西：
+不依赖浏览器、不依赖脚本是否执行。
 """
 
 from __future__ import annotations
+
+import re
 
 from fastapi.testclient import TestClient
 
 from service.app import app
 
 
-def test_state_page_wires_chart_script_and_style():
+def test_page_has_forms_not_scripts():
     page = TestClient(app).get("/state?asset=ashare").text
 
-    # 真的会加载的脚本标签（不是标题里/注释里的字符串）
-    assert '<script src="/state/chart.js"' in page, "脚本注入点丢了（拖动会没反应）"
-    assert ".track" in page, "样式注入点丢了（会退化成两条独立滑轨）"
+    # 不再有外部脚本（缓存/执行顺序/浏览器差异这些坑一次性消失）
+    assert "/state/chart.js" not in page
+    assert not re.search(r'<script[^>]*src=', page)
 
-    # 单轨双手柄：容器数 == .track 数，手柄数 == 2 × 容器数
+    # 单轨双手柄：一个 .track 里两个 input，容器数 == track 数
     n_bar = page.count('class="rngbar"')
     assert n_bar >= 1, "一张图都没有"
     assert page.count('class="track"') == n_bar, "不是单轨：track 数与容器数不一致"
-    assert page.count('type="range"') == 2 * n_bar, "手柄数应为 2 × 容器数"
+    assert page.count('name="lo"') == n_bar
+    assert page.count('name="hi"') == n_bar
 
-    # 每张图都有数据（滑块与图一一对应）
-    assert page.count('id="d-') == n_bar, "滑块与图数量对不上"
+    # 每张图一个 GET 表单，提交到 /state，且带上 asset
+    assert page.count('method="get"') == n_bar, "表单与图数量对不上"
+    assert page.count('name="asset"') == n_bar, "表单没带 asset"
 
 
-def test_gold_page_also_wired():
+def test_gold_page_structure():
     page = TestClient(app).get("/state?asset=gold").text
-    assert '<script src="/state/chart.js"' in page
     assert page.count('class="rngbar"') >= 1
+    assert "/state/chart.js" not in page
