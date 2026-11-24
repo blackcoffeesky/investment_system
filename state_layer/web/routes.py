@@ -159,12 +159,18 @@ def _charts(asset: str, panel, lo=None, hi=None) -> list[dict]:
         if name == "grid":
             p_stored, p_lab, p_ext = _extended("short_price")
             _, v_lab, v_ext = _extended("short_vol")
-            labels = _grid_labels(asset, p_lab, v_lab)
+            labels = _grid_labels(asset, p_lab, v_lab)     # "震荡 - 低波"
             ext_dates = p_ext | v_ext
-            band_end_abs = len(p_stored) - 1          # 最后一次 refit 的 cutoff
+            band_end_abs = len(p_stored) - 1               # 最后一次 refit 的 cutoff
             fit_date = meta["groups"]["short_price"].get("fit_date")
             title = "短期九宫格（价格档 × 波动档）"
-            note = "格号 = 价格档-波动档（0=下跌/低波，2=上涨/高波）；区间取 short_price ∩ short_vol"
+            note = ("格号 = 价格档-波动档（0=下跌/低波，2=上涨/高波）；"
+                    "区间取 short_price ∩ short_vol")
+            # 9 格配色：key 必须与 `_grid_labels` 产出的中文组合名一致
+            _pn = {"下跌": "0", "震荡": "1", "上涨": "2"}
+            _vn = {"低波": "0", "中波": "1", "高波": "2"}
+            colors = {f"{pk} - {vk}": GRID_COLORS[_pn[pk] + "-" + _vn[vk]]
+                      for pk in _pn for vk in _vn}
         else:
             if name not in (meta.get("groups") or {}):
                 continue
