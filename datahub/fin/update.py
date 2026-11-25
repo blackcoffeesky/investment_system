@@ -369,7 +369,14 @@ def run(start: str = "2000-01-01", end: str | None = None,
                 continue
 
         try:
-            obj = s.func(start=start, end=end, table=tables[0], **s.params)
+            # transient 失败（网络抖动）**先重试 2 次**（1s/3s）再判失败：
+            # FRED 这类抖动重试一般就过了，先把噪声降下来再谈降级（2026-11-25）。
+            from datahub.fin.retry import call_with_retry
+
+            obj = call_with_retry(
+                lambda: s.func(start=start, end=end, table=tables[0], **s.params),
+                on_retry=lambda n, exc: print(
+                    f"  {tables[0]:22s} 第 {n} 次重试（{type(exc).__name__}）"))
 
             # 源合法地"今天没数据"（未收盘 / 落后太多不补 / 已是最新）会返回空表。
             # 这里必须兜住：往下走 `write_long` 会拿空 DataFrame 去要 code/date 列 → KeyError。
@@ -426,8 +433,13 @@ def run(start: str = "2000-01-01", end: str | None = None,
             print(f"  {tables[0]:22s} {kind:6s} +{n:5d} 行  {s.func.__name__}")
             results.append({"table": s.table, "status": "ok", "rows": n, "msg": ""})
         except Exception as e:  # noqa: BLE001
+            from datahub.fin.retry import classify_error
+
             msg = f"{type(e).__name__}: {str(e)[:120]}"
-            results.append({"table": s.table, "status": "失败", "rows": 0, "msg": msg})
+            # `kind`：`transient`（网络/超时/5xx/限流）还是 `structural`（其余）。
+            # 上层据此决定"降级成 warn"还是"报 error"——**拿不准归 structural**。
+            results.append({"table": s.table, "status": "失败", "rows": 0, "msg": msg,
+                            "kind": classify_error(e)})
             print(f"  {s.table:22s} 失败  {msg}")
             if not dry_run:
                 MISSING_DIR.mkdir(parents=True, exist_ok=True)

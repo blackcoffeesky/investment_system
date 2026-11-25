@@ -24,6 +24,18 @@ class UpdateReport:
     def success(self) -> bool:
         return self.failed == 0
 
+    @property
+    def all_transient(self) -> bool:
+        """**有失败，且失败全是 transient**（网络抖动 / 超时 / 5xx / 限流）。
+
+        上层用它决定：`all_transient` 时降级成 `warn`（不挡后续状态），
+        否则（有 structural）仍报 `error`——否则真故障会被吞掉。
+        没有失败时返回 `False`（没失败不需要降级）。
+        """
+        failed = [d for d in self.details if str(d.get("status")) == "失败"]
+        return bool(failed) and all(
+            str(d.get("kind") or "structural") == "transient" for d in failed)
+
     def summary(self) -> str:
         return f"更新 {self.ok} 张表、失败 {self.failed} 张、共 {self.rows} 行"
 

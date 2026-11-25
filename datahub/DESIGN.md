@@ -1343,3 +1343,54 @@ A 股有**调休开市**（周末上班）、也有**节假日休市**（工作�
 `check.run()` 会把它报成 `非交易日数据 N 天（2026-11-14 等）`，`status="warning"`
 （**只有当这一行没有别的毛病时才标 warning**：脏数据该显眼，但不该让整个检查 fail；
 同时还缺数/停更的仍算 `data`）。
+
+## 27. 失败分类：`transient` vs `structural`（2026-11-25）
+
+**噪声来源**：FRED 一次网络抖动 → `vix` / `usdcny` / `usd_index` 三张表同时失败 →
+状态机把整条 `fetch` 标成 **error**（其中 `shibor3m` 恰在保鲜期内被判过期）。
+用户每天看到一条 error，实际只是网络问题。
+
+**方案：按失败原因分类 + 先重试再降级**（不是"凡是失败都降级"——那样真故障会被吞掉）。
+
+### 27.1 `datahub/fin/retry.py`
+
+| 函数 | 作用 |
+|---|---|
+| `classify_error(exc) -> "transient" \| "structural"` | **按异常类型**判，不靠字符串 |
+| `call_with_retry(fn, retries=2, delays=(1, 3))` | 只对 transient 重试 |
+| `is_transient(exc)` / `failed_kinds(details)` | 小工具 |
+
+| kind | 典型异常 |
+|---|---|
+| `transient` | `requests` 的 `ConnectionError` / `Timeout` / `ConnectTimeout` / `ReadTimeout`、`TimeoutError`、`ConnectionResetError`、`ssl.SSLError`、`urllib.error.URLError`、`http.client.RemoteDisconnected`、`pandas_datareader` 的 **`RemoteDataError`**、HTTP 5xx / 429 |
+| `structural` | 解析失败、列名对不上、`KeyError`、认证失败、源返回空但本不该空、schema 变了 |
+
+**拿不准的一律 `structural`**：宁可吵，不可静默。
+
+⚠️ `RemoteDataError` **不继承** `requests` 的异常（内部包了 `urlopen` 的 `HTTPError`），
+所以必须按类名单独认——`vix` / `usdcny` 每天报的就是它。
+
+### 27.2 `UpdateReport.all_transient`
+
+```python
+all_transient = 有失败 且 每条失败都是 transient   # 没失败时 False
+```
+
+每条失败明细多了 `kind` 字段。上层（`service/ops/states/data.py`）据此：
+
+- `stale and not report.all_transient` → 仍报 **error**（结构性 + 过期，真故障）
+- `stale and report.all_transient` → 降级 **warn**（`blocking=False`，不挡后续状态）
+
+### 27.3 重试放在源调用外面（`update.run()`）
+
+```python
+obj = call_with_retry(lambda: s.func(...), on_retry=...)
+```
+
+只对 transient 重试 2 次（1s/3s）——**先把噪声降下来，再谈降级**。
+
+### 27.4 待办（用户建议，未做）
+
+`vix` / `usdcny` / `usd_index` / `fed_rate` / `real_yield_10y` **全在 FRED 一家**：
+一次抖动 = 5 张表同时失败，噪声被放大 5 倍。建议在 `update` 里对**同源失败归并报一条**
+（`FRED: 5 张表失败`）而不是 5 条。**未实现**，等用户决定。
