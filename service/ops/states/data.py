@@ -122,10 +122,19 @@ class FetchState(BaseState):
                              ctx.data.covered_tables(),
                              pd.Timestamp.today().normalize())
 
-        if stale:
+        # 2026-11-25：区分"网络抖动"与"结构性故障"。
+        # 全是 transient（FRED 之类连不上，且已重试 2 次）→ warn，不阻塞；
+        # 只要有一条 structural（字段变了、解析失败）→ 仍然 error，别让真故障被吞掉。
+        if stale and not getattr(report, "all_transient", False):
             return StateResult.error(
                 f"更新失败 {report.failed} 张表，且有 {len(stale)} 张关键表已过期："
                 f"{'、'.join(stale[:3])}。失败源：{names}", self.name)
+
+        if stale:
+            return StateResult.warn(
+                f"更新失败 {report.failed} 张表（均为临时网络问题，已自动重试 2 次），"
+                f"其中 {len(stale)} 张已过期：{'、'.join(stale[:3])}。失败源：{names}",
+                self.name, key="fetch_transient", blocking=False)
 
         # 个别源暂时不可用（限流、抖动），但数据仍在保鲜期内 → 可跳过
         return StateResult.warn(
