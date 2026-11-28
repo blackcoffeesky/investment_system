@@ -1,396 +1,219 @@
 # state_layer 设计文档
 
-> **更新日期：2026-11-16**　｜　使用说明见 [`README.md`](README.md)
-> 给模块代理看的规格。改动前先读这一页，改完回来补表格。
+> 现状文档（2026-11-28 整体重写）。历史演进集中在最后一节，正文只讲现在。
+> 文中所有数字都是**实测**（`python -m state_layer.cli fit` 之后从 `saved_models/` 读出来的）。
 
 ---
 
 ## 1. 一句话定位
 
-**从市场观测识别"现在是什么状态"，并把状态标签交给下游。**
+把一条价格序列切成**少数几个可解释的状态**（下跌/震荡/上涨、低波/中波/高波……），
+按资产给出**一个或多个分组**，供页面观察、供下游（causual）消费。
 
-它是因果层（`causual`）的**上游**：状态层回答"现在像什么"，因果层回答"为什么"。
-因果层把状态当数据用，**不 import 状态层内部**。
+它不预测涨跌，不评价好坏，也不做因果推断——那些分别是 causual 与 metrics 的事。
 
-四条硬约束：
-
-1. **状态层不依赖 causual**：面板从耦合层拿，特征/标签词表都是自己的
-2. **下游只用 `label`**，不用 `state_id`——HMM 状态编号重训一次可能整体换位
-3. **模型不自己评价自己**：好坏由 `metrics.py` 算
-4. **只收 DataFrame，不自己取数**：数据从装配点进来（见 §3）
-
----
-
-## 2. 分层
+## 2. 分层：模型层 vs 资产层
 
 ```
-装配点：cli.py / web/routes.py / service
-      │  panel = get_data(Panel.STATE_<asset>)      ← 全模块只有这里取数
-      ▼
-state_assets/<asset>/     声明：要哪些表（config）+ 怎么算特征（features）
-      │  features.build(panel) → 特征矩阵
-      ▼
-model/                    模型链：按 MODEL_CHAIN 依次认领日期
-      │  fit / infer
-      ▼
-fit.py                    编排：跑链 → 算指标 → 组 spec
-      │
-      ▼
-saved_models/<asset>/     current.json / labels.csv / chain.pkl
-      │
-      ├──► analysis/      状态画像、观测矩阵（只读，给页面用；只收 DataFrame）
-      └──► port.py        对外：标签、单点状态、外推、黏性、状态视图
+state_layer/
+├── model/                  统计模型（**不许知道"组"，不许知道资产**）
+│   ├── base.py             Model 协议 + ModelOutput + to_numpy + (label 指纹在别处)
+│   ├── hmm/                Gaussian HMM（价格/波动都能用；黄金用它）
+│   │   ├── fit.py          RegimeFit：全样本拟合 + walk-forward 逐日解码
+│   │   └── params.py       dict → hmmlearn 对象（不碰盘）
+│   └── thmm/               Student-t HMM（价格维度的主选）
+│       ├── numerics.py     t 对数密度 / 前向过滤 / 前向-后向 / Cholesky 修复
+│       ├── fit.py          t-EM（KMeans 初值、返回 hist/iters）
+│       └── __init__.py     StudentTHMM（fit / predict / 序列化）
+├── state_assets/           资产装配（**产出分组**）
+│   ├── base.py             GroupResult + Estimator 协议 + label_fingerprint
+│   ├── labels.py           order_labeler（按训练画像序位命名）
+│   ├── ashare/             config / features / estimator
+│   └── gold/               config / features / estimator / labels（K=4 命名）
+├── store.py                v2 产物读写（spec.json / groups.csv / params.pkl）
+├── profile.py              状态画像（核心计算，port 用）
+├── port.py                 对外唯一入口
+├── cli.py                  装配点 + 唯一写入口（fit_asset）
+├── metrics.py              状态分离度（只作参考，不作门槛）
+└── web/
+    ├── routes.py           /state 页面（装配点）
+    ├── combine.py          九宫格组合（纯函数，唯一实现）
+    └── templates/diagnose.html
 ```
 
----
+**判据：模型层不该知道有组。** 模型只认"特征矩阵 + K"；"这个资产出几组、每组什么语义"是资产层的事。
+反过来，资产层不自己算统计——它调用模型、拿编号、再用自己的词表命名。
 
-## 3. 文件职责与数据来源
+## 3. 协议
 
-| 文件/目录 | 职责 | 谁调用 |
-|---|---|---|
-| `state_assets/<asset>/config.py` | K / 特征清单 / 极端阈值 / 标签词表 / `MODEL_CHAIN` / `METRICS` / **`REQUIRED_TABLES`** | fit / port |
-| `state_assets/<asset>/features.py` | 面板 → 特征矩阵（纯函数）；入口收口列名大小写；派生列调 `data_processing` 原语 | fit / port |
-| `model/base.py` | `Model` 协议：fit / infer / state_params / to_dict | 所有模型 |
-| `model/hmm/` | GaussianHMM + 拟合 + 选 K + 序列化 | 链 |
-| `model/extreme/` | 极端行情规则模型（认领极端日） | 链 |
-| `model/__init__.py` | `MODELS` 注册表 + `run_infer`（链式推断） | fit / port |
-| `metrics.py` | 状态分离度等评价指标（**模型不评价自己**） | fit |
-| `align.py` | 状态命名（按均值排序映射成 trend_up/range/…） | 模型 |
-| `fit.py` | `fit_pipeline`：按链跑模型 + 组 spec | cli |
-| `store.py` | 产物读写（spec / labels / chain） | fit / port |
-| `analysis/observations.py` | 观测矩阵（收益/波动/成交/换手/大小盘）——**收面板**，缺列给 NaN | web |
-| `analysis/stats.py` | 状态画像（各状态的收益、波动、持续） | web |
-| `port.py` | 对外能力 | 其他模块 |
-| `cli.py` | `python -m state_layer.cli fit`（**装配点**） | 人 |
-| `web/` | `/state` 页面（**装配点**） | service |
-
-**新文件必须先补这张表。** 表里没有的文件 = 漂了。
-
-### 数据从哪来（改这一块之前先读）
-
-```python
-# ✅ 只在装配点
-from shared.adapter import get_data
-from state_layer import state_assets
-panel = get_data(state_assets.panel_of(asset))     # DataFrame，index=交易日
-
-# ❌ 不要在 port / features / analysis 里做这件事
-```
-
-- 面板列是**小写语义名**（`close` / `csi300` / `amount` / `etf_dispersion`…，见 `COLUMNS[Panel]`），
-  由 adapter 保证。
-- `port` / `features` / `analysis` **只收 DataFrame**：不调 `get_data`，也不接受 `{表名: Series}`。
-  这是 AGENTS §4'③ 的硬约束——传 dict 等于下游再拼一次，装配做两遍。
-- `config.REQUIRED_TABLES` **不参与取数**（`get_data` 按 adapter 自己的声明取），
-  它是 `port.required_tables()` 的装配清单（service / causual cli 拿它做并集）。
-  `tests/state_layer/test_state_features_fresh.py::test_required_tables_match_adapter` 把它与
-  `tables_of(Panel)` **钉成相等**——加表/删表只改一处，另一处会红。
-
----
-
-## 4. 特征口径（别顺手"统一"）
-
-`state_assets/<asset>/features.py::build(panel)`：
-
-1. **入口收口列名大小写**：`_upper()` 把面板列名统一成大写，公式只认大写。
-   现在生产来源（adapter）本来就是小写，`_upper()` 只为"因果层面板仍是大写"而留；
-   等 causual 也切到 adapter 面板后可以删（届时先跑 `test_state_features_match_prepare`）。
-2. **`_derive()` 三条派生列调 `shared.utils.data_processing` 原语**（不再手写）：
-
-   | 列 | 原语 | 说明 |
-   |---|---|---|
-   | `SHIBOR_CHG_BP` | `diff_bp(SHIBOR3M)` | 单位 bp |
-   | `MARGIN_CHG` | `pct_change_pct(MARGIN_BALANCE)` | 单位百分数 |
-   | `VOLUME_Z` | `rolling_z(VOLUME)` | 60 窗口 / 20 最小期；标准差 0 → NaN |
-
-   这三条在 causual 的 `prepare()` 里也有**同一份公式**，现在两边调同一个函数，
-   "一致"是结构性的，不再靠测试守。
-3. **`etf_dispersion` 读面板列**：datahub 的 `derive` 已算好并作为面板列给出，
-   这里只搬运（缺列时 stderr 告警 + 整列 NaN，由新鲜度测试兜住）。
-4. **`margin_chg_z` / `shibor_chg_z` 保留内联 `rolling(60).apply(...)`，不要换 `rolling_z`**：
-
-   实测（同一份输入）换掉后 NaN 位置一致，但数值差末位——`MARGIN_CHG` 逐位相同仅
-   99/3506 格、最大差 4.9e-13；`SHIBOR_CHG_BP` 54/3506、最大差 2.7e-11。
-   根因：`apply` 里的 `x.std()`（nanops 两遍法）与 `rolling.std()`（Cython 在线算法）
-   不是同一套浮点运算。
-   而这两列**只有状态层有**（因果层没有对应副本），换它**没有去重收益**，却要动 HMM 输入
-   → 会改标签、要重估边。**风险不为零、收益为零的改动，不做。**
-   真要换，必须和一次重拟合 + 重估 edges 绑在一起，并把验收标准从"差 0 格"改成明确容差。
-
----
-
-## 5. 模型协议（最重要的一节）
+### 3.1 `Model`（`model/base.py`）
 
 ```python
 class Model(ABC):
-    def __init__(self, params: dict | None = None): ...
-
-    def valid_index(self, features) -> pd.Index:
-        """这个模型能处理哪些行（默认全列非空；子类按自己用到的列收窄）"""
-
-    def fit(self, features, *, claim=None, **kw) -> pd.Index:
-        """训练。返回**没认领**的日期（交给下游）。认领结果放 self.labels_"""
-
-    def infer(self, features, *, claim=None) -> dict:
-        """{states: 只含认领日期, remaining_index, proba: DataFrame|None}"""
-
-    def state_params(self) -> dict | None:
-        """纯数组（means/covars/transmat）供 metrics 用；规则模型返回 None"""
+    def fit(self, features: pd.DataFrame, *, labeler=None) -> None   # 结果放 states_/labels_/proba_/last_window
+    def predict(self, features: pd.DataFrame) -> ModelOutput         # 只用传入的行，不重训
+    def state_params(self) -> dict | None                            # 纯数组，供 metrics
+    def to_dict(self) / from_dict(cls, d)                            # JSON 可序列化
+    def valid_index(self, features) -> pd.Index                      # **只用于对齐**
 ```
 
-**链的语义**（`MODEL_CHAIN = ("extreme", "hmm")`）：
+- `labeler(raw_means_df) -> {编号: 标签}` 由**资产注入**：模型不知道"下跌"是什么。
+- **不得前视**：`predict` 只用传进来的行；t-HMM 只用过滤概率（不允许平滑）。
+- `valid_index` 的语义是"我能吃哪些行"，调用方用它取各组日期交集；与已退役的链式认领无关。
 
-```
-features ──► extreme: 认领极端日，返回剩下的
-                     │
-                     ▼
-              hmm: 认领其余全部，返回空
-```
-
-- `claim` 限定"这一环只准在这些日子上下判断"，传全量特征是为了滚动窗口算得对
-- **`fit` 和 `infer` 必须走同一条链**——否则在线后验和历史标签不是同一个口径
-  （曾经踩过：fit 时 hmm 只见过非极端日，infer 时却把极端日也喂进去）
-
-### 加一个新模型
-
-1. 建 `model/<name>/`，实现 `Model` 协议
-2. `model/__init__.py` 的 `MODELS` 登记一行
-3. 资产 `config.MODEL_CHAIN` 里加上它
-4. **补测试**：`tests/state_layer/test_model_contract.py` 的 roundtrip + 链过滤
-
-候选：Student-t HMM（把协方差换成 t 分布，极端日更稳健）、HSMM（显式建模持续期）。
-
----
-
-## 6. 输出契约
-
-```json
-{
-  "date", "asset", "state_id", "label", "label_name",
-  "state_probabilities", "confidence",
-  "model": {"kind", "k", "version", "features", "fit_date", "signature"},
-  "metrics": {"method", "min", "passed"},
-  "as_of_date"
-}
-```
-
-- **`label`** 是下游唯一该依赖的字段
-- **`model.version`** = 链 + K + 拟合指纹（`_fit_id`）；`_fit_id` 的公式**不要动**，
-  它进了 spec 与 version，改了就没有可比性
-- `state_probabilities` 为空时（极端日），`confidence` 也是 `None`
-
-### 状态的视图（给消费者）
-
-`port.state_view(asset, panel)` —— **`series` / `meta` 已删，只有两个参数**：
+### 3.2 `Estimator` / `GroupResult`（`state_assets/base.py`）
 
 ```python
-{"labels": Series, "label_name": dict, "labels_order": tuple,
- "version": str, "spec": dict, "line": str}
+@dataclass
+class GroupResult:
+    name, title, k
+    states: pd.Series            # 编号（int）
+    labels: dict[int, str]       # 编号 → 稳定标签（随产物落盘）
+    label_values: pd.Series|None # 逐日**权威**标签（walk-forward 每段映射不同，必须逐日记）
+    proba: pd.DataFrame|None
+    features: tuple[str, ...]
+    profile, usable, fit_id, window, warmup_bars
+
+class Estimator(ABC):
+    asset: str
+    @classmethod load(cls, asset) -> Estimator
+    def fit(panel) -> dict[str, GroupResult]
+    def predict(panel) -> dict[str, GroupResult]
+    def spec() -> dict            # primary / fit_date / groups{...}
+    def to_params() -> dict       # {group: {model, window}}
+    @property warmup_bars -> int
 ```
 
-`panel` 由装配点传入（见 §3）；状态层不自己取数、也不接受 `{表名: Series}`。
-消费者只消费这个 dict，**不 import 状态层**。
+- **组清单不在协议里**：`fit()`/`predict()` 返回的 dict 的 key 就是组集合；顺序由 `config.GROUPS_ENABLED` 决定。
+- `primary` 在 `config`（A 股 `short_price`、黄金 `raw`），下游只读它。
 
----
+### 3.3 两条签名契约
 
-## 7. 产物
+`label_fingerprint(labels)` = sha1(「日期:标签」逐行) 前 12 位。**只由 primary 组的标签决定。**
 
-```
-saved_models/<asset>/
-├── current.json   spec（model / data / metrics 三段）
-├── labels.csv     逐日标签
-├── chain.pkl      整条模型链（**含每个模型的 last_window**，离线后验的唯一真相）
-└── hmm.pkl        旧格式单模型参数（遗留；没有 chain.pkl 时 load_chain 才回退用）
-```
-
-**最后窗口以 `chain.pkl` 为唯一真相**：`fit.save` 把 spec 与链一次落盘，链里每个统计模型
-自带 `last_window`（含 `state_labels` / `transmat` / 训练时的 `features` 列名）。
-链里没有窗口（旧格式链 / 没有 chain.pkl）**就直接不可用**：`port._models()` 打印明确告警，
-`extend` 原样返回、`transition` 返回 `None`——不会拿一份过期窗口凑。
-
-**不进 git**（`.gitignore` 有 `saved_models/`）。部署要单独搬，删目录时注意别连带删掉。
-
----
-
-## 8. 低频/重活的分工
-
-| 动作 | 频率 | 命令 |
+| 变更 | 签名 | 后果 |
 |---|---|---|
-| 加载标签、出卡片 | 每天 | 状态机（不重拟合） |
-| 重拟合模型 | 手动 | `python -m state_layer.cli fit --asset X` |
-| 重估边模型 | 重拟合后**必须** | `python -m causual.causual_core.cli edges --asset X` |
+| 加分组（`GROUPS_ENABLED` 加名字） | **不变** | causual 无感（2026-11-22 实测：1 组→3 组，`b7f0879d7c3d` 前后一致） |
+| 改特征 / 改窗口参数 / 改数据 → 标签变 | **必变** | **必须重估边快照**，否则卡片被守卫拒绝 |
 
-⚠️ **重拟合会改 `label_signature`**，边快照随之失效，卡片会被拒绝。
-这两步必须绑在一起做。`--k` / `--seed` 只覆盖本次拟合、不写回 config；
-`--k auto` = 让模型按 BIC 自己选（走 `k=None` 分支）。
+## 4. 当前口径
 
----
+窗口：`min_train=1000 / refit_every=125 / window=1000`（A 股，`config.WALK_FORWARD`）。
+黄金钉死 `min_train=500 / refit_every=60 / window=250 / seed=42 / k=4`（行为与重构前逐位一致）。
 
-## 9. 已知限制与欠账
+### A 股（3 组，primary = `short_price`）
 
-- **市场宽度不在状态层**：宽度改由数据层的 `derive` 现算，`/state` 时间轴不画。
-  `config.FEATURES` 里从来没有宽度类特征，所以摘除**不影响模型、不需要重拟合**
-- **特征整列 NaN 是静默的**：HMM 的 `valid_index` 要求 `FEATURES` 全非空，一列整体失效就会
-  一行都不认领——标签停更、卡片因「没有状态标签」被拒、页面 `transition` 缺 `stay_prob`，
-  全程不抛异常。`tests/state_layer/test_state_features_fresh.py` 守着「每列最后有效日期不早于
-  `csi_all` 最近交易日 + 5 个交易日」
-- **欠账：黄金 `vol_z` 缺 `.replace(0, np.nan)`**（现在是 `/(rolling.std())`）→ 整段横盘
-  会给 `±inf`，而 A 股的 `volume_z` 走 `rolling_z` 有这层保护。改它会动黄金特征
-  → 要重拟合 + 重估 edges，所以和 datahub 的 `etf_group_shares.fillna(0)` **同一批**做
-- **K 不是瓶颈，特征才是**：`experiment/k_study.py` 实测 K=3 会切出一个 2.7%、
-  `stay_prob≈0` 的退化状态；K=2 更干净但切的是波动率不是趋势
-- **退市股缺失**：`stock_daily` 只有当前在市股票，历史回测有幸存者偏差
+| 组 | 模型 | K | 特征 | 标签 | 天数 | 区间 | 占比 |
+|---|---|---|---|---|---|---|---|
+| `short_price` | Student-t ν=5 | 3 | ret_5 / ret_10 / er_10 / snr_10 | trend_down / range / trend_up（下跌/震荡/上涨） | 2502 | 2016-08-02 ~ 2026-11-23 | .463 / .297 / .240 |
+| `short_vol` | Gaussian | 3 | rv_5 / atr_5 / gk_10 / abs_ret_5 | low / normal / high（低波/中波/高波） | 2508 | 2016-07-25 ~ 2026-11-23 | .522 / .374 / .105 |
+| `long_price` | Student-t ν=5 | 2 | ret_60 / ret_120 / er_60 / er_120 / snr_60 | trend_down / trend_up | 2392 | 2017-01-13 ~ 2026-11-23 | .523 / .477 |
 
----
+签名：`short_price 6ff7be8101a8` · `short_vol 2f08f3a83016` · `long_price ef80fd8af4f5`。
+预热（交易日）：10 / 5 / 120 → `needed_bars = 120`。
 
-## 10. 已退役（别再引入）
+### 黄金（1 组）
 
-| 东西 | 退役时间 | 为什么 |
-|---|---|---|
-| `state_assets/<asset>/panel.py` | 2026-11-15 | 每个模块各拼一份面板 = 各自维护表名/对齐口径；改由 `shared.adapter.get_data` 统一提供 |
-| `panel(series, meta)` 签名 | 2026-11-15 | `{表名: Series}` 是 `series_map` 时代的化石，下游还得再拼一次 |
-| `series_map` / `_series_for()` | 2026-11-16 | 同上；页面改为"装配点取一次 DataFrame 往下传" |
-| `PANEL_PROVIDER`（config 里的点号字符串） | 2026-11-15 | 死代码，且是一条指向 `causual...pipeline` 的跨模块隐性耦合 |
-| `hmm_last.pkl`（文件 + 回退分支） | 2026-11-16 | 从来没有人写它（全库只有读），是上一代拟合的遗留物：无条件拿它覆盖链内窗口 → 链是新的、窗口是旧的 → `extend` 的 fit_id 校验永远失败 → 标签停止外推、卡片被拒。现在只认 `chain.pkl` 的 `last_window` |
-| `port.causual_view` 这个名字 | 2026-11-16 | 端口方法名里带下游模块名 = 替别人想问题；改成 `state_view`，只描述自己 |
+`raw`，Gaussian，K=4，标签 trend_down / range / trend_up / distribution，4074 天
+（2010-02-26 ~ 2026-11-23），占比 .265 / .278 / .231 / .227，签名 `861783a55adc`。
 
-如果要在 `port` / `features` / `analysis` 里再 import `get_data`，先回读 §3：
-**那样做会把耦合从 2 个装配点摊回全模块**，也违反 AGENTS §4'③。
+### 组合（九宫格）
 
----
+`web/combine.py::grid(price, vol)`：返回 `"i-j"`（价格档-波动档），**index = 两条序列的交集**。
+`routes` 再用 `grid_legend()` 翻成 `下跌 - 低波` 作为 hover 与配色 key。**这是组合的唯一实现。**
 
-## 11. 接口变更记录：第二参数从 features 矩阵 → panel（2026-11-22）
+## 5. 产物
 
-**改了什么**：`port.state_view` / `current_state` / `extend` / `transition` 的第二个参数
-从 **features 矩阵**（调用方先 `features.build(panel)` 再传进来）改成 **panel**
-（`get_data(...)` 的原样产物）。
-
-**为什么**：多分组之后，特征属于**分组**（短价格 4 列 / 短波动 4 列 / 长价格 5 列），
-不再是一个扁平矩阵。让调用方先算特征，等于把"特征怎么算"泄漏到每个调用点——
-A 股一加组，`routes.py`、causual、测试都要各算一遍，特征定义就有 N 份。
-现在由 estimator 内部从 panel 算自己那几组，**特征定义只有一份**（`state_assets/<asset>/features.py`）。
-
-**影响面（必须一起改）**：
-- ✅ 已改：`web/routes.py`（传 panel）、`cli.py`、`port.py`
-- ⚠️ 待改（不归本模块）：`tests/service/test_e2e.py`、`tests/causual/*`
-- ⚠️ 语义提醒：`extend` 缺 v2 产物时**抛 `FileNotFoundError`**，不再返回带空标签的 Series
-  （带空标签最坏：下游以为有标签）。`state_view` 捕获后退化成"只给历史标签、不外推"。
-
-**为什么不做兼容层**：按列名嗅探"这是 panel 还是 features"在同名不同义时会静默走错分支
-（特征里一旦出现叫 `close` 的派生量），这种错不报错。宁可让 call site 显式改。
-
-## 12. v2 spec 的字段布局（causual 侧要按这个读）
-
-```jsonc
-{
-  "schema": "estimator-v2",
-  "asset": "ashare",
-  "primary": "short_price",              // 哪个组给下游用（config.PRIMARY_GROUP）
-  "groups": {
-    "short_price": {
-      "title": "短价格",
-      "k": 3,
-      "features": ["ret_5", "ret_10", "er_10", "snr_10"],
-      "labels": {"0": "trend_down", "1": "range", "2": "trend_up"},
-      "usable": true,
-      "fit_id": "…",
-      "label_signature": "…"              // 每组的签名（**不在顶层**）
-    }
-  }
-}
+```
+state_layer/saved_models/<asset>/
+├── spec.json    {schema:"estimator-v2", asset, primary, fit_date,
+│                 groups:{name:{title,k,model,features,labels,fit_id,
+│                               label_signature,fit_date,refit_dates,usable}}}
+├── groups.csv   长表 date,group,state,label,p_max   ← **只放拟合产物**
+└── params.pkl   {schema, groups:{name:{model,window}}}
 ```
 
-读法的三个答案：
+- `fit_date` = 该组标签的**最后一个数据日**（不是今天）；顶层 = primary 组的。
+- **外推不进 `groups.csv`**：存盘是"参数 + 拟合日 → 可复现的模型产物"；外推是"当下数据 + 同一参数"
+  的临时推导，每天都会变。混在一起以后分不清哪些是模型给的。页面显式标注外推天数即可。
+- `refit_dates` 留在 spec 里（诊断/审计用），但**页面不再画**。
 
-1. **`label_signature` 的唯一来源**：`spec["groups"][spec["primary"]]["label_signature"]`。
-   **不是**顶层字段——签名现在属于**某个分组**（A 股有三个），顶层放一个会让人以为资产只有一个签名。
-2. **`profile` 不在 spec 里**：v2 只落标签（`groups.csv`）。画像要用
-   `get_port().profile(asset, panel)`（内部 `analysis/stats.profile`，按 label 索引）。
-   如果将来要"不传 panel 也能拿画像"，就把快照写进 `groups[<组>]["profile"]`——
-   那是**新增一步**，现在没有，别假装有。
-3. **不加顶层兼容字段**：`label_signature` / `profile` 都不上浮。理由同 1：
-   分组之后"资产只有一个签名/一份画像"这句话本身是错的。
+## 6. 页面（`/state`）
 
+- **服务端窗口渲染**：`/state?asset=&lo=&hi=`，两个 `<input type=range>` 在**同一条轨道**
+  （绝对定位重叠，`pointer-events` 只开拇指），`onchange` 提交（松手才刷）。
+  默认窗口 = 最近 251 个交易日（`_window()` 兜底：至少 20 天、非法/反向参数退回默认）。
+- **没有任何前端 JS**（`/state/chart.js` 已删）。原因见 §7 的踩坑记录：
+  三次"测试通过、浏览器不生效"，收益不足以继续赌。
+- 图上：折线按状态染色（**点对连线**，相邻段端点相同 → 无断缝）；**训练窗口阴影带**
+  （`rect.trainband`，opacity 0.12）标出"当前拟合用的是哪段训练数据"；
+  阴影右侧的天数是预测（文字 `→ 预测 N 天` + 图注）。**不再画每次重估的竖虚线**。
+- 下面三张画像表（每组一张，`profile.py` 计算；黄金一张）。
 
----
+实测：A 股页默认窗口 **约 240 KB / 1.0 s**；全段（`lo=0&hi=2499`）**2.3 MB**；黄金页约 66 KB。
 
-## 13. `label_signature` 的契约（硬约束，2026-11-22 用户拍板）
+## 7. 踩过的坑（这节最值钱）
 
-> **签名 = primary 组标签的指纹。**
+1. **t-HMM 用最后一次 refit 的映射重写整段历史**（2026-11-23）。
+   症状：追加尾部 6 天数据后，`short_price` 历史标签 **2496/2496 全变**，签名也变。
+   判别法：把两次标签做**交叉表**——干净的对角置换说明"状态划分没变、只是名字换了"；
+   散乱才说明非确定性/前视。根因是 `self.labels_ = states_.map(最后一次 label_map)`；
+   修为**逐日**用当时的映射（`labels.iloc[i] = label_map[sid]`），A/B 立刻从 2496 变 0。
+   教训：`labels_` 必须与 `proba_`/`states_` 一样"逐日"，任何"最后一份映射套全段"都是错的。
 
-- 算法：`state_assets.base.label_fingerprint(primary 组的逐日标签)` = sha1(「日期:标签」逐行) 前 12 位
-- **不含**：组名列表、组数、其他组的标签、`primary` 字段本身、特征清单
-- 落盘位置：`spec.groups[<组名>].label_signature`（每组各有一份；causual 只读 primary 那份）
-- 唯一允许改签名的原因：**primary 组的标签体系本身变了**（重拟合换词表/换状态数）
+2. **模板区块误删导致 CSS/JS 注入点消失（两次）**。
+   第一次：`<script>` 被插到 `{% block title %}` 的 `{% endblock %}` 里 → 落进 `<title>`、**不执行**；
+   第二次：删「观测矩阵」区块时把末尾的 `<style>` 与 `<script src>` 一起删了 → 两条轨道 + 无反应。
+   教训：*"删一段文本"和"删一个语义区块"是两件事*，模板里 `{% endblock %}` 会撞，删完必须回头确认注入点。
 
-### 将来加组时别动这些
+3. **九宫格分支漏赋值**（2026-11-24）。重写 `_charts` 时 grid 分支丢了 `labels` 与 `colors`，
+   于是它继承了上一轮 `short_vol` 的标签、颜色回退到单组调色板（hover 只剩 `low`）。
+   现在有测试直接解析渲染出的 svg：9 色命中 ≥6、无 default 灰、hover 必须是中文组合。
 
-- ❌ 不改协议（`dict[str, GroupResult]` 不变）
-- ❌ 不改 primary 的定义（A 股永远是 `short_price`）
-- ❌ 不改签名算法（只哈希 primary 的标签）
-- ✅ 只加 key（`config.GROUPS_ENABLED` 加名字 + estimator 里 `groups[name]`）
-- ✅ causual / service 的装配点不用改（它们只取 primary）
+4. **`_WARMUP` 不是特征预热**。它是"取数起点往前多取多少**日历天**，给低频列 ffill 用"。
+   特征预热是另一件事，按各组的 `min_periods` 算（A 股 10/5/120），由
+   `Estimator.warmup_bars` + `needed_bars()` 表达；把 120 加进 `_WARMUP` 会连带改 causual 的取数窗口。
 
-**为什么是硬约束**：用户明确"A 股加短波动/长价格只是给 state_layer 自己用，causual 不变"。
-签名一变，causual 的边快照全部失效、卡片被守卫拒绝——加组就会误伤下游。
-**多分组是已具备、按需启用的能力**；加组不该被下游感知。
+5. **页面性能**：一次请求原来跑 15 次模型预测（每组各调一次 `extend`）+ 高斯逐日循环 → 35 秒。
+   改为"整页一次 `predict`（只喂 `window+warmup+20` 行）+ 向量化前向过滤" → **约 1 秒**。
 
----
+## 8. 已删除（以及为什么）
 
-## 14. 现状（2026-11-22 重构后）
-
-> **§3 / §5 / §7 里关于 `MODEL_CHAIN`、模型链、`chain.pkl`、`extreme` 模型的描述已作废**，
-> 以本节为准（链已退役，极端模型已删除）。
-
-### 三个分组（A 股）
-
-| 组 | 模型 | K | 特征 | 标签 code | 显示名 | 预热(交易日) |
-|---|---|---|---|---|---|---|
-| `short_price`（**primary**） | Student-t HMM ν=5 | 3 | ret_5 / ret_10 / er_10 / snr_10 | trend_down / range / trend_up | 下跌 / 震荡 / 上涨 | 10 |
-| `short_vol` | Gaussian HMM | 3 | rv_5 / atr_5 / gk_10 / abs_ret_5 | low / normal / high | 低波 / 中波 / 高波 | 5 |
-| `long_price` | Student-t HMM ν=5 | 2 | ret_60 / ret_120 / er_60 / er_120 / snr_60 | trend_down / trend_up | 下跌 / 上涨 | 120 |
-
-- 黄金只有一组：`raw`，K=4，Gaussian，沿用旧四词表（trend_* + distribution）
-- 每组**自己**的 K / 特征 / 词表 / 预热都在 `state_assets/<asset>/config.py`
-- 拟合方式：walk-forward（`min_train` / `refit_every` / `window` 在 config，代码里不写死）
-- 三组的日期范围**不同**（各组预热与重估起点不同）：单组图用各组自己的区间，任何跨组组合取交集
-
-### 组合只有一份实现
-
-九宫格 = `analysis/combine.py::grid(price, vol, price_order=, vol_order=)`（纯函数）：
-返回 `"i-j"`（价格档-波动档），**index 是两条序列的交集**。页面、causual、将来的用法都调它，
-**不许在路由或资产包里再拼一次**。
-
-### 面板（2026-11-22 瘦身后）
-
-`Panel.STATE_ASHARE` = `open / high / low / close / amount / turnover / csi300 / csi1000`
-（8 列；`tables_of` = csi_all / csi300 / csi1000）。
-- 特征只用 OHLC；`amount` / `turnover` / `csi300` / `csi1000` 只服务展示（观测矩阵）
-- 已删：`volume`（无人用）、`shibor3m` / `margin_balance`（旧特征退役）、4 个派生列（状态面板不再读 etf_shares）
-- `Panel.CAUSUAL_ASHARE` 未动（causual 自己的列照旧）
-
-### 加组规则（已用签名验证过）
-
-**加组只服务 state_layer 自己，causual 只读 primary。**
-2026-11-22 实测：A 股从 1 组加到 3 组，`short_price.label_signature` 仍为 `b7f0879d7c3d`
-（加组没惊动因果层）。规则见 §13。
-
-## 15. 已退役（2026-11-22，别再引入）
-
-| 东西 | 为什么 |
+| 东西 | 为什么删 |
 |---|---|
-| `MODEL_CHAIN` / `Model.fit(claim=)` / `remaining_index` / `run_infer` / `MODELS` 注册表 | 链式认领没有语义了；模型组合由 estimator 决定 |
 | `model/extreme/`（规则模型 + `extreme_*` 标签） | 用户决定去掉；极端行情由 t 分布厚尾 + 短期波动 `high` 档表达 |
-| `model/hmm/select.py`（BIC 选 K）、`_ops.py`、`serialize.py` | K 由 config 固定；`_ops` 的 helper 与 `shared.data_processing` 重复；`serialize` 与 `store` 重叠 |
-| `port` 第二参数传 features 矩阵 | 改为传 **panel**（特征属于分组，见 §11） |
-| `features.build()`（旧 9 特征） | 改成分组构造 `build_groups()`；旧特征（log_return/vol20/volume_z/ma20_slope/size_mom/margin_chg_z/rv_ratio/shibor_chg_z/etf_dispersion）退役 |
-| `align.name_states` 作为 A 股的命名方式 | A 股改"序位命名"（`align.order_labeler`）；`label_churn` **保留**为稳定性度量 |
+| `MODEL_CHAIN` / `claim` / `remaining_index` / `run_infer` / `MODELS` 注册表 | 链式"依次认领日期"在新架构里没有语义；组合交给 estimator |
+| `model/hmm/select.py`（BIC 选 K） | K 由 config 固定；自动选 K 会让人以为状态数随时会变 |
+| `model/hmm/_ops.py` | 3 个 helper 与 `shared.utils.data_processing` 重复，另 3 个是 hmmlearn 三行包装 |
+| `model/hmm/serialize.py` | 与 `store` 写同一目录同一种 pickle；剩下的函数全是死代码 |
+| `align.py` | 逐窗命名对齐随新命名机制退役（`order_labeler` 在 `state_assets/labels.py`） |
+| `analysis/` 包（`observations` / `stats` / `combine`） | 观测矩阵整体移除；`profile` 升为顶层核心；`combine` 归 `web/`（只有页面用） |
+| `port.availability()` | 观测矩阵没了，它没有别的消费者 |
+| `port.timeline()` | 图直接用 `groups.csv` + 面板，不需要另一条取数路径 |
+| `fit.py`（并入 `cli.py`） | 46 行、只被 cli 用；合并后 `fit_asset` 仍在装配点 |
+| `chart.js` + 两个前端测试 | 前端 JS 三次"本地测试通过、用户浏览器不生效"；改用服务端渲染 |
+| `current.json` / `labels.csv` / `chain.pkl` / `hmm.pkl` | 旧格式；产物已迁到 `data/state_models_legacy/`（gitignore） |
 
----
+## 9. 遗留
 
-## 16. `align.py` 已移除（2026-11-23）
+- **页面体积**：默认窗口 ~240 KB（4 张图 × 251 天），全段 2.3 MB。若用户仍嫌慢，
+  下一步是"按图分段拉取"或"只发可见窗口"（但现在没有前端 JS，改法会动架构）。
+- **`pyright` 19 条 warning**（0 error）：集中在 `_charts`/`port` 对 `dict` 值的宽泛推断
+  （如 `port.py:187` 对 `.get` 的联合类型告警），属 stub 噪声，不影响运行。
+- **`pyrightconfig_off.json`** 仍列着已删的 `state_layer/analysis`（根配置，未改）。
+- **edges 重估**：`label_signature` 每次换数据/换窗口都会变，causual 侧要跟着重估（不归本模块）。
 
-逐窗命名对齐（`make_labeler` / `reference_mapping`）与 `label_churn` 度量**随新命名机制退役**：
-A 股改为"按训练画像序位 + 固定词表"（`state_assets/labels.py::order_labeler`），
-黄金 K=4 的命名留在 `state_assets/gold/config.py`（实现走 `gold/labels.py`）。
-`port.availability` 已删，观测矩阵功能整体移除。
+## 10. 历史演进（决策轨迹，别当现状读）
+
+| 时间 | 变更 | 当时的理由 |
+|---|---|---|
+| 2026-11-15 | 各模块 `panel.py` 退役，统一走 `shared.adapter.get_data` | 面板拼装散在四处，随数据层改表名而漂 |
+| 2026-11-16 | `port.causual_view` → `state_view` | 端口名里带下游模块名 = 替别人想问题 |
+| 2026-11-16 | 删 `hmm_last.pkl` 回退 | 从没人写它；无条件覆盖链内窗口 → `fit_id` 校验永远失败 → 标签停止外推 |
+| 2026-11-22 | 去 `extreme`、去模型链、加 Student-t HMM、每资产一个 `estimator.py` | 用户：极端日不再单独认领；组合交给资产 |
+| 2026-11-22 | 多分组协议（`dict[str, GroupResult]`） | A 股要三组（短价/短波/长价），黄金仍一组 |
+| 2026-11-22 | 加组不改签名（`label_fingerprint` 只哈希 primary） | 用户：加组只服务 state_layer 自己，causual 不变 |
+| 2026-11-23 | 窗口 250/60 → 1000/125 | 用户：窗口太小导致状态漂移严重 |
+| 2026-11-23 | 彻底清旧（legacy 产物/兼容分支/观测矩阵/`align`/`fit.py`） | 旧架构的路径都还在，读代码要来回切换口径 |
+| 2026-11-24 | `/state` 改服务端窗口渲染，删前端 JS | 前端 JS 三次"测试通过、浏览器不生效"，收益 < 成本 |
+| 2026-11-24 | 训练窗口阴影带取代 61 条重估竖线 | 用户要看"这次拟合用了哪段训练数据"，一条带子比密集竖线清楚 |
