@@ -1,14 +1,14 @@
 # quant —— 量化研究工作空间
 
-> **更新日期：2026-11-16**
+> **更新日期：2026-11-28**
 
 一个**分层**的量化研究环境：数据、状态识别、因果归因、运维展示各自独立，
 层与层之间只通过显式端口通信。
 
 **不是**回测框架，也**不是**收益预测系统。它的产出是**辅助主观判断的卡片**。
 
-> **多代理协作**：每个模块由独立代理负责，工作约束见 [`AGENTS.md`](AGENTS.md)。
-> 四个模块代理 + 一个 orchestrator；代理只能看见别人的 `port.py`。
+> 多代理协作：每个模块由独立代理负责，硬约束见 [`AGENTS.md`](AGENTS.md)。
+> 代理只能看见别人的 `port.py`，跨模块接口改动必须先报 orchestrator。
 
 ---
 
@@ -17,13 +17,14 @@
 ```
 quant/
 ├── AGENTS.md        多代理协作的硬约束（先读这个）
-├── shared/          跨模块机制：utils/（时间对齐·标准化·单位原语）+ adapter/（唯一取数入口）
+├── shared/          跨模块机制：utils/（交易日历·标准化·单位原语）+ adapter/（唯一取数入口）
 ├── datahub/         数据层：SQLite + 抓取入库 + /data 页面
 ├── state_layer/     状态层：市场观测 → 状态标签 + /state 页面（因果层的上游）
 ├── causual/         因果层：机制 → 方向 → 强度 → 卡片 + /cards /fit 页面
 ├── service/         框架层：注册表 + 共享模板 + 运维状态机
-├── experiment/      试验场：K 值研究、API 探测（生产代码不依赖它）
-├── tests/           跨模块测试
+├── tests/           跨模块测试（按模块分目录）
+├── task/            任务日志与决策（归档在 task/archive/）
+├── experiment/      试验场——**不进版本库**（.gitignore），磁盘上保留
 └── trash/           归档（不再使用的旧代码，留档备查）
 ```
 
@@ -37,235 +38,162 @@ quant/
 **`state_layer` 是 `causual` 的上游**：状态层回答"现在像什么"，因果层回答"为什么"。
 因果层把状态当数据用，**不 import 状态层内部**——状态以 `state` 字典传入。
 
-### 数据只走一条路
+---
+
+## 2. 数据只走一条路
 
 ```
-datahub（表 / 派生量）  →  shared/adapter.get_data()  →  DataFrame  →  cli / service 装配  →  核心代码
+datahub（表 / 派生量）  →  shared/adapter.get_data(Panel)  →  DataFrame  →  装配点  →  核心代码
 ```
 
-- `get_data()` 是**全系统唯一取数入口**，只在装配点调（`*/cli.py`、`*/web/routes.py`、`service/`）
-- `port.py` / `pipeline.py` / `features.py` / `analysis/` **只收 DataFrame**，不自己取数（`tests/cross/test_layering.py` 静态钉住）
-- 原始表与派生量对调用方**没有区别**：`series_map(["csi_all", "breadth"])` 返回形态一致
+- `get_data()` 是**全系统唯一取数入口**，只在装配点调：`*/cli.py`、`*/web/routes.py`、`service/`
+- `port.py` / `estimator.py` / `features.py` **只收 DataFrame**，不自己取数
+  （`tests/cross/test_layering.py` 静态钉住）
+- 面板由 `shared/adapter` 统一声明：`Panel.STATE_ASHARE` / `STATE_GOLD` / `CAUSUAL_*`。
+  **要新列就改 adapter 的声明，不要在模块里自己拼表。**
 
 ```
-原语（diff_bp / rolling_z …）        → shared/utils/data_processing
-通用业务特征（breadth / etf_dispersion …） → datahub/fin/derive.py 的 DERIVED 注册表
-资产专属特征（ma20_slope / rv_ratio …）    → 各模块内
+原语（diff_bp / rolling_z …）              → shared/utils/data_processing
+通用业务派生（breadth / etf_dispersion …）   → datahub/fin/derive.py 的 DERIVED 注册表
+资产专属特征                                 → state_layer/state_assets/<asset>/features.py
 ```
 
 ---
 
-## 2. 模块模型与依赖方向
+## 3. 依赖方向
 
 每个模块 = **核心代码 + `web/` + `port.py`**：
 
 ```
-datahub/      web/   port.py(DataPort)    fin/ ops/
-state_layer/  web/   port.py(StatePort)   model/ state_assets/ analysis/
-causual/      web/   port.py(CausalPort)  causual_core/ causual_assets/
+datahub/      web/  port.py(DataPort)     fin/ ops/
+state_layer/  web/  port.py(StatePort)    model/(hmm,thmm) state_assets/(base,ashare,gold) profile.py
+causual/      web/  port.py(CausalPort)   causual_core/ causual_assets/
 service/      app.py registry.py ops/(状态机) templates/(共享骨架)
 ```
-
-模块注册时声明 `service_port_factory`，service 把它收进 `ServiceBag` —— **注册即共享**。
 
 | 场景 | 允许 |
 |---|---|
 | service 内部（状态机、app、路由） | 必须走端口：`ctx.services["datahub"]` |
 | 模块 web（自己的页面） | 只能调**自己**的 port，跨模块走 `request.app.state.services` |
-| 模块内部 | 只能调自己的实现 |
-| `*/cli.py`、`*/web/routes.py` | 装配点：取数（`get_data`）、调别人的 port，把 DataFrame 喂给核心代码 |
-| `service/` | 框架层本身就是装配层 |
-| 任何模块 `import` 别人的内部实现 | **禁止**（`tests/cross/test_decoupling.py` 会拦） |
+| `*/cli.py`、`*/web/routes.py` | 装配点：取数、调别人的 port，把 DataFrame 喂给核心代码 |
+| 任何模块 import 别人的内部实现 | **禁止**（`tests/cross/test_decoupling.py` 会拦） |
 
 ---
 
-## 3. 跑起来
+## 4. 跑起来
 
 ```bash
 # 数据
-python -m datahub.fin.update                  # 抓数（低频表自动跳过）
-python -m datahub.fin.check                   # 完整性检查
+python -m datahub.fin.update                  # 抓数（重试 transient 失败；低频表自动跳过）
+python -m datahub.fin.check                   # 完整性检查（缺口 / 尾部停更 / 非交易日脏数据）
 
-# 状态模型（改特征/K 之后）
-python -m state_layer.cli regime --asset ashare
+# 状态模型（改特征 / 改窗口之后）
+python -m state_layer.cli fit --asset ashare
+python -m state_layer.cli fit --asset gold
 
-# 之后必须重估边，否则卡片会被拒
+# 状态标签变了就必须重估边，否则卡片会被签名守卫拒绝
 python -m causual.causual_core.cli edges --asset ashare
+python -m causual.causual_core.cli edges --asset gold
 
 # 出卡
 python -m causual.causual_core.cli daily --asset ashare
 
-# 服务
+# 服务（Web + 运维状态机）
 python -m service.app
 ```
 
 ### 合并前必跑
 
 ```bash
-python tests/run_tests.py
-pyright --project pyrightconfig_off.json
+python tests/run_tests.py                          # 全量，约 6 分钟
+python tests/run_tests.py --fast                   # 开发中迭代（跳过慢文件）
+python tests/run_tests.py state_layer causual      # 只跑指定组
+python -m pyright --project pyrightconfig_off.json # 必须 0 error
 ```
 
-`pyrightconfig_off.json` 平时关掉（否则顶掉 Pylance 的提示），检查时用 `--project` 指定。
+`pyrightconfig_off.json` 平时关掉（否则顶掉 Pylance），检查时用 `--project` 指定。
 
 ---
 
-## 4. 日常使用
+## 5. 状态层口径（2026-11-23 重构后）
+
+| 资产 | 分组 | 模型 | K | 标签 |
+|---|---|---|---|---|
+| A 股 | `short_price`（**primary**） | Student-t HMM | 3 | 下跌 / 震荡 / 上涨 |
+| A 股 | `short_vol` | Gaussian HMM | 3 | 低波 / 中波 / 高波 |
+| A 股 | `long_price` | Student-t HMM | 2 | 下跌 / 上涨 |
+| 黄金 | `raw` | Gaussian HMM | 4 | trend_down / range / trend_up / distribution |
+
+滚动窗口：A 股 `min_train=1000 / refit_every=125 / window=1000`；黄金 `500/60/250`（钉死，未改）。
+
+**两条契约（加组时必须遵守）**：
+
+1. `label_signature` = primary 组「日期:标签」的指纹 → **加组不改签名**，因果层只读 primary
+2. 换特征 / 换窗口 = 换标签体系 → 签名变 → **必须重估 `cli edges`**，否则卡片被拒
+
+`/state` 页面按资产分页，支持 `?lo=&hi=` 调整显示窗口（服务端渲染，无前端 JS）；
+图上阴影带标出"当前拟合所用训练窗口"，阴影右侧是**外推**（模型未重拟合的那几天）。
+
+---
+
+## 6. 运维
+
+### 6.1 代码只在本地改，服务器只跑不写
+
+```
+1. 本地改  2. 本地验证（tests + pyright）  3. push GitHub  4. 服务器 pull + 重启
+```
+
+服务器拉 GitHub 偶尔超时，稳妥做法是 bundle 中转：
 
 ```bash
-# 1) 更新数据（自动源）
-python -m datahub.fin.update
+# 本地
+git bundle create "$TEMP/upd.bundle" main
+scp "$TEMP/upd.bundle" linux-server:/tmp/upd.bundle
 
-# 2) 检查完整性
-python -m datahub.fin.check
-
-# 3) 出卡
-python -m causual.causual_core.cli daily --asset ashare
-python -m causual.causual_core.cli daily --asset gold
-
-# 4) 起服务（浏览器看卡片与运维）
-uvicorn service.app:app --host 127.0.0.1 --port 8000
+# 服务器
+cd ~/workspace/quant && git pull --ff-only /tmp/upd.bundle main
+systemctl --user restart quant
 ```
 
-或者干脆只起服务，在 `/ops` 页面点「运行一次 / 重跑」——那会按状态机
-依次执行 fetch → validate → generate_cards → generate_macro。
+### 6.2 产物不进 git，要单独传
 
-手工数据（WGC 季报、ETF 月报）走 `datahub.fin.intake`：
+`state_layer/saved_models/`、`causual/data/`（边快照 + 卡片）、`datahub/datahub.sqlite` 都在 `.gitignore` 里。
 
 ```bash
-python -m datahub.fin.intake wgc <xlsx> --load
-python -m datahub.fin.intake wgc_etf <xlsx> --load
+tar czf "$TEMP/artifacts.tar.gz" state_layer/saved_models causual/data/snapshots causual/data/output
+scp "$TEMP/artifacts.tar.gz" linux-server:/tmp/
+ssh linux-server "tar xzf /tmp/artifacts.tar.gz -C ~/workspace/quant"
 ```
 
----
+### 6.3 数据库备份
 
-## 5. 三条设计原则
-
-**① 数据层不为使用方考虑。**
-表名按数据本身取（`csi_all` 而不是 `ashare_close`），一份数据被多方使用。
-
-**② 派生量不入库。**
-判据是"去掉它之后还能不能用库里其他数据算出来"。算得出来的（ETF 分流、
-央行增持、卡片流量）由消费层现算。
-
-**③ 只给可复现的量。**
-不做综合合成、不做"传导结构"这类测不准的东西；没有数据的边标「未估计」，
-不编造代理值。
-
----
-
-## 6. 环境
-
-- Python：`D:\desktop\workspace\global_venv\Scripts\python.exe`（3.14）
-- 依赖：`pandas` `numpy` `akshare` `econml` `pandas-datareader`
-  `fastapi` `uvicorn` `markdown` `python-multipart` `httpx2`
-- 网络：FRED / CFTC 需代理（默认 `127.0.0.1:7890`）；东财等国内接口直连
-- 数据库：`datahub/datahub.sqlite`（WAL 模式，备份用 `sqlite3 .backup`）
-
----
-
-## 7. 目录约定
-
-| 路径 | 内容 |
-|---|---|
-| `datahub/datahub.sqlite` | 全部数据 + 运维状态 |
-| `datahub/intake/{raw,clean,parsers}` | 手工数据的暂存/解析 |
-| `state_layer/saved_models/<asset>/` | 状态模型产物（spec / labels / chain）**不进 git** |
-| `causual/data/snapshots/` | 边模型快照 |
-| `causual/data/output/{asset}/cards/YYYY/MM/` | 卡片（按年月归档） |
-| `.env` | API key 等（**已在 gitignore**） |
-| `tests/run_tests.py` | 不依赖 pytest 的测试入口 |
-
----
-
-## 8. 当前状态（2026-11-14）
-
-- 数据层：45+ 张表；四种表结构（single/multi/long/static）；接入 ashareapi
-- 状态层：模型链 `extreme → hmm`；K=3；`/state` 页
-- 因果层：A 股 10 条边、黄金 9 条边；卡片只留信号层 + 一行状态
-- 服务层：卡片浏览、运维状态机、消息确认、静音、看门狗
-- 测试：64 个，全部通过；pyright 0 error
-
-**已知短板**：`industrial_yoy`/`exports_yoy` 停在 2025-08；`geopolitic_risk` 源停更；
-退市股缺失（幸存者偏差）；K=3 有退化状态（见 `experiment/`）。
-
----
-
-## 9. 部署
+WAL 模式，直接复制文件可能丢最近事务：
 
 ```bash
-git clone git@github.com:blackcoffeesky/investment_system.git
-cd investment_system
-
-python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-
-# 建库并抓数（首次会跑几分钟；周期源首次会拉全量历史，耐心等）
-python -m datahub.fin.update
-
-# 拟合状态模型 + 边快照（仓库不含这些产物，见下）
-python -m causual.causual_core.cli regime --asset ashare   # HMM 状态（含极端规则）
-python -m causual.causual_core.cli edges  --asset ashare   # 重估所有边 → 快照
-python -m causual.causual_core.cli audit  --asset ashare   # 方向一致性审计
-
-# 出卡
-python -m causual.causual_core.daily --asset ashare
-
-# 起服务
-uvicorn service.app:app --host 0.0.0.0 --port 8000
+python -c "import sqlite3;s=sqlite3.connect('datahub/datahub.sqlite');d=sqlite3.connect('/tmp/bak.sqlite');s.backup(d)"
 ```
 
-**仓库里没有的东西**（`.gitignore` 排除，需自行生成）：
+---
+
+## 7. 仓库里没有的东西
 
 | 缺什么 | 怎么补 |
 |---|---|
 | `datahub/datahub.sqlite` | `python -m datahub.fin.update` |
-| `causual/data/`（边快照、状态标签） | `python -m causual.causual_core.cli regime --asset ashare` 再 `cli edges` |
-| `regime_engine/saved_models/`（HMM pkl） | 同上，`cli regime` 会写出来 |
-| `causual/output/`（卡片） | 跑 `daily` 或服务的 `/ops` → 运行一次 |
-| `datahub/fin/intake/raw/*.xlsx` | 手工源的原始文件，需自行放回 |
-
-`datahub/fin/intake/clean/*.csv` **是包含的**——它是解析后的手工数据，
-有了它才能在不放回 xlsx 的情况下重建库。
+| `state_layer/saved_models/` | `python -m state_layer.cli fit --asset {ashare,gold}` |
+| `causual/data/`（边快照、卡片） | `cli edges` 再 `cli daily` |
+| `experiment/` | 试验场，不进版本库；换机器从旧机器拷 |
 
 ---
 
-## 10. 备份
+## 8. 最近的变化
 
-数据库是 WAL 模式，`datahub.sqlite` 旁边还有 `-wal`/`-shm`。
-**直接复制文件可能丢最近事务**，正确做法：
+当前进行中的任务日志在 `task/`，历史归档在 `task/archive/`（带日期与摘要，**归档不删**）。
 
-```bash
-sqlite3 datahub/datahub.sqlite ".backup backup/db-$(date +%F).sqlite"
-```
-
----
-
-## 11. 更新服务器
-
-服务器拉 GitHub 偶尔会超时（国内网络）。稳妥做法是用 bundle 传：
-
-```bash
-# 本地
-git bundle create /tmp/upd.bundle main
-scp /tmp/upd.bundle linux-server:/tmp/upd.bundle
-
-# 服务器
-cd ~/workspace/quant && git pull /tmp/upd.bundle main
-systemctl --user restart quant
-```
-
-模型产物（`causual/data/`、`regime_engine/saved_models/`）**不在仓库里**，
-换机器时要单独传：
-
-```bash
-tar czf - causual/data regime_engine/saved_models | ssh linux-server "cd ~/workspace/quant && tar xzf -"
-```
-
-数据库同理（WAL 模式，必须先合并）：
-
-```bash
-python -c "import sqlite3; s=sqlite3.connect('datahub/datahub.sqlite'); d=sqlite3.connect('/tmp/up.sqlite'); s.backup(d)"
-scp /tmp/up.sqlite linux-server:~/workspace/quant/datahub/datahub.sqlite
-```
+| 日期 | 主题 |
+|---|---|
+| 2026-11-28 | 删除 `shibor3m` 整条链路（表/源/边）；更新失败按 transient/structural 分级 |
+| 2026-11-24 | 状态层三组 + 服务端窗口渲染（删前端 JS）；`find_gaps` 加 `non_trading` |
+| 2026-11-23 | 状态层重构（链 → 多分组）、全库清旧、因果层重估 |
+| 2026-11-22 | 数据时效性 + `check` 重构（日历→`shared`、写守卫→`sources`） |
