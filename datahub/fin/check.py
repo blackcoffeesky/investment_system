@@ -192,7 +192,9 @@ def run(path: Path | None = None, recent_days: int = 90,
         freq = str(m["freq"] or "D")
         market = str(m["market"] or "CN")
         try:
-            gaps = find_gaps(name, max_age_days=recent_days, today=today, path=path)
+            # `max_age_days` 不传：SPARSE 表按 `SPARSE_MAX_AGE` 的表级配置判过时，
+            # 其余频率本来就不用它（洞/尾部各有各的算法）。
+            gaps = find_gaps(name, today=today, path=path)
         except Exception as e:  # noqa: BLE001
             # **检查本身没跑成**，不是"数据有问题"：标成 check_failed，
             # 调用方要能分清（2026-11-22：17 张日频表全报「日历失败」，页面上
@@ -215,6 +217,8 @@ def run(path: Path | None = None, recent_days: int = 90,
         if gaps["stale"]:
             tail = (f"最新停在 {gaps['stale']}" +
                     (f"，应到 {gaps['expected_latest']}" if gaps["expected_latest"] else ""))
+            if freq == "SPARSE":
+                tail += f"，超过 {SPARSE_MAX_AGE.get(name, SPARSE_MAX_AGE_DEFAULT)} 天未更新"
             issues.append(tail)
         # ② 区间内的洞：去掉已登记的（ack）
         missing = unacked(gaps["missing"], ack_map.get(name, set()), freq)
@@ -422,6 +426,15 @@ def freshness(tables=None, *, today: str | pd.Timestamp | None = None,
     return out
 
 
+#: **SPARSE 表的"最久多久算过时"**（天）。SPARSE 没有"周期缺口"概念，
+#: 只剩这一个判断；不写在这里就等于"没人管它会不会停"（`shibor3m` 的教训）。
+#: `shares_history`（股本变动）：源是巨潮，正常季度内有新增；180 天没动静一定是源坏了。
+SPARSE_MAX_AGE: dict[str, int] = {
+    "shares_history": 180,
+}
+#: 没登记的 SPARSE 表用的兜底值
+SPARSE_MAX_AGE_DEFAULT = 90
+
 #: 各频率默认扫多长（**不是一刀切**）：D 扫 60 个交易日（约 3 个月，够抓到
 #: "漏更一周"这类问题）；W 26 周、M 24 月、Q 8 季、Y 5 年——低频表一年才几个点，
 #: 扫短了等于没扫。
@@ -523,7 +536,8 @@ def find_gaps(table: str, *, lookback: int | None = None,
         # 超过 `max_age_days`（默认 90）没更新就算 stale。这就是原来
         # `run()` 里"最近一条停在 X"那条判断，现在统一成 `stale` 一个概念。
         latest = max(have) if have else None
-        age_limit = int(max_age_days if max_age_days is not None else 90)
+        age_limit = int(max_age_days if max_age_days is not None
+                       else SPARSE_MAX_AGE.get(table, SPARSE_MAX_AGE_DEFAULT))
         out["expected_latest"] = ""
         if latest is not None and (now.date() - pd.Timestamp(latest).date()).days > age_limit:
             out["stale"] = latest

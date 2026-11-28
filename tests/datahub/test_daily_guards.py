@@ -369,3 +369,30 @@ def test_monthly_tables_are_not_checked_for_non_trading():
     g = find_gaps("t", lookback=3, today="2026-11-24 16:00", path=db)
     assert g["non_trading"] == [], g["non_trading"]
     db.unlink()
+
+
+def test_sparse_table_uses_its_own_max_age():
+    """**SPARSE 事件表必须显式有"最久多久算过时"**，否则源停了没人发现。
+
+    `shares_history` 配 180 天（巨潮正常季度内有新增）；没登记的表用 90 天兜底。
+    """
+    from datahub.fin.check import (SPARSE_MAX_AGE, SPARSE_MAX_AGE_DEFAULT,
+                                    find_gaps)
+
+    assert SPARSE_MAX_AGE.get("shares_history") == 180
+    assert SPARSE_MAX_AGE_DEFAULT == 90
+
+    # 造一张"最后一条是 300 天前"的 SPARSE 表 → 必须报 stale
+    old_day = str((pd.Timestamp("2026-11-28") - pd.Timedelta(days=300)).date())
+    db = _db_with([old_day], freq="SPARSE")
+    g = find_gaps("t", today="2026-11-28 16:00", path=db)
+    assert g["stale"] == old_day, g          # 兜底 90 天 → 300 天肯定超
+    db.unlink()
+
+    # 同一张表，最后一条只有 100 天前：兜底 90 天会报、180 天不报（说明阈值生效）
+    day100 = str((pd.Timestamp("2026-11-28") - pd.Timedelta(days=100)).date())
+    db = _db_with([day100], freq="SPARSE")
+    assert find_gaps("t", today="2026-11-28 16:00", path=db)["stale"] == day100
+    assert find_gaps("t", max_age_days=180, today="2026-11-28 16:00",
+                     path=db)["stale"] is None
+    db.unlink()

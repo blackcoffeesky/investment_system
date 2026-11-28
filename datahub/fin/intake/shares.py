@@ -57,6 +57,9 @@ def main(argv: list[str] | None = None) -> int:
     print("=" * 56)
     for k, v in stats.items():
         print(f"  {k:22s} {v}")
+    if stats.get("跳过原因"):
+        # **不许静默跳过**：跳过和写错一样危险，只是方向相反。
+        print(f"⚠️  跳过 {stats.get('代码无法映射', 0)} 行：{stats['跳过原因']}")
     return 0
 
 

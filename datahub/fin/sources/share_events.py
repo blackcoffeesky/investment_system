@@ -66,7 +66,15 @@ def normalize_events(raw: pd.DataFrame, *, code_col: str = "证券代码",
         "float_after": pd.to_numeric(raw[float_col], errors="coerce") * WAN,
     })
     stats: dict = {"原始行数": n_all}
-    stats["代码无法映射"] = int(df["code"].isna().sum())
+    n_bad = int(df["code"].isna().sum())
+    stats["代码无法映射"] = n_bad
+    if n_bad:
+        # **不许静默跳过**：静默跳过和静默写错一样危险（只是方向相反）。
+        # 这些是深 B 老代码段（`201xxx`），不在 A 股池里；猜个前缀写进库，
+        # 将来做全市场统计会把 B 股算进去，且没人会想到要剔除。
+        bad = sorted(set(raw.loc[df["code"].isna(), code_col].astype(str)))
+        stats["跳过原因"] = (f"深 B 老代码段（{bad[0]} 一类，{len(bad)} 个代码），"
+                          f"不在 A 股池 → 不猜前缀、不写库")
     stats["日期无法解析"] = int(df["date"].isna().sum())
     df = cast_ok(df.dropna(subset=["code", "date"]))
 
