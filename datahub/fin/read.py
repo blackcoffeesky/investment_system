@@ -161,7 +161,11 @@ LONG_SCHEMAS: dict[str, dict[str, str]] = {
     "etf_shares": {"shares": "REAL"},
     # 股本变动：每次增发/回购注销/送转插一行，市值按日期向前填
     "shares_history": {
-        "kind": "TEXT",          # issue / buyback_cancel / bonus / allot / base
+        # `kind`：`base` = 当期快照（ashareapi 一次全市场）/ `event` = 股本变动事件（巨潮）。
+        # `event_code` / `event_type` 只有 event 行有值（变动原因编码 / 中文原因）。
+        "kind": "TEXT",          # base / event
+        "event_code": "TEXT",
+        "event_type": "TEXT",
         "delta_total": "REAL",
         "total_after": "REAL",
         "float_after": "REAL",

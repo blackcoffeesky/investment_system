@@ -58,7 +58,10 @@ FREQ_HINT = {
     "csi_all": ("D", "CN", 0),
     # 公司三表：低频 + 事件型
     "company": ("M", "CN", 0),          # 静态档案，每月刷
-    "shares_history": ("Q", "CN", 0),   # 股本快照，季度刷
+    # 股本变动是**事件表**（一股本一年可能好几笔，也可能没有）：不能按"每季一行"
+    # 判缺口，否则 `check` 会报"同季多行 141 期"（那是正常的）。SPARSE = 只要求
+    # "别太久没更新"（`find_gaps` 的 stale，>90 天）。
+    "shares_history": ("SPARSE", "CN", 0),   # 股本快照，季度刷
 }
 
 
@@ -521,6 +524,21 @@ def backfill(table: str, *, chunk_calls: int = 10, **kw) -> dict:
 # ======================================================================
 # 写库：long / static。表结构（列名+类型）在 read.py，那里是唯一出处。
 # ======================================================================
+def _ensure_long_columns(con: sqlite3.Connection, table: str) -> list[str]:
+    """给**已存在**的 long 表补上 `LONG_SCHEMAS` 里新登记的列（幂等）。
+
+    `CREATE TABLE IF NOT EXISTS` 对老库什么都不做，所以加列必须显式 ALTER，
+    否则新列永远写不进去（`write_long` 按 schema 拼列名 → no such column）。
+    """
+    have = {r[1] for r in con.execute(f'PRAGMA table_info("{table}")')}
+    added: list[str] = []
+    for col, typ in LONG_SCHEMAS[table].items():
+        if col not in have:
+            con.execute(f'ALTER TABLE "{table}" ADD COLUMN "{col}" {typ}')
+            added.append(col)
+    return added
+
+
 def _ddl_long(table: str) -> str:
     cols = ", ".join(f"{c} {t}" for c, t in LONG_SCHEMAS[table].items())
     return (f'CREATE TABLE IF NOT EXISTS "{table}" (\n'
@@ -537,6 +555,8 @@ def _ddl_static(table: str) -> str:
 def write_long(con: sqlite3.Connection, table: str, df: pd.DataFrame) -> int:
     """写 long 表（upsert）。df 需含 code / date 及已登记字段。"""
     con.executescript(_ddl_long(table))
+    if _ensure_long_columns(con, table):
+        con.commit()
     con.execute(f'CREATE INDEX IF NOT EXISTS "idx_{table}_date" ON "{table}"(date)')
     cols = _long_columns(table)
     use = ["code", "date"] + [c for c in cols if c in df.columns]

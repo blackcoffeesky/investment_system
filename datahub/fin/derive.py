@@ -51,6 +51,7 @@ from pathlib import Path
 from typing import Callable, cast
 
 import numpy as np
+from bisect import bisect_right
 import pandas as pd
 
 from datahub import DB_PATH
@@ -193,6 +194,44 @@ def breadth(start: str | None = None, end: str | None = None, *,
 _YIELD_COLUMNS = ["yield_mcap_weighted", "yield_median", "n_stocks"]
 
 
+
+def _asof_shares(px: pd.DataFrame, sh: pd.DataFrame) -> pd.DataFrame:
+    """给每行 `(code, 年末日)` 取**该日之前（含）最后一笔**股本（as-of join）。
+
+    为什么不用 `merge_asof(by=)`：它要求两边严格按 `(by, on)` 排序，pandas 在分组
+    边界上会误判"未排序"直接抛 `ValueError`（同一份数据两种排序都能触发）。
+    按代码 `searchsorted` 简单可靠，5,600 只 × 11 年 ≈ 6 万行只要约 0.3 秒。
+
+    第一笔事件之前（早年）→ 用该股**最早**一期股本兜底：比"丢掉这些年"或
+    "退回当前股本"都更接近真相（上市初期股本变化最小）。
+    """
+    sh = sh.copy()
+    if "shares" not in sh.columns:          # 调用方给的是原始 total_after
+        sh["shares"] = pd.to_numeric(sh["total_after"], errors="coerce")
+    sh["_d"] = pd.to_datetime(sh["date"], errors="coerce")
+    sh = sh.dropna(subset=["_d", "shares"])
+    px = px.copy()
+    px["_d"] = pd.to_datetime(px["asof_date"], errors="coerce")
+    px = px.dropna(subset=["_d"])
+
+    by_code: dict[str, tuple[list, list]] = {}
+    for c, g in sh.groupby("code", sort=False):
+        g = g.sort_values("_d")
+        by_code[str(c)] = (list(g["_d"]), list(g["shares"]))
+
+    out: list[float] = []
+    for c, d in zip(px["code"], px["_d"]):
+        pair = by_code.get(str(c))
+        if not pair:
+            out.append(float("nan"))
+            continue
+        dates, vals = pair
+        k = bisect_right(dates, d)
+        out.append(float(vals[k - 1]) if k else float(vals[0]))
+    px["shares"] = out
+    return px.drop(columns=["_d"])
+
+
 def dividend_yield(year: int | None = None, *, start: str | None = None,
                    end: str | None = None,
                    path: Path | None = None) -> pd.DataFrame:
@@ -222,10 +261,11 @@ def dividend_yield(year: int | None = None, *, start: str | None = None,
     6. **`n_stocks` 是分红股数**；覆盖率 = `n_stocks / 当年有年末价的股票数`
        （2025 年约 3785 / 5432）。
 
-    ⚠️ 已知近似（刻意，不修）
-    - **权重用"当前股本"**（`shares_history` 只有 2026-11-14 的一份快照）：
-      `w = 年末价 × 当前总股本`。对近年误差小（股本年变动通常 <5%），**越往前越不准**
-      （送转/增发会累积偏差）。
+    ⚠️ 已知近似 / 边界
+    - **权重用"该年最后一个交易日时点的股本"**（as-of join `shares_history`）。
+      2026-11-28 之前用的是**当前股本快照**（只有 2026-11-14 一份），早年偏差最大；
+      现在 `shares_history` 有巨潮的 10.7 万条**变动事件**（1990 起），权重按时点取。
+      第一笔事件之前的年份用"该股最早一期股本"兜底。
     - **`stock_daily` 不含退市股**（元信息自己写了）→ 存量幸存者偏差：早年只统计
       "活到今天"的股票，股息率可能偏高。
     - **2016 年不完整**（`stock_daily` 从 2016-11-14 起），只作参考。
@@ -244,10 +284,13 @@ def dividend_yield(year: int | None = None, *, start: str | None = None,
                     "SELECT code, substr(date, 1, 4), MAX(date) FROM stock_daily "
                     "GROUP BY code, substr(date, 1, 4)")
         px = pd.read_sql(
-            "SELECT s.code AS code, CAST(y.y AS INTEGER) AS year, s.close AS close "
+            "SELECT s.code AS code, CAST(y.y AS INTEGER) AS year, s.close AS close, "
+            "       s.date AS asof_date "
             "FROM stock_daily s JOIN _ye y ON s.code = y.code AND s.date = y.d", con)
         ev = pd.read_sql("SELECT code, date, dividend, bonus FROM adj_factor", con)
-        sh = pd.read_sql("SELECT code, total_after FROM shares_history", con)
+        sh = pd.read_sql(
+            "SELECT code, date, total_after FROM shares_history "
+            "WHERE total_after IS NOT NULL AND total_after > 0", con)
     finally:
         con.close()
 
@@ -267,11 +310,7 @@ def dividend_yield(year: int | None = None, *, start: str | None = None,
     per = cast(pd.DataFrame, ev.groupby(["code", "year"], as_index=False)
                                 .agg(cash=("cash_end", "sum")))
 
-    sh["shares"] = pd.to_numeric(sh["total_after"], errors="coerce")
-    sh = sh.dropna(subset=["shares"])[["code", "shares"]]
-
-    df = cast(pd.DataFrame, px).merge(cast(pd.DataFrame, sh), on="code", how="inner")
-    df = df[df["close"] > 0]
+    df = _asof_shares(px, sh)
     df["mcap"] = df["close"] * df["shares"]
     df = df.merge(per, on=["code", "year"], how="left")
     df["cash"] = df["cash"].fillna(0.0)

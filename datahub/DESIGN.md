@@ -67,6 +67,7 @@ datahub/
 │   │   ├── akshare.py     akshare：指数 / 期货 / 宏观 / ETF 份额 / 年度分红
 │   │   ├── fuyao.py       同花顺：日更快照 / 历史批量 / 除权事件 / 财务指标
 │   │   ├── guard.py       写库守卫 write_guard（"这个交易日能不能写"）
+│   │   ├── share_events.py 股本变动事件（巨潮）：代码映射 + 规范化 + 增量源
 │   │   └── other.py       FRED / CFTC / 黄金与地缘 JSON / 手工 CSV
 │   ├── check.py           完整性检查（缺口 / 新鲜度 / 主键）；日历在 shared
 │   ├── retry.py           失败分类 transient/structural + 临时故障重试
@@ -96,6 +97,8 @@ datahub/
 | `fin/update.py` | "怎么写"（四种 kind + 元数据 + 该不该跑 + 逐批落库的 `backfill`） | 人 / 服务层 / port |
 | `fin/check.py` | 查：`find_gaps`（洞 + 尾部 + 非交易日）/ `freshness`（stale/overdue）/ 主键重复 | 状态机 / 人 / port |
 | `fin/retry.py` | `classify_error` / `call_with_retry`（transient 才重试） | `update` |
+| `fin/sources/share_events.py` | 股本变动事件：`to_prefixed` / `normalize_events` / `shares_history_events`（**口径只此一份**） | intake / `sources/__init__` |
+| `fin/intake/shares.py` | 首次回填：`data/股本数据/*.csv` → `shares_history` | 人 |
 | `fin/derive.py` | 派生量现算（市场宽度 / 年度股息率），不建表、不注册成源 | port / 脚本 |
 | `fin/write.py` | 单值/整表写入（手工录入页用） | `web/routes.py` |
 | `fin/intake/` | 手工源解析 + 一次性建库脚本 | `web/routes.py` / 人 |
@@ -571,6 +574,62 @@ find_gaps(table, *, lookback=None, max_age_days=None, today=None, path=None) -> 
 
 ---
 
+## 18. 股本变动历史（`shares_history`）
+
+### 18.1 两类行，一张表
+
+| `kind` | 含义 | 来源 | 行数（2026-11-28） |
+|---|---|---|---|
+| `base` | 当期**快照**（每只一条） | ashareapi `/v1/snapshot` | 5,578 |
+| `event` | 股本**变动事件**（每笔一条） | 巨潮（akshare `stock_share_change_cninfo`） | 107,405 |
+
+`event` 行多两列：`event_code`（变动原因编码，如 `015011`）/ `event_type`（中文原因，如 `转增`）。
+同一天既有送股又有转增的，合并成一行，原因用 `、` 连接、编码用 `,` 连接。
+
+### 18.2 三条口径（错一条就静默错）
+
+1. **`定期报告` 不是变动**：约 **58%**（149,865 / 257,357 行）是季报/半年报/年报的例行快照。
+   写进去会让股本曲线变成一堆平线，`delta_total` 也失真。**必须剔掉。**
+2. **单位 ×1e4**：源是**万股**，库是**股**。600519 的 125,008.16 万股 = 1,250,081,601 股，
+   与库内快照**逐股一致**（三个标的都核过）。
+3. **代码按代码段加前缀**：`920xxx` / `43|83|87|88` → `bj`、`6xx` / `900` → `sh`、
+   `0|3` / `200` → `sz`。**不能按首字符猜**（`920xxx` 首字符是 9，会猜成 sh）。
+   86,089 行是前导零代码（`000001`），读 csv 时必须 `dtype=str`。
+
+`delta_total` = 与**上一笔** `total_after` 的差；第一笔没有上一笔 → `NULL`
+（硬填 0 会把"上市"记成 +0）。
+
+### 18.3 `freq = SPARSE`（不是 Q）
+
+事件表没有"每季该有几行"的概念。设成 `Q` 时 `check` 会报**「同季多行 141 期」**——
+那是正常的（一股本一季可以有好几笔）。`SPARSE` 的语义是：只要求"别太久没更新"
+（`find_gaps` 的 `stale`，>90 天），不判周期缺口。
+
+### 18.4 首次回填 vs 增量
+
+| 场景 | 用什么 | 成本 |
+|---|---|---|
+| 首次回填（1990 起全历史） | `python -m datahub.fin.intake.shares "data/股本数据/股本变动历史明细.csv"` | 约 20 秒（本地文件） |
+| 日常增量 | `python -m datahub.fin.update --only shares_history`（源 `enabled=False`，手动跑） | 5,658 只 × ~0.6s / 8 线程 ≈ **5~7 分钟** |
+
+**数据文件不进 git**（`data/` 是 gitignored，30 MB csv + 9.5 MB parquet）。
+换机器要单独拷；`README.md` 在数据目录里写明字段口径。
+
+### 18.5 连带影响：`dividend_yield` 的权重
+
+改动前：权重 = `年末价 × **当前**股本`（只有 2026-11-14 一份快照）→ 早年系统性偏低。
+改动后：`_asof_shares()` 取**该年最后一个交易日时点**的股本。
+
+| 年 | 旧（当前股本） | 新（时点股本） | 差 |
+|---|---|---|---|
+| 2020 | 1.4197% | **1.6020%** | +12.84% |
+| 2024 | 2.3750% | **2.4473%** | +3.04% |
+| 2026 | 2.0641% | **2.0640%** | −0.00% |
+
+**结论**：这个近似在早年（2020）误差 **+12.8%**，近年（2026）几乎为零——
+与"送转/增发逐年累积偏差"的预期完全一致。`yield_median` 基本不动（它是每股口径，
+与权重无关）。
+
 ## 17. 变更记录
 
 | 日期 | 变更 | 结论 / 约束 |
@@ -600,3 +659,4 @@ find_gaps(table, *, lookback=None, max_age_days=None, today=None, path=None) -> 
 | 11-24 | `find_gaps` 加 `non_trading` | 只查 `market=CN` 的 `D` 表；`W/M/Q/Y` 与美股/全球序列不查 |
 | 11-25 | 失败分类 `transient`/`structural` + 重试 | `RemoteDataError` 不继承 `requests`；拿不准归 structural |
 | 11-28 | 删 `shibor3m`（表 + 源 + 面板列 + 元数据） | 源数 34 → 33、表 41 → 40；上游滞后 8 天且用户不关注银行间流动性 |
+| 11-28 | 接入巨潮股本变动事件（107,405 行）+ 删 `shibor3m` | `shares_history` 变事件表（`freq=SPARSE`）；权重改 as-of（2020 年股息率 +12.8%）；2020 年前的年份用最早一期股本兜底 |

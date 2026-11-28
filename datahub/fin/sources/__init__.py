@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+from datahub.fin.sources import share_events
 from datahub.fin.sources.base import Source, _with_prefix
 
 from datahub.fin.sources.ashare import (
@@ -59,6 +60,10 @@ __all__ = ["SOURCES", "Source"]
 
 
 SOURCES: list[Source] = [
+    # 股本变动事件（巨潮 / akshare）：5,658 只 × ~0.6s ≈ 5~7 分钟，
+    # 所以不参加每日 update；季度或手动跑 `update --only shares_history`。
+    Source("shares_history", share_events.shares_history_events, {}, shape="long",
+           enabled=False, note="股本变动事件（巨潮）；季度或手动跑，约 5-7 分钟"),
     # 共享宏观
     Source("vix", fred, {"series_id": "VIXCLS"}, note="FRED"),
     Source("usdcny", fred, {"series_id": "DEXCHUS"}, note="FRED"),
