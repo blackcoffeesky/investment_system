@@ -79,7 +79,7 @@ datahub/
 
 | 文件 | 职责 | 谁调用 |
 |---|---|---|
-| `port.py` | 跨模块唯一面：读、装配、受控动作（update / intake / backfill）、派生量（`breadth` / `dividend_yield`）、`catalog` | service / 各模块 cli / web |
+| `port.py` | 跨模块唯一面：读、装配、受控动作（update / intake / backfill）、`freshness`（`catalog` 已于 2026-11 移除） | service / 各模块 cli / web |
 | `core/conn.py` | 连接超时、事务边界、DDL 执行 | fin / ops |
 | `core/schema.py` | 所有 DDL 的唯一出处 + 老库补列（`migrate_metadata` / `migrate_data_tables`） | update / intake / ops |
 | `fin/read.py` | 只读 API + 表结构定义（列名与类型） | 服务层 / 脚本 / port |
@@ -356,9 +356,9 @@ dividend_yield(2025)    # 单年（同样要全表扫一遍，3.7s；循环里�
 |---|---|---|
 | `breadth(start=None, end=None)` | DataFrame | 市场宽度，现算 |
 | `dividend_yield(year=None)` | DataFrame | 年度股息率（%）；3.7s，**一次拿全表，别按年循环** |
-| `catalog()` | DataFrame | 所有表 + 这 2 个派生量的清单（43 行 = 41 表 + 2） |
+| ~~`catalog()`~~ | DataFrame | **已于 2026-11 移除**；现用 `tables()` / `metadata()`，派生量清单看 `DERIVED` |
 
-`catalog` 的**定位**：描述性、**不稳定**、仅供展示与调度决策，**不要当契约**——
+`catalog`（已移除）当年的**定位**：描述性、**不稳定**、仅供展示与调度决策，**不要当契约**——
 字段名和行数都可能变。要取数据请用 `read` / `read_many` / `series_map` 或上面两个派生方法。
 
 ### 10.1 窗口与代码过滤（2026-11-16 下推）
@@ -560,7 +560,7 @@ DERIVED["etf_group_shares"] = Derived(func=etf_group_shares, depends=("etf_share
 - `web/routes.py` 手工白名单里的 `dividend_annual`（否则 `/data` 页会列一张不存在的表）
 - `REFRESH_DAYS["dividend"]`（源已删，节流配置成了死配置）
 
-结果：表数 **46 → 41**，`catalog()` = **43 行**（41 表 + 2 派生）；
+结果：表数 **46 → 41**，`catalog()` 当年为 **43 行**（41 表 + 2 派生；该接口 2026-11 已移除）；
 `derive.breadth()` / `derive.dividend_yield()` 不读这些表，删后照常工作。
 
 ### 12.1 不要再回填 `dividend`（哪怕"只差全市场"）
@@ -1172,7 +1172,8 @@ missing = [d for d in recent if d not in 库里已有的日期]
 | `margin_total`（`margin_balance`） | 同上 | 日期取自源的 `信用交易日期` 列 |
 | `etf_shares`（long） | 同上 | 每行带 `(code, date)`，`date` 来自源 |
 | `fut_hold` / `fut_daily`（`gold_open_interest` / `gold_cny`） | 同上 | 同上 |
-| `shibor3m` / `world_tension` / `xaus_gold` / `fred` | 同上 | 同上 |
+| `world_tension` / `xaus_gold` / `fred` | 同上 | 同上 |
+| ~~`shibor3m`~~ | — | **已于 2026-11-28 删除**（见 §28） |
 
 **"天然不需要守卫"不是省略，是结论**：这些源的数据行**自己带着日期**，写库是
 "按日期 upsert"，不存在"给今天的行填昨天的值"这种错法。它们**需要的是
@@ -1233,9 +1234,17 @@ Python 只留最后一个 → `expected_dates` 里按**位置**传参变成
 ### 26.1 `find_gaps` 的语义（返回 dict）
 
 ```python
-find_gaps(table, *, lookback=None, max_age_days=None, path=None) -> dict
-# {"table", "freq", "missing": [日期…], "stale": 实际最新|None, "expected_latest": 应到的最新}
+find_gaps(table, *, lookback=None, max_age_days=None, today=None, path=None) -> dict
+# {"table", "freq", "missing": [日期…], "stale": 实际最新|None,
+#  "expected_latest": 应到的最新, "non_trading": [日期…]}
 ```
+
+**`today=None`（2026-11-23 加）**：可指定"今天是哪天"，默认现在。
+不传的话 `expected_latest` 随真实日期变（11-20 → 11-23 → 11-24…），
+测试只能靠"今天恰好是什么"，**一天红一次**。`run(..., today=)` 也透传，
+`stock_daily_sync` 等调用方按需传。
+⚠️ 传 `"2026-11-20"` 会被当成 **00:00**（未收盘）→ 退回前一个交易日；要表达"已收盘"
+就带时间（`"2026-11-20 16:00"`）—— `_as_now()` 保留时间部分就是为了这个。
 
 三条**刻意的**决定：
 
@@ -1415,6 +1424,8 @@ obj = call_with_retry(lambda: s.func(...), on_retry=...)
 | `metadata` / `shibor3m` 表 | 本地已 `DROP` + 删元数据行（服务器由 orchestrator 同步时删） |
 
 `check.py` **没有**针对它的特例（grep 0 命中），无需清理。
+
+**规模**：`SOURCES` **34 → 33**（enabled 28）；`tables()` **41 → 40**；`DERIVED` 仍 9 条。
 
 ⚠️ 删完后 `CAUSUAL_ASHARE` 面板少一列，`tests/shared/test_adapter_contract.py` 会红到
 `causual` 侧同步改完为止——**这是预期的**，不要为让它绿而保留声明。

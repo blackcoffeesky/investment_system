@@ -31,7 +31,8 @@ datahub/
 日常唯一入口是 `update.py`；手工数据走 `intake`。
 
 **2026-11-13 起**：`csi_all` 合并了成交额/换手率（三表合一）；`etf_shares` 从 multi 改成 long。
-**2026-11-14 起**：新增公司四表 `company` / `shares_history` / `dividend` / `financials`，
+**2026-11-14 起**：新增公司四表 `company` / `shares_history` / `dividend` / `financials`
+（`financials` 已于 2026-11-17 删除，见 §10.1），
 接入 ashareapi。
 **2026-11-16 起**：`metadata` 去掉 `source` / `depends` 两列——派生量不进 metadata
 （它们不落表、没有 `sync_log`），依赖写在 `fin/derive.DERIVED` 的 `depends` / `depends_note` 里。
@@ -83,7 +84,7 @@ NULL**。`csi_all` 的源只回 5 列，于是每次刷新都把 `amount`/`turno
 | `gold_cny` | multi | 同上，上期所主力连续 |
 | `etf_shares` | long | 24 只 ETF 份额，`(code, date, shares)`；各只起始日不同 |
 | `dividend_annual` | multi | 分红总额/净利润/分红率/家数 |
-| `stock_daily` / `adj_factor` / `financials` / `dividend` / `shares_history` | long | 标的是数据（五千只没法一列一只） |
+| `stock_daily` / `adj_factor` / `dividend` / `shares_history` | long | 标的是数据（五千只没法一列一只） |
 | `company` | static | 全市场清单，一个标的一行 |
 | 其余 | single | 单序列 |
 
@@ -141,9 +142,13 @@ dividend_yield()   # 年度股息率（%）：yield_mcap_weighted / yield_median
 **跨模块**不要直接 import `fin.derive`，走 `DataPort`：
 
 ```python
-port.breadth(start, end)      # 市场宽度
-port.dividend_yield()         # 年度股息率（%，3.7s，别按年循环）
-port.catalog()                # 所有表 + 派生量清单（描述性、不稳定，别当契约）
+port.freshness(tables)        # 每张表的新鲜度（stale / overdue 两个布尔量）
+port.series_map(["breadth"], start, end)          # 派生量：市场宽度
+port.series_map(["dividend_yield"])               # 派生量：年度股息率（3.7s，别按年循环）
+# ⚠️ `port.breadth()` / `port.dividend_yield()` / `port.catalog()` **均已移除**，
+#    派生量一律走 `series_map`（清单见 `fin/derive.py` 的 `DERIVED`）
+port.tables()                 # 表名列表
+port.metadata()               # 每张表的 freq / lag_days / 行数 / 起止日期
 port.run_update(...)          # 跑更新（结束时自动 clear_cache()）
 ```
 
@@ -193,11 +198,26 @@ python -m datahub.fin.update --only vix,csi_all
 python -m datahub.fin.update --dry-run          # 只抓不写
 ```
 
-**日更（`stock_daily`）**：`stock_daily` 现在有一个只写**当天**的源（`market-kline`，
-1 次调用 / 5571 只 / 500 credits）。收盘后跑 `python -m datahub.fin.update --only stock_daily`
-即可；它自带三道闸（未收盘跳过 / 落后 >1 个交易日只警告不补 / 无新数据跳过）。
-**历史回补仍然用同花顺 Fuyao 的 parquet**（`python -m datahub.fin.intake.stock_daily`），
-复权事件 `adj_factor` 也只有 Fuyao 这一条路。细节见 DESIGN §15。
+**日更（`stock_daily`）**：源 = `fuyao.stock_daily_sync()` —— **先补历史、再取最新**：
+
+1. 用 `fin.check.find_gaps()` 找最近的洞（含**中间的洞**，不只是尾巴）；
+2. 用 `fuyao.historical_batch()` 补（每批 ≤10 个代码）；
+3. 再取 `prices/snapshot` 当天行情，**写入前过 `sources/guard.py::write_guard()`** 四条闸：
+   日期==今天 / 已收盘（≥15:30）/ **是交易日** / 库里没有该日或更新。
+
+```bash
+python -m datahub.fin.update --only stock_daily     # 收盘后跑
+```
+
+**历史回补**用 `fuyao` 的 `daily-k` dump（10 年全市场，182 MB / 366 秒，见 DESIGN §18）。
+复权事件 `adj_factor` 也走 Fuyao（`corporate-actions/adjustment-factors`）。细节见 DESIGN §18 / §24。
+
+**失败分两档**（`fin/retry.py`）：`transient`（网络/超时/5xx/限流，含 FRED 的 `RemoteDataError`）
+会自动重试 2 次（1s/3s）；仍失败则明细里标 `kind`，`report.all_transient` 汇总给上层——
+service 据此把"全是临时网络问题"的失败降级成 warn。见 DESIGN §27。
+
+**当前规模**（2026-11-28 实测）：`SOURCES` **33 个 API 源**（28 个 enabled）+ `intake` **2 个手工源**；
+`tables()` = **40** 张表；`DERIVED` = **9** 条派生量。
 
 数据源写在 `sources.py` 的 `SOURCES` 注册表里：
 
@@ -266,7 +286,24 @@ python -m datahub.fin.check --ack vix:2026-10-20 --reason "美股休市数据源
 - `market=US` → NYSE 日历
 - `market=NONE` → 不挂交易日历，只按自然月末/周末
 
-报告分两档：`近期缺 N 天`（90 天内，多半是忘了更新）与 `历史缺口 N 天`（源数据遗留）。
+报告分三档：`非交易日数据 N 天`（**脏数据**：库里有、但不是交易日）、
+`最新停在 X，应到 Y`（**尾部停更**）、`近期缺 N 天`（90 天内）/ `历史缺口 N 天`（源数据遗留）。
+
+**底层是 `fin.check.find_gaps()`**（返回 dict，可单独调用）：
+
+```python
+find_gaps("stock_daily", lookback=None, max_age_days=None, today=None, path=None)
+# {"table", "freq", "missing": [日期…], "stale": 实际最新|None,
+#  "expected_latest": 应到最新, "non_trading": [日期…]}
+```
+
+- `today=` 可指定"今天是哪天"（默认现在）。**测试必须传**——否则结果随真时间变，一天红一次。
+  `run(..., today=)` 也透传。
+- **不吃 `lag_days`**："源还没发布"是 `freshness` 的宽限语义，不是"数据缺"。
+- `non_trading`：**只对 `market=CN` 的 `D` 表**查（美股/全球序列本来就有周末与假日数据，
+  `fed_rate` 每个日历日都有值；`W/M/Q/Y` 的日期是周期末日，落在周末正常）。
+- 结果表带 `status` 列：`data`（数据有问题）/ `warning`（**只有**非交易日脏数据）/
+  `check_failed`（**日历失败 = 检查没跑成**，不是数据问题）。
 
 ---
 
@@ -297,15 +334,26 @@ python -m datahub.fin.check --ack vix:2026-10-20 --reason "美股休市数据源
 | `geopolitic_risk` | FRED 无此序列，旧数据冻结；新数据改用 `world_tension`（2026-03 起） |
 | `etf_shares` | 各只起始日跨度大（2016-01 ~ 2025-04），部分标的有采集空洞 |
 | `cb_holdings` | 2026Q2 有 23/87 国 `AWAITED`，按 Q1 补齐 → 低估 |
-| `financials` | 走 `finance-batch` 回填的 code 只有**最近 4 期**（`只数×periods≤40` 的硬限制）；早期 5 只是 8 期。全市场 5578 只需 **6 天**（100 次/日 × 10 只），靠"只抓缺的 code"续跑 |
+| `finances` | EAV 表（**不能 `read`**）；`metadata.freq` 被写成 `D`（原始数据是季报），解冻后会天天报缺口——已记 DESIGN §26.6 |
+| FRED 单点 | `vix` / `usdcny` / `usd_index` / `fed_rate` / `real_yield_10y` **全在 FRED 一家**：一次抖动 5 张表同时失败。按源归并**未实现**，见 DESIGN §27.4 |
 
 ## 10.1 已删除的表（2026-11-14）
+
+**2026-11-28 追加**：`shibor3m`（表 + 源 + 面板列 + 元数据）整条删除——
+上游 akshare 只到 11-13（**滞后 8 个交易日**），且用户明确"银行间流动性不在关注信号集"。
+依据与清单见 [DESIGN §28](DESIGN.md)。
+
+**2026-11-17 追加**：`financials`（旧财报表）已删，改由 `finances`（同花顺 EAV）承载，
+见 [DESIGN §18](DESIGN.md)。
 
 `breadth_adv` / `breadth_dec` / `breadth_limitup`、`dividend_annual`、`dividend` **已删除**，
 分别由 `derive.breadth()`、`derive.dividend_yield()`、`adj_factor`（吸收了 `report_end`/`plan`）取代。
 删除前的全量快照留在 `fin/intake/clean/dropped_20261114/`，原因见 [DESIGN §12](DESIGN.md)。
 
-> 表数 46 → 41；`catalog()` = 41 表 + 2 派生 = 43 行。
+> 表数 46 → 41（后随 `financials`、`shibor3m` 删除降到 **40**）。
+> ⚠️ `port.catalog()` **已于 2026-11 移除**：要看表和派生量请用 `port.tables()` /
+> `fin.metadata()`，派生量清单在 `fin/derive.py` 的 `DERIVED`（现 **9** 条）。
+> 当前 `tables()` = **40** 张表。
 
 ## 11. long 表的读法
 
