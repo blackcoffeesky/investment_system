@@ -1394,3 +1394,27 @@ obj = call_with_retry(lambda: s.func(...), on_retry=...)
 `vix` / `usdcny` / `usd_index` / `fed_rate` / `real_yield_10y` **全在 FRED 一家**：
 一次抖动 = 5 张表同时失败，噪声被放大 5 倍。建议在 `update` 里对**同源失败归并报一条**
 （`FRED: 5 张表失败`）而不是 5 条。**未实现**，等用户决定。
+
+## 28. 删除 `shibor3m`（2026-11-28）
+
+**整条链路删除**：表 + 源 + 面板列 + 元数据。同期 `causual` 删掉 `SHIBOR3M` 边。
+
+三条依据：
+
+1. **上游滞后 8 个交易日**：akshare 的 Shibor 序列只到 11-13（链路没坏，是源慢）。
+2. **`metadata.lag_days=0`**：按 `freq=D` + lag 0 判，每天都会判"过期"→ 状态机每天报 error。
+3. **用户**："银行间流动性不是我关注的信号之一" → 从因果层也拿掉。
+
+删除清单：
+
+| 位置 | 删了什么 |
+|---|---|
+| `fin/sources/akshare.py` | `shibor3m()`（含 `macro_china_shibor_all` 那段） |
+| `fin/sources/__init__.py` | import + `Source("shibor3m", …)` |
+| `shared/adapter/datahub_adapter.py` | `_ASHARE_MACRO["shibor3m"]` + `_WARMUP` 里的名字（**orchestrator 授权的跨模块改动**） |
+| `metadata` / `shibor3m` 表 | 本地已 `DROP` + 删元数据行（服务器由 orchestrator 同步时删） |
+
+`check.py` **没有**针对它的特例（grep 0 命中），无需清理。
+
+⚠️ 删完后 `CAUSUAL_ASHARE` 面板少一列，`tests/shared/test_adapter_contract.py` 会红到
+`causual` 侧同步改完为止——**这是预期的**，不要为让它绿而保留声明。

@@ -42,7 +42,6 @@ from datahub.fin.sources.akshare import (
     index_sina,
     index_tx,
     margin_total,
-    shibor3m,
     stock_market_cap,
 )
 from datahub.fin.sources import fuyao
@@ -83,7 +82,6 @@ SOURCES: list[Source] = [
     Source("gold_cot_net_long", cot_gold_net, note="CFTC Legacy：非商业净多头/未平仓量（%）"),
 
     # 利率 / 杠杆
-    Source("shibor3m", shibor3m, note="Shibor 3M 定价"),
     Source("margin_balance", margin_total, note="沪深两融合计"),
 
     # 宏观

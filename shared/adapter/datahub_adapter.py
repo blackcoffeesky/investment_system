@@ -99,7 +99,6 @@ _ASHARE_BASE: dict[str, Any] = {
     "turnover": ("csi_all", "turnover"),
     "csi300": "csi300",
     "csi1000": "csi1000",
-    "shibor3m": "shibor3m",
     "margin_balance": "margin_balance",
 }
 
@@ -272,7 +271,7 @@ _WARMUP: dict[str, Mapping[str, int]] = {
     "ashare_state": {c: 0 for c in _ASHARE_STATE},   # 全是日频价格/指数，0 天足够
     "ashare_base": {
         **{c: 0 for c in ("open", "high", "low", "close", "volume", "csi300", "csi1000")},
-        **{c: 10 for c in ("shibor3m", "margin_balance")},
+        **{c: 10 for c in ("margin_balance",)},
         **{c: 10 for c in _ETF_COLS},          # 份额存量：日频，10 天足够跨个长假
     },
     "ashare_macro": {

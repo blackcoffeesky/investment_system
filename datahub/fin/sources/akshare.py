@@ -80,14 +80,6 @@ def fut_hold(symbol: str, start: str, end: str, **_) -> pd.Series:
     return _clip(pd.to_numeric(d.set_index("日期")["持仓量"], errors="coerce"), start, end)
 
 
-def shibor3m(start: str, end: str, **_) -> pd.Series:
-    d = _ak().macro_china_shibor_all()
-    col = next((c for c in d.columns if "3M" in str(c) and "定价" in str(c)), None) or \
-          next((c for c in d.columns if "3M" in str(c)), None)
-    d["日期"] = pd.to_datetime(d["日期"])
-    return _clip(pd.to_numeric(d.set_index("日期")[col], errors="coerce"), start, end)
-
-
 def margin_total(start: str, end: str, **_) -> pd.Series:
     """沪深两融余额合计（亿元）。接口按年取，所以逐年循环。"""
     ak = _ak()
