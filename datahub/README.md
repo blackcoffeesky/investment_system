@@ -1,6 +1,6 @@
 # datahub —— 数据层
 
-> **更新日期：2026-11-14**　｜　配套设计文档：[`DESIGN.md`](DESIGN.md)　｜　代理约束：[`../AGENTS.md`](../AGENTS.md)
+> **更新日期：2026-11-28**　｜　配套设计文档：[`DESIGN.md`](DESIGN.md)　｜　代理约束：[`../AGENTS.md`](../AGENTS.md)
 
 与 `state_layer`、`causual`、`service` 同级别的独立包。SQLite 存储，**按数据本身命名**。
 唯一职责：把外部数据变成一张张干净的表，供任何上层消费。
@@ -30,17 +30,10 @@ datahub/
 
 日常唯一入口是 `update.py`；手工数据走 `intake`。
 
-**2026-11-13 起**：`csi_all` 合并了成交额/换手率（三表合一）；`etf_shares` 从 multi 改成 long。
-**2026-11-14 起**：新增公司四表 `company` / `shares_history` / `dividend` / `financials`
-（`financials` 已于 2026-11-17 删除，见 §10.1），
-接入 ashareapi。
-**2026-11-16 起**：`metadata` 去掉 `source` / `depends` 两列——派生量不进 metadata
-（它们不落表、没有 `sync_log`），依赖写在 `fin/derive.DERIVED` 的 `depends` / `depends_note` 里。
-**过渡中**：`breadth_*` 已停止采集（`SOURCES` 里两条注册已删），但**表还在**
-（`state_layer` 仍在读它）——等派生函数与旧表比对一致后再删表。
-`csi_all_amount` / `csi_all_turnover` 同理：已合并进 `csi_all`，不再单独采集。
+**当前表结构的两个要点**（历史沿革见 [DESIGN §17 变更记录](DESIGN.md)）：
 
----
+- `csi_all` 是**三表合一**（指数 + 成交额 + 换手率），不是"只回 5 列"的裸指数；
+- `etf_shares` 是 `long`（一行一个 ETF·日期），不是 multi。
 
 ## 2. 命名原则
 
@@ -60,7 +53,7 @@ datahub/
 
 **合并的前提（缺一不可）：共享 date 主键、同频、同源、同生命周期。**
 
-### 写库契约（2026-11-16 起，务必知道）
+### 写库契约（务必知道）
 
 **往 multi 表写数只更新"本次返回的列"，其余列保持原值。**
 
@@ -88,12 +81,12 @@ NULL**。`csi_all` 的源只回 5 列，于是每次刷新都把 `amount`/`turno
 | `company` | static | 全市场清单，一个标的一行 |
 | 其余 | single | 单序列 |
 
-> **`adj_factor` 已吸收 `dividend`**（2026-11-14）：数值以 Fuyao 合计为准，
+> **`adj_factor` 已吸收 `dividend`**：数值以 Fuyao 合计为准，
 > 多出 `report_end` / `plan` 两列。`dividend` 表先留着、标了"待删"，
 > 等股息率派生验证过再删；`SOURCES` 里 `ashare_dividend` 已 `enabled=False`。
 
 **代码格式**：所有 `long` / `static` 表的 `code` 一律带市场前缀
-（`sh600519` / `sz000001` / `bj920045`）。2026-11-14 起
+（`sh600519` / `sz000001` / `bj920045`）。统一规则：
 `stock_daily`(1040 万行) / `adj_factor` / `etf_shares` 已从 Fuyao 的裸 6 位迁过来；
 新增数据用 `sources._with_prefix()` 归一，**不要再写裸码**。
 
@@ -155,7 +148,7 @@ port.run_update(...)          # 跑更新（结束时自动 clear_cache()）
 **`series_map()` 会跳过 `static` 表并打一行警告**——static 没有日期轴，
 不是时间序列；调用方把整份表清单传进来也不会炸。
 
-**窗口和代码过滤要显式传**（2026-11-16 起）：
+**窗口和代码过滤要显式传**：
 
 ```python
 port.series_map(tables)                                   # 全量（兼容旧调用）
@@ -167,7 +160,7 @@ port.series_map(["stock_daily"], codes=["sh600519"])      # 只对 long 表有�
 `WHERE code IN (...)`（**只有 long 表支持**，打到 single/multi 会告警并忽略）。
 long 表的 key 集合**随窗口收缩**（窗口内没数据的代码不出现），这不算筛掉。
 
-**派生量也能从 `series_map` 拿**（2026-11-16 起）：
+**派生量也能从 `series_map` 拿**：
 
 ```python
 port.series_map(["breadth"], start="2025-01-01", end="2025-12-31")
@@ -182,7 +175,7 @@ port.series_map(["dividend_yield"])   # → {"dividend_yield:yield_mcap_weighted
 现有 9 个派生量：`breadth` / `dividend_yield` / `etf_group_shares` /
 `etf_dispersion` / `size_flow` / `national_etf` / `national_etf_event` /
 `cb_gold_buy` / `etf_flow`。前三个是"数据集"，后六个是**通用业务特征**
-（2026-11-16 从 `shared/utils/features.py` 迁来、改成自己读库；**原文件已删**）；
+（派生量自己读库；`shared/utils/features.py` **已删**，不要再往那儿加特征）；
 A 股面板直接多出 `etf_dispersion` 等 4 列，黄金面板多出 `cb_gold_buy` / `etf_flow`。
 
 **写接口不对外。** 写库只发生在 `update.py` / `intake` 内部。
@@ -216,7 +209,7 @@ python -m datahub.fin.update --only stock_daily     # 收盘后跑
 会自动重试 2 次（1s/3s）；仍失败则明细里标 `kind`，`report.all_transient` 汇总给上层——
 service 据此把"全是临时网络问题"的失败降级成 warn。见 DESIGN §27。
 
-**当前规模**（2026-11-28 实测）：`SOURCES` **33 个 API 源**（28 个 enabled）+ `intake` **2 个手工源**；
+**当前规模**（实测）：`SOURCES` **33 个 API 源**（28 个 enabled）+ `intake` **2 个手工源**；
 `tables()` = **40** 张表；`DERIVED` = **9** 条派生量。
 
 数据源写在 `sources.py` 的 `SOURCES` 注册表里：
@@ -337,23 +330,16 @@ find_gaps("stock_daily", lookback=None, max_age_days=None, today=None, path=None
 | `finances` | EAV 表（**不能 `read`**）；`metadata.freq` 被写成 `D`（原始数据是季报），解冻后会天天报缺口——已记 DESIGN §26.6 |
 | FRED 单点 | `vix` / `usdcny` / `usd_index` / `fed_rate` / `real_yield_10y` **全在 FRED 一家**：一次抖动 5 张表同时失败。按源归并**未实现**，见 DESIGN §27.4 |
 
-## 10.1 已删除的表（2026-11-14）
+## 10.1 已删除的表
 
-**2026-11-28 追加**：`shibor3m`（表 + 源 + 面板列 + 元数据）整条删除——
-上游 akshare 只到 11-13（**滞后 8 个交易日**），且用户明确"银行间流动性不在关注信号集"。
-依据与清单见 [DESIGN §28](DESIGN.md)。
+`breadth_adv` / `breadth_dec` / `breadth_limitup`、`dividend_annual`、`dividend`、
+`financials`（旧财报表）、`shibor3m` **均已删除**，当前 `tables()` = **40** 张。
 
-**2026-11-17 追加**：`financials`（旧财报表）已删，改由 `finances`（同花顺 EAV）承载，
-见 [DESIGN §18](DESIGN.md)。
+替代关系：`derive.breadth()` / `derive.dividend_yield()` / `adj_factor`（吸收了
+`report_end`/`plan`）/ `finances`（同花顺 EAV）。
 
-`breadth_adv` / `breadth_dec` / `breadth_limitup`、`dividend_annual`、`dividend` **已删除**，
-分别由 `derive.breadth()`、`derive.dividend_yield()`、`adj_factor`（吸收了 `report_end`/`plan`）取代。
-删除前的全量快照留在 `fin/intake/clean/dropped_20261114/`，原因见 [DESIGN §12](DESIGN.md)。
-
-> 表数 46 → 41（后随 `financials`、`shibor3m` 删除降到 **40**）。
-> ⚠️ `port.catalog()` **已于 2026-11 移除**：要看表和派生量请用 `port.tables()` /
-> `fin.metadata()`，派生量清单在 `fin/derive.py` 的 `DERIVED`（现 **9** 条）。
-> 当前 `tables()` = **40** 张表。
+删除的**原因与结论**见 [DESIGN §17 变更记录](DESIGN.md)；
+删除前的快照留在 `fin/intake/clean/dropped_20261114/`。
 
 ## 11. long 表的读法
 

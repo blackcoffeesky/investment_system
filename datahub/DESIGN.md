@@ -1,6 +1,6 @@
 # datahub 设计文档
 
-> **更新日期：2026-11-14**　｜　使用说明见 [`README.md`](README.md)
+> **更新日期：2026-11-28**　｜　使用说明见 [`README.md`](README.md)
 
 ---
 
@@ -60,13 +60,16 @@ datahub/
 │   ├── __init__.py        对外：read / read_many / read_long / metadata / tables / run_check / missing
 │   ├── read.py            读接口 + **四种表结构**（single/multi/long/static）+ pivot
 │   ├── update.py          写库（四种 kind 各一个 writer）+ 按频率跳过 + 元数据 + `backfill`
-│   ├── sources/           取数（2026-11-14 从单文件拆成包，按来源分）
+│   ├── sources/           取数（按来源分包：ashare / akshare / fuyao / other）
 │   │   ├── __init__.py    SOURCES 注册表（汇总各组）；只导出 SOURCES / Source
 │   │   ├── base.py        Source 契约 + 共享工具（_clip/_num/_with_prefix/_read_cached/_existing_keys）
 │   │   ├── ashare.py      ashareapi：HTTP 客户端 + 限速器 + 4 个取数函数
 │   │   ├── akshare.py     akshare：指数 / 期货 / 宏观 / ETF 份额 / 年度分红
+│   │   ├── fuyao.py       同花顺：日更快照 / 历史批量 / 除权事件 / 财务指标
+│   │   ├── guard.py       写库守卫 write_guard（"这个交易日能不能写"）
 │   │   └── other.py       FRED / CFTC / 黄金与地缘 JSON / 手工 CSV
-│   ├── check.py           交易日历 + 完整性检查
+│   ├── check.py           完整性检查（缺口 / 新鲜度 / 主键）；日历在 shared
+│   ├── retry.py           失败分类 transient/structural + 临时故障重试
 │   ├── derive.py          派生量（市场宽度 / 年度股息率），**不落表**、不注册成源
 │   ├── write.py           单值 upsert（intake 用）
 │   └── intake/            raw / clean / parsers / registry / cli / stock_daily
@@ -86,10 +89,13 @@ datahub/
 | `fin/sources/base.py` | `Source` 契约 + 跨源共享的清洗工具 | 各取数模块 |
 | `fin/sources/ashare.py` | ashareapi 的 HTTP 客户端与 4 个取数函数（限速器必须同模块） | `sources/__init__` |
 | `fin/sources/akshare.py` | akshare 的全部取数（含 `INDEX_ETFS` / `ALL_ETFS`） | `sources/__init__` |
+| `fin/sources/fuyao.py` | 同花顺：`stock_daily` 日更/补历史、`finances`、`adj_factor`（**所有 fuyao 调用只走它**） | `sources/__init__` / intake |
+| `fin/sources/guard.py` | `write_guard()`：四条写库闸（今天 / 已收盘 / 是交易日 / 库里没有更新） | `fuyao` / 将来的快照源 |
 | `fin/sources/other.py` | FRED / CFTC / 黄金与地缘 JSON / 手工 CSV | `sources/__init__` |
 | `fin/sources/__init__.py` | `SOURCES` 注册表（唯一事实来源） | update / port |
 | `fin/update.py` | "怎么写"（四种 kind + 元数据 + 该不该跑 + 逐批落库的 `backfill`） | 人 / 服务层 / port |
-| `fin/check.py` | 缺口判断（日历驱动；低频表按周期比，报「同月多行」） | 状态机 / 人 / port |
+| `fin/check.py` | 查：`find_gaps`（洞 + 尾部 + 非交易日）/ `freshness`（stale/overdue）/ 主键重复 | 状态机 / 人 / port |
+| `fin/retry.py` | `classify_error` / `call_with_retry`（transient 才重试） | `update` |
 | `fin/derive.py` | 派生量现算（市场宽度 / 年度股息率），不建表、不注册成源 | port / 脚本 |
 | `fin/write.py` | 单值/整表写入（手工录入页用） | `web/routes.py` |
 | `fin/intake/` | 手工源解析 + 一次性建库脚本 | `web/routes.py` / 人 |
@@ -218,8 +224,8 @@ d = read("csi_all")           # DataFrame
 | `cfc` 查询 `$limit=50000` 硬编码 | CFTC 历史若继续增长会被截断 | 加分页或检测截断 |
 | `check` 只检查「有没有这个日期」 | 不检查数值突变（如 10 倍跳变） | 加一层"与前值比值"的合理性检查 |
 | **月频表同月两行**：`m1_yoy`/`m2_yoy`/`m1_level`/`m2_level`（397 行 / 225 月）、`total_shares`/`total_mktcap`（398/226）、`equity_fin_monthly`（162/81） | 月初 + 月末两行并存（值多数相同）→ `resample`/分位/差分**重复计数** | **已能报出来**（`check` 的「同月多行 N 期」）；数据迁移单独做，本轮不动库 |
-| `check` 只查观测区间内的**空洞**，不查**尾部停更** | `vix` 停在 11-06、`csi_all` 停在 11-10 都不告警 | 等 FRED 那批表的 `market` 从 NYSE 改成自然日/联邦工作日后再加 |
-| `check` 的 `long` 表只看日期集合，不看**标的覆盖度** | `financials`/`dividend`/`shares_history` 只有 5 只也全部通过 | 加一层"标的数 vs `company` 行数"的覆盖检查 |
+| `check` 的 `long` 表只看日期集合，不看**标的覆盖度** | `stock_daily`/`dividend`/`shares_history` 只有 5 只也全部通过 | 加一层"标的数 vs `company` 行数"的覆盖检查 |
+| FRED 同源 5 表 | 一次抖动 5 张表同时失败，噪声放大 5 倍 | `update` 里按源归并报一条（**未实现**） |
 | `static` 表没有日期轴 | `check` 实际不检查它（只算行数） | 由 `company` 之外的来源保证新鲜度，或给 static 表加 `updated_at` |
 
 ---
@@ -237,7 +243,7 @@ d = read("csi_all")           # DataFrame
   （`metadata.columns` 只有列名、没有类型，建表需要类型）
 - **写库**在 `update.py`：`write_long` / `write_static`，按 `Source.shape` 分派
 - `multi` 用于"列是写死的"场景；`long` 用于"标的是数据"（五千只股票没法一列一只）
-- **`code` 一律带市场前缀**（2026-11-14 起）：`sh600519` / `sz000001` / `bj920045`。
+- **`code` 一律带市场前缀**：`sh600519` / `sz000001` / `bj920045`。
   `stock_daily`(1040 万行) / `adj_factor` / `etf_shares` 已从 Fuyao 的裸 6 位迁过来。
   新增数据一律过 `sources._with_prefix()` 归一，**不要再写裸码**——混格式会让
   `isin`/合并/派生全部对不上（`derive.py` 里原本有个 `_bare_code`，已删除）。
@@ -256,1176 +262,341 @@ d = read("csi_all")           # DataFrame
 
 ---
 
-## 10. 外部数据源（ashareapi）
+## 10. 数据源
+
+### 10.1 ashareapi（付费，额度制）
 
 key 只在 `.env` / 环境变量 `ASHARE_API_KEY`，代码不存。
 
 | 端点 | 用途 | 频率 | 单次上限 / 独立日额度 |
 |---|---|---|---|
-| `/v1/stocks` | 全市场清单 → `company` | 每月 | 1 次拿全 5578 只 |
-| `/v1/snapshot-batch` | 当日股本 → `shares_history`（`kind=base`） | 季度 | 200 只/次 · 200 次/日 |
-| `/v1/finance-batch` | 三大报表 → `financials` | 每季 | **10 只/次**（且 `只数×periods≤40` → 最多 4 期）· **100 次/日** |
-| `/v1/dividend` | 分红送转 → **已停用**（2026-11-14 并入 `adj_factor`） | — | 无批量端点，只能逐只 |
+| `/v1/stocks` | 全市场清单 → `company` | 每月 | 1 次拿全 5,578 只 |
+| `/v1/snapshot-batch` | 当日股本 → `shares_history` | 季度 | 200 只/次 · 200 次/日 |
+| ~~`/v1/finance-batch`~~ | ~~三大报表~~ | — | **已停用**（`financials` 表已删，改 `finances`） |
 
-**2026-11-14 额度实测**（专业版）：`total_quota=500000`、`per_min=300`、
-**每个批量端点有独立日额度**（`heavy_quotas`），**没有全局日额度**（`daily_quota=null`）。
-计费：批量 **1 次/只**（与单只同价）、`market-kline` **500 次/次**、被 422 拒 **0 扣费**、
-非交易日打 `market-kline` 也是 **0 扣费**（返回 200 + `ok:false` + 空）。
+**额度模型**：`total_quota=500000`、`per_min=300`；**每个批量端点有独立日额度**
+（`heavy_quotas`），**没有全局日额度**（`daily_quota=null`）。计费：批量 1 次/只；
+`market-kline` **500 次/次**；被 422 拒 **0 扣费**；非交易日打 `market-kline` 也 **0 扣费**。
 
-**⚠️ 上游会降级（2026-11-14 踩到）**：持续调用同一个数据源，会返回
-`reason=temporarily_unavailable` + `retry_after_s=60`。两种表现都要防：
-- `ok:false`——看起来像"这只没数据"，实际是被限流；
-- `ok:true` 但**少表**（实测某只只回 `balance`）——这是静默缺数据。
+**⚠️ 上游降级的两种表现，都必须防**：
 
-所以取数函数**逐只校验 `income`+`balance` 都在**，缺的记失败、不写半条。
-实测单只 `/v1/finance` 约 1.8s/次且速率一高就降级（全市场要 1~3 小时），
-**batch 才是可行路径**（1 请求 10 只）。
+- `ok:false` —— 看起来像"这只没数据"，实际是被限流（`reason=temporarily_unavailable`，
+  `retry_after_s=60`）；
+- `ok:true` 但**少表**（实测某只只回 `balance`）—— 静默缺数据。
 
-**`dividend` 已并入 `adj_factor`（2026-11-14）**：以 Fuyao 的合计值为准（1991 起、
-覆盖 5437 只、每股现金是"年度+特别"合计），`dividend` 只贡献 `report_end` / `plan`
-两列。27 条里 25 条数值一致；**2 条冲突（都 sz300750）**：
+⇒ 取数函数**逐只校验字段齐全**，缺的记失败、**不写半条**。
 
-| code | date | adj_factor（采用） | dividend 表（弃用） | 处置 |
-|---|---|---|---|---|
-| sz300750 | 2024-04-30 | 5.028（10派50.28） | 2.011（10派20.11） | 写 `report_end`，`plan` 留空 |
-| sz300750 | 2026-04-22 | 6.957（10派69.57） | 2.178（10派21.78） | 同上 |
+**续跑**：只抓"库里还没有的 code"，不靠跨天游标；`shares_history` 一次 28 次调用覆盖全市场。
 
-`plan` 留空是刻意的：冲突时把"10派21.78"写进一行为 6.957 的记录里，会造出一行
-自相矛盾的数据。两笔差额（4.779 / 3.017）正好是另一笔分红的量级，怀疑 ashareapi
-对"同一除权日年度+特别两笔"只返回其一，**待全市场分红回填时再核**。
-`dividend` 表**先留、标"待删"**（metadata.note），等股息率派生与拆包都验证过再删。
-
-**续跑**：`shares`/`financials` 都只抓"库里还没有的 code"，`financials` 的
-`max_calls` 默认等于日额度（100 次 = 1000 只）→ 全市场 5578 只需 6 天，
-每天跑一次 `update` 自动接着补，不需要跨天游标。
-`shares_history` 一次 28 次调用覆盖全市场（实测 37 秒）。
-
-**另外两个可用但没接的端点**：`/v1/market-kline`（全市场单日 K 线，5571 行含北交所，
-1 次=500 额度，200 次/日）与 `/v1/changedist`（当期涨跌家数，**只能对账不能回补历史**，
+**可用但没接的端点**：`/v1/changedist`（当期涨跌家数，只能对账、不能回补历史，
 用来校验 `derive.breadth()` 的口径漂移）。
 
----
-
-## 11. 派生数据（待实现）
-
-这些**不建表**，由 `read` 现算（将来可能缓存）：
-
-| 派生量 | 公式 | 依赖 |
-|---|---|---|
-| 市场宽度 ✅ | 按日聚合 `stock_daily`：涨/跌/平、涨跌停（**已实现**，见 `fin/derive.py`） | `stock_daily` + `company`(ST) |
-| 年度股息率 ✅ | 每股现金分红（按**除权日**归年、送转折算）/ 年末收盘价；市值加权 + 分红股中位数（**已实现** `derive.dividend_yield`） | `adj_factor` + `stock_daily` + `shares_history` |
-| 总市值 | `close × total_shares`（股本按日期 ffill） | `stock_daily` + `shares_history` |
-| PE_ttm | `总市值 / 净利润TTM` | + `financials` |
-| PB | `总市值 / 净资产` | + `financials` |
-| ETF 资金流 | `etf_shares` 差分 | `etf_shares` |
-
-**市场宽度**已落地（2026-11-14）：
-
-```python
-from datahub.fin.derive import breadth
-df = breadth("2026-01-01", "2026-11-10")   # index=date，列 adv/dec/flat/limit_up/limit_down/total
-```
-
-口径与已知偏差写在 `derive.py` 的模块 docstring 里（涨跌基准、停牌、板块阈值、ST、未复权除权坑）。
-它**不建表、不注册成 Source**；等与旧表 `breadth_*` 比对确认后，第三轮再删旧表并切换 `state_layer`。
-
-**年度股息率**已落地（2026-11-14），签名固定（`causual` 依赖）：
-
-```python
-from datahub.fin.derive import dividend_yield
-dividend_yield()        # index=year(int)，列 yield_mcap_weighted / yield_median / n_stocks
-dividend_yield(2025)    # 单年（同样要全表扫一遍，3.7s；循环里按年调是浪费）
-```
-
-三个必须知道的口径：
-- **单位是百分数**（2.1258 = 2.13%），不是小数。
-- **按除权日归年**，不是按报告期——所以和 `dividend_annual`（报告期口径）**不可直接比**，
-  年报分红多数在次年除权，两套口径天然错开一年。
-- **市值加权的分母是全市场**（不分红股分子记 0、分母照算）；**中位数只统计分红股**
-  （掺入 0 会把中位数拉到 0）。
-- 权重用**当前股本**近似（历史股本不可得，见 §11.2），越往前越不准；
-  `stock_daily` 不含退市股 → 存量幸存者偏差；2016 年不完整；当年是 YTD。
-
-实测 `n_stocks / 当年有年末价的股票数` ≈ 67~80%（2025：3760 / 5444）。
-全历史一次 3.7 秒，其中 `stock_daily` 的"每年末收盘价"占 3.4 秒
-（`GROUP BY code, substr(date,1,4)` 沿 PK 流式分组；加 `date BETWEEN` 反而更慢）。
-
-**消费方怎么拿到派生量**（2026-11-14 起走 port，不许直接 import `fin.derive`）：
-
-| `DataPort` 方法 | 返回 | 备注 |
-|---|---|---|
-| `breadth(start=None, end=None)` | DataFrame | 市场宽度，现算 |
-| `dividend_yield(year=None)` | DataFrame | 年度股息率（%）；3.7s，**一次拿全表，别按年循环** |
-| ~~`catalog()`~~ | DataFrame | **已于 2026-11 移除**；现用 `tables()` / `metadata()`，派生量清单看 `DERIVED` |
-
-`catalog`（已移除）当年的**定位**：描述性、**不稳定**、仅供展示与调度决策，**不要当契约**——
-字段名和行数都可能变。要取数据请用 `read` / `read_many` / `series_map` 或上面两个派生方法。
-
-### 10.1 窗口与代码过滤（2026-11-16 下推）
-
-`series_map(names, *, start=None, end=None, codes=None)`——三个参数**都落到 SQL**：
-
-| 参数 | 落到哪 | 适用 kind |
-|---|---|---|
-| `start` / `end` | `WHERE date >= ? AND date <= ?`（闭区间） | 全部（static 无日期轴，跳过） |
-| `codes` | `WHERE code IN (...)` | **只有 long**；打到 single/multi **告警并忽略** |
-
-为什么不静默忽略：调用方以为筛过了、实际拿到全量，是最难查的一类问题
-（`stock_daily` 1040 万行整表读进内存就是这样发生的）。
-
-**long 表的 key 随窗口收缩**：窗口内没有数据的代码不出现（`etf_shares` 2025 上半年
-是 22/24）。这不是"被筛掉"，别拿 key 数当"有多少只"。
-
-**`read()` 也接受 `codes`**：long 透传给 `read_long`、static 透传给 `read_static`，
-其它 kind 告警忽略——避免"`series_map` 绕过 `read` 直接调 `read_long`"造成两条路漂移。
-
-⚠️ **窗口起点还没有 warmup**：`get_data(start=...)` 把起点直接当取数起点，低频列在
-窗口头部没有历史可 ffill。实测 2025-01-01 起取：`STATE_ASHARE` 逐位相同（0 行差异），
-`CAUSUAL_GOLD` 头部 **23 行**差异（`usdcny/vix/usd_index/fed_rate`）。
-warmup（起点前多取 N 天、算完再切）是下一步。
-
-### 10.2 派生量注册表 + warmup（2026-11-16）
-
-派生量（`breadth` / `dividend_yield`）注册在 `fin/derive.DERIVED`：
-
-```python
-DERIVED["breadth"] = Derived(func=breadth, depends=("stock_daily",), period="D",
-                             columns=("adv",…,"total"), warmup_days=400, doc=…)
-```
-
-- **不进 `metadata`**：派生量不落表、没有 `sync_log`，塞进 metadata 会让
-  `check` / `/data` 页分不清"缺表"和"该现算"。
-- **`series_map` 认名字**：`series_map(["breadth"], start, end)` 返回
-  `{breadth:adv: Series, …}`，**与普通表形态完全同构**，调用方分不出哪个是算的。
-- **不变量**：`func(start, end)` 恒等于 `func()` 再 `.loc[start:end]`。
-  为此 `breadth` 的回看从 40 天提到 **400 天**——40 天时 `breadth(2025)` 与
-  全量切片有 **0.82%** 的格子不同（停牌超过 40 天的股票在窗口起点算不出前收）。
-
-**`get_data` 的 warmup**：每列在 adapter 里声明往前多取多少天
-（`_WARMUP`，0/10/45/130），取数起点 = `start − max(warmup)`，build 完再
-`df.loc[start:end]`。**只有传了 `start` 才生效**，不传就是全量（老行为，逐位不变）。
-
-| 列 | warmup | 为什么 |
-|---|---|---|
-| 价格 / 指数 | 0 | 本身就是日频，窗口内每天都有 |
-| 拆借 / 两融 / VIX / 汇率 | 10 天 | 跨周末与长假 |
-| 月频（PMI/CPI/M1/M2/固投…） | 45 天 | 1 个月 + 公布滞后余量 |
-| 月频存量（ETF 持仓） | 45 天 | 同上（含 40 天公布滞后） |
-| 季频（`cb_holdings`） | 130 天 | 1 个季度 + 45 天公布滞后 |
-
-验收：2025-01-01 起取，四个面板 **0 行差异**（原来是 `CAUSUAL_GOLD` 23 行）。
-
-### 10.3 `etf_group_shares` 也沉进数据层（2026-11-16）
-
-ETF 分组（哪几只 ETF 算"上证50/沪深300/中证1000 宽基"）与组内求和，2026-11-16
-从 `shared/adapter` 搬进 `fin/derive.py`：
-
-```python
-DERIVED["etf_group_shares"] = Derived(func=etf_group_shares, depends=("etf_shares",),
-                                      period="D", columns=("sse50","csi300","csi1000"),
-                                      warmup_obs=2, …)
-```
-
-- adapter 里**不再有** ETF 代码 / `_ETF_GROUPS` / `bare_code` / 组内求和；
-  它只知道"列叫 `etf_sse50`"和"派生量叫 `etf_group_shares`"（有测试钉住）
-- `series_map(["etf_group_shares"])` → `{"etf_group_shares:sse50": Series, …}`，
-  与表同构；窗口不变量同样成立（`warmup_obs=2` 保证窗口内第一条也有 pct_change 基准）
-- ⚠️ **已知错误（欠账，不是"设计如此"）**：`etf_group_shares` 里某组当天**没有观测**
-  时会被写成 `0.0`（pandas 对全 NaN 求和的默认行为，旧 `sum(axis=1)` 的遗产），
-  2016 年共 **162 格**。这不是"少一个值"，而是**伪造了一次 −100% 下跌再 +∞ 回升**：
-  `t0=100`（有观测）→ `t1=0`（无观测，被写成 0）→ `t2=120`（有观测）。
-  这批假尖峰会污染 `ETF_DISPERSION` / `SIZE_FLOW` / `NATIONAL_ETF` 的 2016 段，
-  **而 2016 正是 HMM 的训练区间**（抬高那段的波动估计）。
-
-  **修复方式**：`reindex` 到观测日并集后**保持 NaN**，不要 `fillna(0)`。
-  ⚠️ 修它会改变上述三个派生列的 2016 段 → 特征变 → 标签变 → **边快照失效**，
-  所以**必须同轮重拟合 + 重估 edges，不能单独改**（2026-11-16 决定：先记账，等下一次
-  计划内的重拟合一起做）。
-
-### 10.4 通用业务派生量也进了注册表（2026-11-16）
-
-原来放在 `shared/utils/features.py`（**该文件已于 2026-11-16 删除**）、吃**面板列**的 6 个通用特征，改成在 derive 里
-**自己读库**并注册（`series_map` 按名字给，`get_data` 直接出现在面板里）：
-
-| 派生量 | 列 | 依赖 | warmup | 出现处 |
-|---|---|---|---|---|
-| `dividend_yield` | `yield_mcap_weighted` | `adj_factor`/`stock_daily`/`shares_history` | `warmup_years=0` | **只给 causual.ashare**（`daily`） |
-| `etf_dispersion` | `dispersion` | `etf_shares` | `warmup_obs=2` | A 股面板（`daily`，ffill） |
-| `size_flow` | `flow` | `etf_shares` | `warmup_obs=2` | 同上 |
-| `national_etf` | `net` | `etf_shares` | `warmup_obs=2` | 同上 |
-| `national_etf_event` | `event` | `etf_shares` | `warmup_days=120` | 同上（日频 0/1，头部为 0） |
-| `cb_gold_buy` | `flow` | `cb_holdings` | `warmup_obs=3` | 黄金面板（`raw`，落在可见日） |
-| `etf_flow` | `flow` | `gold_etf_holdings` | `warmup_obs=3` | 同上 |
-
-**warmup 各填各的**（不再一个全局常量）：pct_change 只要 1 个历史观测，
-60 日滚动分位要 60 个，差分还要"上上个"作基准（`_gold_flow` 因此是 **3** 不是 2——
-只取 2 个的话窗口内第一笔会缺，实测 2025-01-09 差一格）。
-
-**`dividend_yield` 的年度对齐也在 adapter**：年 Y 的值对齐到 **Y+1-01-01**（年 Y 的除息日
-全落在 Y 内，数据到 Y+1 才完整），再 ffill 到日频。这条换算原来散在
-`causual/cli.derived_series`（改 index）+ `pipeline._dividend_yield`（`to_daily`）两处，
-现在归适配层——它和 `lag_days` 是同一类"数据期→可见日"的换算。
-实测与旧两步路径**逐位相同**（2394 个非空、末值 2.1258）。
-它**只挂 causual.ashare**：算一次 3.7 秒，状态层不用——`_PANEL_DERIVED` 按 **Panel**
-而不是 builder 挂载，就是为了不让共享 `ashare_base` 的 state 也付这个代价。
-
-**两种落位口径**：`etf_*` 返回**观测日**（`daily` 策略由 adapter ffill），
-`national_etf_event` 返回**日频**（0/1 标记，"没有观测"应当是 0 不是 NaN），
-黄金两条返回**稀疏**（`raw` 策略，落在可见日之后的第一个交易日）。
-
-验收：9 个派生量窗口不变量全过；四个面板**原有列逐位不变**（35/17/14/7 列），
-新增 4/2/4/0 列；6 个新列与旧的 `features.*` 算法**逐位相同**——
-唯一例外是 `etf_flow` 多了 **1 个值**（2008-01-09）：derive 直接读库，有基期观测，
-而旧的"吃面板列"版本因为面板起点之前没有那一行，算不出第一笔。**新的是更完整的**。
-
-**为什么现算**：估值入库约 5000×2500×4 个浮点 ≈ 3 GB，且都是可推导量；
-一旦入库就要操心"股本变了要重算历史"。
-
-### 10.5 派生量总表（9 条，warmup 三种单位）
-
-| 派生量 | 列 | 依赖 | warmup | 落位 |
-|---|---|---|---|---|
-| `breadth` | `adv/dec/…` | `stock_daily` | **`warmup_days=400`** | 交易日 |
-| `dividend_yield` | `yield_mcap_weighted` 等 3 列 | `adj_factor`/`stock_daily`/`shares_history` | **`warmup_years=0`** | 年 Y → Y+1-01-01 → ffill |
-| `etf_group_shares` | `sse50/csi300/csi1000` | `etf_shares` | **`warmup_obs=2`** | 观测日（不 ffill） |
-| `etf_dispersion` | `dispersion` | `etf_shares` | `warmup_obs=2` | 观测日 → `daily` |
-| `size_flow` | `flow` | `etf_shares` | `warmup_obs=2` | 观测日 → `daily` |
-| `national_etf` | `net` | `etf_shares` | `warmup_obs=2` | 观测日 → `daily` |
-| `national_etf_event` | `event` | `etf_shares` | **`warmup_days=120`** | 日频 0/1（头部为 0） |
-| `cb_gold_buy` | `flow` | `cb_holdings` | **`warmup_obs=3`** | 稀疏（可见日） |
-| `etf_flow` | `flow` | `gold_etf_holdings` | `warmup_obs=3` | 稀疏（可见日） |
-
-**warmup 三种单位**，按"这个量要多少历史"选，不搞一个全局常量：
-
-- `warmup_days` —— 日期单位（`breadth` 400 天：停牌超 40 天的股票在窗口起点算不出前收；
-  `national_etf_event` 120 天兜住 60 个观测的滚动分位 + 长假）
-- `warmup_obs` —— **观测**单位（周频/月频表"往前 3 天"可能一个观测都没有）
-- `warmup_years` —— 年度口径（`dividend_yield` 是 0：每年独立，没有跨年滚动）
-
-**`depends_note` 是"什么条件下这个数会变味"**，不是装饰：写的是"换源 / 改口径 /
-分组变了 / 用当前股本近似"这类**会让历史不可比**的条件。改派生量前先读它。
-
-**`period="Y"` 的对齐规则**：年 Y 的值 → **Y+1-01-01** → ffill 到日频。
-理由：年 Y 的除息日全落在 Y 内，数据到 Y+1 才完整；这是"数据期→可见日"的换算，
-和 `lag_days` 同类，所以由**适配层**做（不在消费方各写一遍）。
-
-### 11.1 "原始 / 派生"不再由 `metadata` 区分（2026-11-16 改）
-
-2026-11-14 曾在 `metadata` 加了 `source` / `depends` 两列，想用它们标记"这张表是原始
-数据还是算出来的"。**2026-11-16 删掉了**，理由：
-
-- 派生量**不落表**（现算、无 `sync_log`、不在 `/data` 页），塞进 `metadata` 会让
-  `check` / `/data` 分不清"缺表"和"该现算"；
-- 唯一真正的消费者是 `check`（"派生表缺了不用抓"），而派生量根本不在 `tables()` 里，
-  这条判断从来不会触发。
-
-现在**派生量的登记只有一个地方**：`fin/derive.DERIVED`（`depends` + `depends_note`），
-消费方通过 `series_map` 按名字取，形态与表同构（见 §10.2）。
-
-迁移：老库由 `core/schema.METADATA_DROPS` 幂等删列（SQLite 3.35+ 的
-`ALTER TABLE … DROP COLUMN`）；新库的 `DATA_DDL` 直接不带这两列。
-
-### 11.2 名字撞车：`total_shares` 有三种含义（刻意不改名）
-
-| 出现的地方 | 指的是 |
-|---|---|
-| `total_shares`（表） | **交易所月度合计**：沪+深全部上市公司的总股本（亿股），月频 |
-| `company.total_shares`（字段） | **单只个股**的总股本（股），静态快照 |
-| §11 派生市值公式里的 `total_shares` | 同上，取自 **`shares_history` 按日期 ffill** 的个股股本 |
-
-`shares_history` 是按事件累积的权威口径，`company.total_shares` 只是当前快照
-（而且这一列现在还是空的，要 `/v1/snapshot` 补）。**不改名**：改名要动
-`read()` 的消费方，收益只是少一层注释——这里写清楚就够了。
-
----
-
-## 12. 已删除的表（2026-11-14）
-
-| 表 | 删除前 | 为什么删 | 取代者 |
-|---|---|---|---|
-| `breadth_adv` / `breadth_dec` / `breadth_limitup` | 各 1 行（2026-11-10） | 只能取**当天快照**、不回溯；口径也错（统一 `pct>=9.8`：把创业板 10% 的大涨当涨停、漏掉 ST 的 5% 涨停）。与交易所口径对账：旧表 42/58 vs 交易所 38/39 | `derive.breadth()` |
-| `dividend_annual` | 5 行（2021–2025） | 按**报告期**汇总，且**近年数据本身不完整**：2021→2025 单调下降（1.74 → 1.59 万亿），与 A 股分红逐年增长的事实矛盾 | `derive.dividend_yield()` |
-| `dividend` | 27 行（5 只） | 已并入 `adj_factor`（补 `report_end` / `plan` 两列；数值以 Fuyao 合计为准，2/27 冲突） | `adj_factor` |
-
-**留档（半年后唯一能知道"曾经有这张表、为什么没了"的东西）**
-
-- 删除前全量快照：`fin/intake/clean/dropped_20261114/*.csv`（含 `_README.md` 说明）
-- 删除前整库备份：`datahub/datahub_backup_20261114_predrop.sqlite`（1.31 GB，已 gitignore）
-
-**删除要四处一起清，少一处就会复活**：① 表本身 `DROP` ② `metadata` 行
-③ `SOURCES` 注册（连源函数一起，含 `FREQ_HINT`）④ 任何按表名硬编码的地方。
-本次除了上面四条，还额外清了三处 grep 才发现的残留：
-
-- `LONG_SCHEMAS["dividend"]`（留着它 `write_long` 会把表重新建出来）
-- `web/routes.py` 手工白名单里的 `dividend_annual`（否则 `/data` 页会列一张不存在的表）
-- `REFRESH_DAYS["dividend"]`（源已删，节流配置成了死配置）
-
-结果：表数 **46 → 41**，`catalog()` 当年为 **43 行**（41 表 + 2 派生；该接口 2026-11 已移除）；
-`derive.breadth()` / `derive.dividend_yield()` 不读这些表，删后照常工作。
-
-### 12.1 不要再回填 `dividend`（哪怕"只差全市场"）
-
-`/v1/dividend` 是**单只一次**的端点（无批量，全市场要 5578 次），看着像"补一下就行"。
-**别补**——它有两处硬伤，2026-11-14 实测：
-
-1. **同一除权日多笔派息只返回其中一笔**：`sz300750` 的年度 + 特别分红只回了一笔。
-2. **再抓值会变**：同一只、同一除权日，库里的 `2.178` 后来抓到 `47.79`，
-   而 Fuyao 的合计是 `6.957`。**同一个接口两次结果不同**，不存在"补一次就稳定"。
-
-分红权威是 Fuyao 的 `adj_factor`（**合计值**、1991 年起、覆盖全市场），
-ashareapi 那份只贡献 `report_end` / `plan` 两个字段，且已合并进 `adj_factor`。
-⇒ **再补 `dividend` 等于拿一份会漂的数据覆盖权威数据**，永久关闭这条路。
-全市场分红只能从 Fuyao / 交易所公告另找来源，不能用 ashareapi。
-
-## 13. 已知限制：`--backfill` 的主块必须在文件末尾
-
-`python -m datahub.fin.update` 会**在 import 过程中**执行 `if __name__ == "__main__":`
-块。它若排在 `write_long` / `write_static` 定义之前，`backfill` 的 `flush` 就会
-`NameError`——而 `--backfill` 是"先打 10 次接口再落库"，于是**接口额度白烧、
-一行都没写**（2026-11-15 踩过：100 次调用全白跑）。
-
-规则：**命令行主块永远放文件最后**；新增模块级函数时不要往它后面追加。
-`tests/datahub/test_datahub_update.py` 用一条结构性断言钉住这一点。
-
-## 14. 额度与降级（2026-11-15 实测）
-
-**`finance-batch` 的真实吞吐远低于额度名义值**：
-
-| 指标 | 数值 |
-|---|---|
-| 日额度 | 100 次（= 1000 只的名义值） |
-| 当天实际 | 100 次调用 → **只写成 204 只**（16 → 220） |
-| 批次失败率 | **约 76%**（`temporarily_unavailable`） |
-
-⇒ 别人看到"5562 只缺口要 27 天"时**不要以为是代码慢**，是上游在降级。
-
-**降级是"累计型"，不是"速率型"**（同一天对单只 `/v1/finance` 做的三组实验，每组 10 只）：
-
-| 节奏 | 成功 | 现象 |
-|---|---|---|
-| `gap=0.3s` | 10/10 | 1.66 s/只（服务端 ~1.0 s，客户端延迟占大头） |
-| `gap=0.8s` | 6/10 | 第 7 只开始降级——**不是慢就能撑住**，是前一组已经把额度打掉 |
-| `gap=2.0s` | 0/10 | 从头就失败，服务端 8 ms 直接返回 `temporarily_unavailable` |
-
-连打三轮（每轮打到失败 → 等 60 s）：
-
-```
-第 1 轮 29 只 → 第 2 轮 18 只 → 第 3 轮 15 只     （递减：有累积惩罚）
-```
-
-- **恢复很快**：停手后再打，秒级~分钟级就恢复（实测 1 秒）；但**连续打会一轮比一轮少**。
-- **单只路径没有 heavy 日额度**（只有 `per_min=300`），所以 5562 只按 10~20 只/分钟
-  ≈ **5~9 小时**，可以过夜跑；比 batch 的 27 天现实得多。
-
-  **2026-11-15 实跑 100 只后的修正**：实际 **5.9 只/分**（1020 秒 / 100 只，100% 成功、
-  0 失败），推算全市场 5358 只 ≈ **15 小时**。慢的原因不是请求慢（1.3 s/只），
-  而是约 30% 的只会撞上降级、各等 20 秒。**"5~9 小时"是乐观估算，15 小时才是
-  按当前退避参数的实测推算**；调小第一次退避（20s → 5~10s）可以压到 9~11 小时。
-- 降级时的表现是 `ok:false` + `retry_after_s=60`，**不是** HTTP 错误——所以只能靠
-  `reason` 判断。
-
-**代码里的对策**（`backfill` / `ashare_financials`）：
-
-1. **额度类失败早停**：`heavy_quotas["finance-batch"].left == 0`、HTTP 402、
-   或正文出现 `quota` / `额度` → 抛 `QuotaExhausted`，`backfill` 捕获后打印
-   「今日额度用完，明天续跑」并**保留已落库的行**。绝不重试（确定性失败）。
-2. **降级类只重试 1 次**（原来 3 次 × 60 s ≈ 3 分钟空转/批）。
-3. **`finally` 里无条件刷 `metadata` + `sync_log`**：部分落库后被打断也要让
-   `/data` 页的行数跟上（否则显示 84、实际 900）。
-
-## 15. 日更：`stock_daily` 走 `market-kline`（只写 1 天）
-
-2026-11-16 起 `stock_daily` 多了一个**日更源** `ashare_daily_delta`
-（`SOURCES` 末尾，`FREQ_HINT = ("D", "CN", 0)`）：每次只取**当天**全市场 OHLC，
-1 次调用 → 5571 只、3.3 秒、**500 credits**。
-
-**为什么只写一天**（实测）：补 2500 个交易日（10 年）= **125 万 credits**，
-是池子（489k）的 2.5 倍，补不起；一天 500，一年 12.5 万 → 池子够 3.8 年。
-**历史回补继续用同花顺 Fuyao 的 parquet**（它还自带复权事件，比这个端点值钱）。
-
-**三道闸**（少一道就会在周末/停更时白烧 500 credits）：
-
-1. **该不该跑**：交易日历（akshare，免费、不占额度）说今天不是交易日、
-   或还没到 15:30 → 跳过，**0 次调用**
-2. **缺口多大**：与库里最大日期比，**落后 > 1 个交易日 → 警告并跳过**，
-   **绝不自动补**（那是人工导 Fuyao 的事）
-3. **有没有新数据**：落后 0 天 → 跳过
-
-**单位**（实测，与 wiki 说法不同）：`/v1/market-kline` 的 `volume` **已经是股**
-（600519 回 4,177,980 vs Fuyao 4,177,984，差 4 股是两源取整）；`amount` 是元 →
-直接进 `turnover`（库里这一列就是成交额）。wiki 的「volume 一律是手」只适用于 `/v1/kline`。
-
-**硬依赖**：日更只解决**价格**。除权除息仍靠 Fuyao 的 `adj_factor`（人工导入）。
-Fuyao 一旦断供，`stock_daily` 会处于"价格已更新、复权事件没跟上"的状态 →
-历史收益率**全是错的**。别把日更当成"数据全自动"。
-
-**`check` 的盲区**：`check` 不查"尾部停更"，漏跑只能靠
-`tests/shared/test_adapter_contract.py::test_last_row_is_fresh_and_not_future`（阈值 5 天）抓。
-2026-11-16 实测 `csi_all / gold_cny / csi300 / csi1000 / shibor3m / margin_balance`
-全停在 11-06~11-10 → **日更管线整体没在跑**，不是单表问题。
-
-> ⚠️ 那条测试的阈值按**日历日**算，长周末/长假后会**假红**（比如 5 天阈值遇上三天连休）。
-> 这是刻意的：**假红比假绿好**——把阈值改成"按交易日"会让真停更被咽掉
-> （3 个交易日 < 5 → 绿），那才是哨兵不睁眼。**看到它红，先查数据管线，别改阈值。**
-
-## 16. multi 表的写路径：只更新本次返回的列（2026-11-16 修）
-
-**事故**：`_write` 的 multi 分支用 `INSERT OR REPLACE`。REPLACE 是"删旧行 + 插新行"，
-**本次没返回的列会变成 NULL**。`csi_all` 的源 `index_tx` 只回
-`open/high/low/close/volume` 五列，于是任何一次刷新都把 `amount` / `turnover`
-从 **3503 清成 0**——而**没有任何测试或 `check` 响过**，是 `state-layer-agent`
-偶然看 `/state` 显示「缺」才发现的。
-
-**改法**：
-
-```sql
--- 改前（会清空没返回的列）      -- 改后（只更新返回的列）
-INSERT OR REPLACE INTO t (date, c1, c2) …
-INSERT INTO t (date, c1, c2) … ON CONFLICT(date) DO UPDATE SET c1=excluded.c1, c2=excluded.c2
-```
-
-**四条契约**（`tests/datahub/test_write_upsert.py` 钉住）：
-
-1. **等价**：同一份数据写两次 == 写一次（实测 `csi_all` / `gold_cny` 两张 multi 表逐位相同）
-2. **缺列不清空**：先写全列、再只写 5 列 → `amount`/`turnover` 仍 3506 非空、值逐位未变
-3. **主键/冲突语义不变**：同一 date 写两次只有一行、值被更新。`DATA_DDL` 里**没有
-   TRIGGER / AUTOINCREMENT / WITHOUT ROWID**（2026-11-16 核查），所以"就地更新"与
-   "删了重插"没有可观察差异
-4. **`single` / `long` 分支不动**：它们本来就是 `INSERT OR REPLACE (date,value)` /
-   `ON CONFLICT(code,date) DO UPDATE`，没有这个坑
-
-**列熔断**（`_warn_column_loss`）：每次 multi 写入后比较各列非空数，
-若某列从 **> 50%** 掉到 **0** → 打 `[列熔断]` 到 stderr。整列被清空不可能是正常业务，
-只可能是源缺列/写路径错——**宁可吵**。这次的事故如果早有这条，会当场报出来。
-
-**环境限制（已过时，2026-11-17 更新）**：2026-11-16 本机 **eastmoney 不通**
-（akshare `index_zh_a_hist` 报 `ProxyError` / `RemoteDisconnected`，有代理/无代理都试过），
-所以 `csi_all` 缺的 3 天（11-11~11-13）当时用 **ashareapi `/kline`（`sh000985`）** 补的：
-`amount` 元 ÷ 1e8 = **亿元**（与腾讯口径一致，已对账）、`turnover` 直接用（%）。
-
-**2026-11-17 已恢复**：`index_zh_a_hist('000985')` 正常返回（11-17 成交额 1.394e12 元、
-换手 1.32），eastmoney 也回到 HTTP 200。⇒ **再遇到就当"临时故障"处理：先测连通性，
-通了就用 akshare（免费），别急着判定为环境限制、更别为此改口径。**
-
-## 17. 取数入口的唯一性 + 进程内缓存（2026-11-16）
-
-**`get_data` 是唯一取数入口，而且只在装配点调**：`*/cli.py`、`*/web/routes.py`、
-`service/**`。核心代码（`port.py` / `pipeline.py` / `features.py` / `analysis/*`）
-**只接收传进来的 DataFrame**。
-
-这条**有静态测试钉住**（`tests/cross/test_layering.py`）：用 AST 扫
-"核心文件里有没有 `get_data(` 调用"，违反了直接红。为什么必须静态查——
-违反方式是静默的（`state_view` 里偷偷取一次数，测试全绿、行为也对，只是分层破了）。
-另有一条反向校验：定义处与至少一个装配点必须真的存在，否则检查器会"永远绿"。
-
-**进程内缓存**（`shared/adapter` 的 `_CACHE`）：
-
-```python
-get_data(panel, start=None, end=None, fresh=False)   # 命中直接返回副本（<1ms）
-clear_cache()                                        # 数据变了就丢
-```
-
-- 命中率来自"service 一次运行取 4 次 panel（日频/月频 × 2 资产）"，其中
-  `dividend_yield` 一次 4 秒 —— 实测：首次 **4.8s** → 命中 **0.0008s** → `clear_cache()` 后 5.6s
-- 失效策略**最朴素**：`DataPort.run_update()` 结束时调一次 `clear_cache()`
-  （`finally` 里，异常路径也清），外加 `fresh=True` 强制绕过
-- **不做 TTL / mtime 校验**（后话）；返回的是**副本**，调用方改它不会污染缓存
-- **边界（知道比不知道好）**：多 worker 时**每个进程各一份**；**别的进程写库不会让它失效**
-  （只有本进程的 `run_update` 会清）。看到"库里更新了、服务还读旧值"，第一嫌疑是这里
-
-## 18. 换源到 Fuyao（同花顺，2026-11-17）
-
-四个源迁到 Fuyao：**行情快照 / 10 年日 K dump / 财务指标 / 除权事件**。
-客户端在 `datahub/fin/sources/fuyao.py`（**所有 fuyao 调用只走它**）。
+### 10.2 Fuyao（同花顺，不限累计调用、只限流）
+
+客户端在 `datahub/fin/sources/fuyao.py`（**所有 fuyao 调用只走它**）：
+请求头 `X-API-Key`（`Authorization: Bearer` 返回 200 但 `code≠0`，别用）；
+限流（HTTP 429 / `code=4001`）按 1/2/4/8 秒退避。
 
 | 用途 | 端点 / dump | 成本 |
 |---|---|---|
-| `stock_daily` 日更 | dump **`daily-k-10d`** | **1.1 MB / 2 秒**，一次覆盖最近 10 个交易日 |
-| 历史回补 | dump **`daily-k`** | **182.6 MB / 366 秒**，1,040 万行 / 5,580 只 / 10 年 |
-| 财务指标（`finances`） | `financials/indicators` | 一季 5,578 次 ≈ 31 分钟（**默认关**） |
-| 除权事件（`adj_factor`） | `corporate-actions/adjustment-factors` | 5,578 次 ≈ 30 分钟（**默认关**） |
-| 全市场行情快照 | `prices/snapshot` | ~56 页；**盘中实时，别当日线用** |
+| `stock_daily` 日更 | `prices/snapshot` 分页（`limit=2000`） | **3 页 / ~2 秒** |
+| `stock_daily` 补历史 | `prices/historical-batch` | 单次 ≤**10 码** |
+| 历史回补（10 年全市场） | dump `daily-k` | **182 MB / 366 秒** |
+| 财务指标（`finances`） | `financials/indicators` | 一季 5,578 次 ≈ 31 分钟（默认关） |
+| 除权事件（`adj_factor`） | `corporate-actions/adjustment-factors` | 5,578 次 ≈ 30 分钟（默认关） |
 
-**历史回补只用 dump，不要逐只抓**（`daily-k` 一次就是全市场 10 年）。
-日更走 `daily-k-10d`：它同时解决了原来"落后 >1 天就只能手工导 parquet"的问题。
+**三条必须知道的坑**：
 
-### 18.1 三个必须知道的坑（都实测踩过）
-
-1. **`date_ms` 是 UTC 毫秒戳**：`pd.to_datetime(ms, unit="ms")` 会得到**前一天**
+1. **`date_ms` 是 UTC 毫秒**：直接 `pd.to_datetime(ms, unit="ms")` 会得到**前一天**
    （上海 00:00 = UTC 前一日 16:00）。必须 `tz_convert("Asia/Shanghai")`。
-   第一次没转，把 2026-11-13 的数据读成了 11-12。
-2. **`turnover` 是成交额（元）**，不是换手率（别处这个名字常指换手率）。
-3. **`thscode` 必须带交易所后缀**（`600519.SH`），库内是 `sh600519`。
-   转换只许有一份：`fuyao.to_thscode()` / `fuyao.to_raw_code()`。
+2. **`turnover` 是成交额（元）**，不是换手率；`volume` 是**股**。
+3. **`thscode` 必须带交易所后缀**（`600519.SH`），库内是 `sh600519`；
+   转换**只许有一份**：`fuyao.to_thscode()` / `to_raw_code()`。
 
-单位已与库里**逐字段对账**：2026-11-13 平安银行的
-open/high/low/close/volume/turnover **6 个字段与 dump 完全相同** ⇒ 可直接落。
+**分页边界**：空页必须**报错**——上游异常/全市场停牌不能被当成"到末尾"静默退出。
 
-### 18.2 额度：不限累计调用，只限流
+**不限累计调用，只限流** ⇒ "全市场逐只抓"是可行的常态操作，**别拿 ashareapi 的额度/降级思路套它**。
+`code=3002`（"No adjustment events"）是**这票没有分红**，不是错误。
 
-**不要拿 ashareapi 的"额度/降级"思路套 fuyao**：它不限累计调用次数，
-只有限流（HTTP 429 / `code=4001`，按 1/2/4/8 秒退避即可）。
-所以"全市场逐只抓"（5,578 次）是可行的常态操作。
+### 10.3 网页源（`sources/other.py`）
 
-⚠️ 一个反例：`code=3002`（"No adjustment events"）是**这票没有分红**，
-**不是错误**。2026-11-17 第一次回填时把它当异常抛，几百只"失败"全是这个原因。
+**外部 GET 一律带浏览器 UA**（`_BROWSER_UA`，一个常量）：Cloudflare 拦 `python-requests`
+默认 UA，表现为 403 或返回挑战页后挂住（`ReadTimeout`）。
 
-### 18.3 `finances` 是 EAV，不走 `read`
+**非 200 必须抛**（`_get()` 统一做：UA + 超时重试一次 + 非 200 抛 `RuntimeError` 带响应前 120 字）。
+**不许写"只在 200 时做事、其余静默 continue"**——那会把 403 吞成"没有数据"。
 
-`finances`（4,096,812 行 / 5,575 只 / 39 期 2017-1~2026-3）是 EAV 表：
-主键 **`(thscode, report, abilities, index_id)`**（注意是 4 列，同一指标名可能属于
-两个 ability），`value` 是 **TEXT**（接口返回字符串，原样入库避免浮点往返）。
-它没有 `code`/`date` 列 ⇒ **不能 `read` / `read_long`**；`metadata.kind` 自动猜成
-`multi` 只是显示，别当真。写入用 `update.write_eav()`。
+### 10.4 手工源（`intake/`）
 
-### 18.4 `adj_factor` 回填踩的坑：**只增不改**
+`wgc`（WGC 季报 → `cb_holdings`）、`wgc_etf`（WGC 月报 → `gold_etf_holdings`）。
+**手工表不在 `SOURCES` 里**，`update --only` 碰到它们会报错并给出可执行命令；
+`intake.registry.hint_for(table)` 是唯一出典。
 
-2026-11-17 第一次全市场回填后核对发现：**985 行的 `allot_ratio`/`allot_price` 被清成 0**
-——fuyao 的除权接口只给分红与送股，**不含配股**，而我在源函数里把这两列写死 `0.0`，
-写路径"只更新返回了的列"就把真实配股覆盖了。
+---
 
-两条规矩（都已落实）：
+## 11. 写库路径
 
-1. **源函数不返回它不认识的列**。`adjustment_factors()` 现在只输出
-   `code/date/dividend/bonus`，配股两列**原值不动**。
-2. **历史值优先**：回填只往里**加新行**，与旧值冲突时不覆盖。
-   2026-11-17 的实际差异只有 2 行 `dividend`（`sz000812` 1998 年 0.20→0.00、
-   `sh603883` 2024 年 0.66→0.50）——**保留旧值**，因为历史收益率是按旧值算的、
-   下游快照都建立在它上面。
+### 11.1 multi 表：只更新本次返回的列
 
-回填结果：**57,796 → 57,829 行（+33）、5,437 → 5,439 只**，
-重叠 57,796 行**四列全部逐位相同**，新增 33 行的除权日全在 **2026-11-20 及以后**
-（都是未来事件）⇒ **历史收益率不可能变**。
-
-### 18.5 日更改用 `prices/snapshot` 分页（2026-11-17 用户拍板）
-
-| 路径 | 成本 |
-|---|---|
-| ~~`daily-k` dump~~ | 182 MB / **366 秒**（仅历史回补） |
-| ~~`daily-k-10d` dump~~ | 1.1 MB / 2 秒（也够用，但日更只需当天） |
-| **`prices/snapshot` 分页** | **3 页（`limit=2000`）/ ~2 秒** |
-
-日更 = `limit=2000` 翻页，**本页条数 < limit 即到末尾**。`update --only stock_daily --force`
-实测 **2.8 秒**（含写库 + 元数据刷新）；重复跑 **2.9 秒**并打印"已存在，跳过"。
-
-五条实现细节：
-
-1. **交易日归属用 `data.timestamp`**（毫秒戳 → Asia/Shanghai），不用本机日期。
-   只在"**今天已收盘（≥15:30）且 timestamp 的日期 == 今天**"时写；周末跑 timestamp
-   是上个交易日 → 直接跳过（不会重复写）。
-2. **单位全市场核对**（不是抽查一只）：
-
-   | 字段 | 5,573 只里的不一致 |
-   |---|---|
-   | open / high / low / close | **0** |
-   | volume | 4 只实质差异（其余 76 只差 1~4 股，源头按手取整） |
-   | turnover | 4 只实质差异（其余差 < 1 元，源头取整到元） |
-
-   那 **4 只全是北交所 `bj920*`**（如 `bj920076` volume +300,000 股、turnover +107%），
-   原因是 **snapshot 含北交所盘后固定价格交易、dump 不含**。⇒ 这一天的这 4 只
-   与历史（dump 口径）不同源，**已知并接受**（盘后交易是真实成交，snapshot 更完整）。
-3. **不复权**：snapshot 是原始价，`stock_daily` 也是原始价（复权靠 `adj_factor` 现算）；
-   `prev_price` 同样是未复权前收，**不使用**。
-4. **分页边界**：空页必须**报错**（上游异常/全停牌不能被当成"到末尾"静默退出）；
-   另有 60 页上限防死循环；跨零点导致 `timestamp` 变日期也报错。
-5. **dump 保留为历史回补手段**：补 10 年用 `daily-k`，366 秒一次无所谓；
-   **日更绝不走 dump**。
-
-⚠️ 一个坑：判断"这天有没有写过"必须用 SQL `MAX(date)`。第一版用了
-`read("stock_daily")`（整表 1,040 万行）→ **56.9 秒**，把日更的意义全吃掉了。
-
-## 19. 外部网页源：UA 与非 200 必须响（2026-11-17）
-
-**事故**：`world_tension` 断了 **12 天**（库里停在 2026-11-05），状态机一直报失败。
-
-根因不是网络：**Cloudflare 拦 `python-requests` 的默认 UA**。
-
-```
-requests 默认 UA ("python-requests/2.x") → 403 "Attention Required!"
-浏览器 UA                                 → 200 + 正常 JSON
+```sql
+INSERT INTO t (date, c1, c2) … ON CONFLICT(date) DO UPDATE SET c1=excluded.c1, c2=excluded.c2
 ```
 
-而代码写的是：
+**契约**（`tests/test_write_upsert.py` 钉住）：
 
-```python
-if r.status_code == 200:
-    ...
-# 否则什么都不做，继续下一段
-```
+1. 同一份数据写两次 == 写一次；
+2. **缺列不清空**：先写全列、再只写两列，其余列保持原值；
+3. 主键语义不变（同一 date 一行）；
+4. `single` / `long` 分支不受影响（它们本来就是 `ON CONFLICT`）。
 
-⇒ 每个分段都被静默跳过，最后只抛一句"没有返回任何数据"，**看不出是 403 还是真空**。
-（服务器上报的是 `ReadTimeout` 而不是 403——Cloudflare 挑战页挂住时会这样，**同一堵墙两种表现**。）
+⚠️ **禁止 `INSERT OR REPLACE`**：REPLACE = 删旧行 + 插新行，**本次没返回的列会变成 NULL**。
+`csi_all` 的源只回 5 列，正是这样把 `amount`/`turnover` 清成 0 的。
 
-**这和 `INSERT OR REPLACE` 清空列、`fillna(0)` 伪造 −100% 下跌是同一类：
-该响的地方没响。** 三者的共同点都是"失败被降级成看起来正常的结果"。
+**列熔断**：每次 multi 写入后比较各列非空数，某列从 **>50% 掉到 0** 就打 `[列熔断]` 到 stderr。
+整列被清空不可能是正常业务——宁可吵。
 
-### 19.1 规矩
+### 11.2 日更守卫（`sources/guard.py::write_guard`）
 
-1. **外部 GET 一律带浏览器 UA**（`other._BROWSER_UA`，**一个常量，别复制**）
-2. **非 200 必须抛**（`other._get()` 统一做：UA + 超时重试一次 + 非 200 抛 `RuntimeError`
-   并带上响应前 120 字符）
-3. 不允许"只在 200 时做事、其余静默 continue"的写法（有静态测试钉住）
+任何"把当前快照当日线写"的源都必须走它。四条闸，返回 `(能不能写, 原因)`：
 
-### 19.2 顺手扫出来的同类停更（都已补上）
+1. `trade_date` **就是今天**（周末/节假日接口会回上一个交易日的 `timestamp`）；
+2. 今天**已收盘**（≥15:30）——盘中写进去是半天的量；
+3. `trade_date` **是交易日**（快照在非交易日仍回 `timestamp=今天`，但值是上一交易日收盘）；
+4. 库里**已有该日或更新**（边界 `>=`）→ 跳过（幂等，重复跑不写重）。
 
-| 表 | 补之前 | 补之后 |
+**判据**：问一句"这个源每一行的日期从哪来？"——来自**数据本身**（有 `date` 列）不需要守卫；
+来自**"现在"**（快照/实时行情）**必须**走。
+
+### 11.3 日更入口：先补历史、再取最新（`fuyao.stock_daily_sync`）
+
+1. `find_gaps()` 找缺口（**含中间的洞**，不只是尾巴）；
+2. `historical_batch()` 补（每批 ≤10 码）；
+3. 取 `prices/snapshot` 当天，过 `write_guard`。
+
+⚠️ **只看 `MAX(date)` 查不出"中间缺一天"**：`stock_daily` 曾"11-18 有、11-19 无、11-20 有"，
+`MAX=11-20` 完全正常。
+
+---
+
+## 12. 派生量
+
+### 12.1 注册表（`fin/derive.DERIVED`，9 条）
+
+| 派生量 | 列 | 依赖 | warmup | 落位 |
+|---|---|---|---|---|
+| `breadth` | `adv/dec/…` | `stock_daily` | `warmup_days=400` | 交易日 |
+| `dividend_yield` | 3 列 | `adj_factor`/`stock_daily`/`shares_history` | `warmup_years=0` | 年 Y → Y+1-01-01 → ffill |
+| `etf_group_shares` | `sse50/csi300/csi1000` | `etf_shares` | `warmup_obs=2` | 观测日（不 ffill） |
+| `etf_dispersion` | `dispersion` | `etf_shares` | `warmup_obs=2` | 观测日 → `daily` |
+| `size_flow` | `flow` | `etf_shares` | `warmup_obs=2` | 观测日 → `daily` |
+| `national_etf` | `net` | `etf_shares` | `warmup_obs=2` | 观测日 → `daily` |
+| `national_etf_event` | `event` | `etf_shares` | `warmup_days=120` | 日频 0/1（头部为 0） |
+| `cb_gold_buy` | `flow` | `cb_holdings` | `warmup_obs=3` | 稀疏（可见日） |
+| `etf_flow` | `flow` | `gold_etf_holdings` | `warmup_obs=3` | 稀疏（可见日） |
+
+**约束**：
+
+- **不进 `metadata`**：派生量不落表、没有 `sync_log`；塞进 metadata 会让 `check` / `/data`
+  分不清"缺表"和"该现算"。
+- **`series_map` 认名字**，返回 `{名:列: Series}`，与普通表**形态同构**。
+- **消费方不许直接 `import fin.derive`**：一律走 `port` / `series_map`
+  （否则"装配"在第二处发生，两条路必然漂移）。
+- **窗口不变量**：`func(start, end)` 恒等于 `func().loc[start:end]`。
+- **warmup 三种单位**（`days` / `obs` / `years`），按"这个量要多少历史"选，不搞全局常量：
+  pct_change 只要 1 个观测、60 日滚动分位要 60 个、**差分要"上上个"作基准**（所以是 3 不是 2）。
+- **`depends_note` = "什么条件下这个数会变味"**（换源 / 改口径 / 分组变了 / 用当前股本近似），
+  改派生量前先读它。
+
+### 12.2 `dividend_yield` 的口径与对齐
+
+| 口径 | 规则 | 为什么 |
 |---|---|---|
-| `world_tension` | 2026-11-05（12 天） | **2026-11-17** |
-| `xau_usd` | 2026-11-10（7 天） | **2026-11-17** |
-| `gold_cot_net_long` | 2026-11-01（16 天） | **2026-11-15**（周频） |
-| `gold_cpi_surprise` | 2026-09-30（48 天） | **2026-10-31**（月频） |
+| 单位 | **百分数**（2.1258 = 2.13%） | 与其它收益率列一致，不要再 /100 |
+| 归年 | 按**除权日**归年，不是报告期 | 与报告期口径的表不可直接比（年报分红多数次年除权，两套口径错开一年） |
+| 市值加权分母 | **全市场**（不分红股分子记 0、分母照算） | 否则退化成"分红股平均" |
+| 中位数 | **只统计分红股** | 掺入 0 会把中位数拉到 0 |
+| 股本 | 用**当前**股本近似 | 历史股本不可得；`stock_daily` 不含退市股 → 幸存者偏差 |
 
-⇒ **Cloudflare 不会只拦一家**；停更的表要按"网页源 vs API 源"分类看，
-网页源优先怀疑 UA/反爬，API 源优先怀疑额度/限流。
+年 Y 的值对齐到 **Y+1-01-01**（年 Y 的除息日全落在 Y 内，数据到 Y+1 才完整），再 ffill 到日频。
+这是"数据期→可见日"的换算，与 `lag_days` 同类，**归适配层**。
+它**只挂 causual.ashare**（算一次 3.7 秒，状态层不用）。
 
-### 19.3 一个例外：源端修订
+**全市场分红数据只能从 Fuyao / 交易所公告来，不能用 ashareapi**（`/v1/dividend` 已停用）。
 
-回填后与旧数据重叠的 227 行里，**只有 1 行变了**：`2026-11-05` 由 64 → 69。
-这是**源端修正了自己的历史值**（当天抓到的可能是临时分），不是我们写坏。
-这类差异要单独记：**"只增不改"防的是我们自己覆盖历史，不防源端修订**。
+### 12.3 已知欠账：`etf_group_shares` 的 `0.0`
 
-## 20. 非标准形态的表要**登记**，不能靠列名猜（2026-11-17）
+某组当天**没有观测**时会被写成 `0.0`（pandas 对全 NaN 求和的默认行为，旧 `sum(axis=1)` 的遗产），
+2016 年共 **162 格**。这不是"少一个值"，而是**伪造了一次 −100% 下跌再 +∞ 回升**，
+会污染 `ETF_DISPERSION` / `SIZE_FLOW` / `NATIONAL_ETF` 的 2016 段（HMM 训练区间）。
 
-**事故**：服务器状态机卡在 `validate`：
+**修复方式**：`reindex` 到观测日并集后**保持 NaN**，不要 `fillna(0)`。
+⚠️ 修它会让特征变 → 标签变 → **边快照失效**，**必须同轮重拟合 + 重估 edges，不能单独改**。
 
-```
-structural 数据不可用：finances：读取失败 DatabaseError
-```
+### 12.4 为什么不入库
 
-`finances` 是 EAV（`thscode, report, abilities, index_id, value`），但
-`_ensure_meta` 的分类是"列 == `["date","value"]` → single，否则 multi"，
-于是它被当成 `multi`；`check` 对所有表都调 `fin.read()` → `DatabaseError` →
-**validate 整个挂掉 → `generate_cards` 不跑 → 服务器出不了新卡**。
+估值入库约 5000×2500×4 个浮点 ≈ 3 GB，且都是可推导量；一旦入库就要操心"股本变了要重算历史"。
 
-**根因是"我能写进去"和"我能读出来"被混为一谈**：写入路径给了 EAV 一条
-`write_eav`，但检查路径假设所有表都能 `read`。
+---
 
-### 规矩
+## 13. 新鲜度与缺口检查
 
-1. **形态登记在 `core/schema.EAV_TABLES`**（`pk` / `entity` / `period` 三样），
-   `_ensure_meta` **先查登记表**再兜底猜；老库的错 kind 会被就地纠正（幂等）。
-2. **`check` 遇到 `kind="eav"` 不调 `read`**，按真实结构验：
-   行数 / `COUNT(DISTINCT entity)` / `COUNT(DISTINCT period)` / 最新报告期 /
-   **主键唯一性**（`GROUP BY pk HAVING COUNT(*)>1`）。
-   报出来是 `ok（eav，4,096,812 行 / 5575 只 / 39 期，最新 2026-3）`，
-   **不再是"读取失败"**。
-3. **新鲜度按报告期比**：预期期 = 上一季度（`2026-11-17` → `2026-3`），
-   落后就报 `最新报告期 X 落后于预期 Y`。
+### 13.1 两个布尔量（`fin.check.freshness`）
 
-### 以后加表
-
-形态不是 `single` / `multi` / `long` / `static` 的（宽表转置、多层嵌套、EAV…），
-**先在 `EAV_TABLES` 这种登记处声明**，并让 `check` / `read` / 写路径都认它。
-**默认路径一定假设它是那四种之一**——猜错的下场是整条流水线被 block。
-
-### 20.1 `kind` 是缓存，登记表才是真相（2026-11-17 二次修复）
-
-第一次修复只改了**写路径**（`_ensure_meta` 会把错 kind 纠正成 `eav`），
-但**读路径仍然信任存储值**：
-
-```
-本地 metadata:  ('finances', 'eav')     ← 本地跑过 update
-服务器 metadata: ('finances', 'multi')  ← 没跑过 update，还是旧值
-服务器 check:    finances 读取失败 DatabaseError
-```
-
-⇒ **纠正逻辑跑在 `update` 里，`check` 根本不经过 `update`。**
-
-改法：`kind_of()` **登记表第一优先**：
-
-```python
-spec = EAV_TABLES.get(name)
-if spec is not None:
-    return "eav"          # 不看 metadata
-```
-
-凡是按 kind 分派的地方都因此受益：
-
-| 位置 | 行为 |
-|---|---|
-| `read()` | 明确报错：**"是 EAV，没有 code/date 轴，不能用 read()"**（不是 `DatabaseError`——一个是"用法不对"，一个是"库坏了"） |
-| `series_map()` | **跳过并告警**（与 static 同待遇），不把整张面板带崩 |
-| `check` | 走 EAV 检查分支（登记表优先，其次才看 `metadata.kind`） |
-
-**回归测试**：把 `metadata.kind` 手动写回 `multi`，`check` 仍输出 `ok（eav…）`、
-`finances` 不进问题清单（`tests/datahub/test_eav_tables.py::test_check_ignores_stale_kind_cache`）。
-之前 3 条测试都在"kind 已经是 eav"的前提下过的，所以没抓到——**测试要造"缓存是坏的"这个前提**。
-
-### 21.1 `update --only` 写错表名：静默无操作比报错更贵（2026-11-17）
-
-**事故链（三个 bug 叠出一个误导性报错）**：
-
-```
-update --only gold_etf_holdings
-  → 它不在 SOURCES 里（是**手工导入表**，靠人上传 WGC xlsx）
-  → run() 静默过滤成空集合 → 返回无列空 DataFrame
-  → port.run_update 取 df["status"] → KeyError: 'status'
-  → 读起来像"WGC 源挂了"，实际是"这张表不归 update 管"
-```
-
-三条修法：
-
-1. **`--only` 里的未知表名当场报错**，并区分两类：
-   · 手工表 → 给出**可直接执行**的命令
-     （`python -m datahub.fin.intake wgc_etf <xlsx> --load`）
-   · 真不存在的表 → 列出当前 `SOURCES`
-2. **`run_update` 兜住空报告**（`df` 为空或无 `status` 列 → 返回空 `UpdateReport`），
-   不再 `KeyError`
-3. **手工表的"怎么更新"收在一处**：`intake.registry.hint_for(table)`，
-   `check` 里出问题时也会把它拼到 `issues` 末尾
-
-**"能被执行的告警才有用"**：`已 48 天未更新（期望 ≤62 天）` 只说明现象，
-用户还得翻代码才知道怎么补；加上命令才算闭环。
-
-⚠️ 注意分工：**尾部停更**的告警文案在 `service/ops/states/data.py::overdue_tables`
-（`check` 只查区间内缺口，不查尾部——见 §15 的已知盲区）。
-service 那条文案要带导入命令，需要它调 `hint_for()`（跨模块，由 orchestrator 安排）。
-
-## 22. 新鲜度搬回数据层：`stale` 与 `overdue` 是两个布尔量（2026-11-18）
-
-`causual/causual_core/freshness.py` 原来自己读 `metadata` 判过期——**消费方直接读数据层内部**，
-又拿不到适配层。现在逻辑搬进 `datahub/fin/check.py::freshness()`，
-由 `DataPort.freshness()` → `shared.adapter.freshness(panel)` 转手。
-
-### 22.1 两个布尔量
-
-| stale | overdue | 含义 | 该做什么 |
+| `stale` | `overdue` | 含义 | 动作 |
 |---|---|---|---|
 | False | False | 已是最新 | 无 |
-| True  | False | **不可抗力**：源还没发布，仍在 `lag_days` 宽限内 | 等，**不用报警** |
-| True  | True  | **忘记更新**：宽限**已过**（严格大于截止日）还没到 | 报警 / 查管线 |
-
-原实现的 `if today < expect + lag: continue` 把"宽限内"**直接吞掉了**，
-上层只看到"过期"，分不清"源还没发"和"我们忘了跑"。现在显式化成 `overdue`。
-
-**边界用严格 `>`**（2026-11-18 用户定）：`expect + lag` 那天是**发布截止日**，
-数据可能当天收盘后才进库；把截止日当天算 overdue 会在"数据已经到了、只是还没抓"时误报。
-
-⚠️ **连带事实**：`lag_days=0` 的日频表在严格 `>` 下**永远不会 overdue**
-（`expect` 就是今天，`today > today` 恒假）。这不是 bug——日频的截止日就是今天，
-与"收盘后才入库"的理由一致；日频表靠 `stale` 单独报。
-
-### 22.2 一条结构性事实（不是 bug，但必须知道）
-
-**`lag_days` ≥ 周期长度时，`overdue` 永远为 False**——因为 `expect` 随 `today` 往前滚：
-
-```
-月频 lag=40：expect=11-30 → 可判定日 = 12-10，但到那天 expect 已经变成 12-31
-⇒ 永远追不上
-```
-
-所以 `gold_etf_holdings`（月频 lag=40）只会被标成"不可抗力（源还没发）"，
-**永远不会被判定为"忘记更新"**——它缺了 10/11 月这件事，`freshness` 报不出来
-（原来是 service 的 `overdue_tables` 用"距 end_date 多久"这个独立口径抓到的）。
-
-要让这类表也能报 overdue，有两条路（**都属决定，没做**）：
-1. 调小 `metadata.lag_days`；
-2. 改用"距 `end_date` 多少天"这个独立口径（与"该有的期"解耦）。
-
-### 22.3 契约
-
-```python
-DataPort.freshness(tables, *, today=None) -> list[dict]
-adapter.freshness(panel, *, today=None) -> list[dict]
-```
-
-每行：`table / freq / expect / actual / lag_days / stale / overdue / days_behind / text`。
-**`freq` 必须带**——下游（月频卡的归档月）靠 `freq in ("M","Q")` 筛，
-不要再维护手写清单（`MONTH_TABLES` 已经漂过两次）。
-`static` / `eav` 跳过；`W` / `SPARSE` 不判（"该有了"没有定义）；
-表名不在 `metadata` 里**打印告警**（清单漂移 = 监控失效）。
-
-### 22.4 `lag_days` 同时承担两个职责（2026-11-18）
-
-`gold_etf_holdings` 的 `lag_days` 从 **40 → 20**（用户定：WGC 月报 10 月数据 11-16 就能拿到）。
-
-**这个字段不是纯元数据，它同时是两个东西**：
-
-1. **对齐日**（`time_align`）：观测日 + `lag_days` → 落到之后第一个交易日，
-   即"这行数据什么时候算可见"；
-2. **新鲜度宽限**（`freshness`）：`expect + lag_days` 是发布截止日，超过才判 `overdue`。
-
-⇒ **设大了是双重损失**：既推迟数据可见（前视风险 / 历史对齐整体后移），
-又推迟报警（可能永远报不出来）。这次的 40 天就是双重损失。
-
-改它的影响面（2026-11-18 实测，同一份 DB 做 A/B）：
-
-| 面板 / 列 | 变化 |
-|---|---|
-| `STATE_GOLD` 全部 7 列 | **0 格**（状态层不读这张表 ⇒ 标签不变 ⇒ 签名不变 ⇒ 不用重拟合） |
-| `CAUSUAL_GOLD.gold_etf_holdings` | **453 格**（2008-01-09 ~ 2026-11-09，每年 24 格） |
-| `CAUSUAL_GOLD.etf_flow` | **452 格**（同一批点前移 20 天，**数值没变**） |
-| 其余 17 列 | 0 格 |
-
-所以正确流程是：**改 lag → 验签名不变 → 重估 gold 的边 → 重出 gold 卡**，
-**不需要重拟合**（状态层面板一格没动）。
-
-⚠️ 改 `lag_days` 必须同时改 `update.FREQ_HINT` —— 那是**登记值**，
-`_ensure_meta` 每次都会用它覆盖 `metadata.lag_days`；只 `UPDATE` 数据库会在下次更新时被重置回旧值
-（2026-11-18 踩过：`FREQ_HINT` 还是 40，改完 DB 后跑一次测试就被改回去了）。
-
-**`cb_holdings` 暂不动**：季频 `lag=45`，下个季末是 `2026-12-31 + 45 = 2027-02-14`，
-届时确认是否偏保守（WGC 季报一般季末后 4~6 周发）。
-
-## 23. 地缘风险：`geopolitic_risk` → `world_tension`（2026-11-18）
-
-因果层的两个面板（`CAUSUAL_ASHARE` / `CAUSUAL_GOLD`）把地缘风险列从
-`geopolitic_risk`（GPRC）换成 `world_tension`（WTM）。**状态层不动**（它本来就没有这一列）。
-
-### 23.1 这是**换测量**，不是换数据源
-
-| | 旧：`geopolitic_risk`（GPRC） | 新：`world_tension`（WTM） |
-|---|---|---|
-| 行数 | 2,383 | **239** |
-| 区间 | 2016-12-19 ~ 2026-10-19 | **2026-03-23 ~ 2026-11-17** |
-| 量纲 | 50–450 | **0–100** |
-| 均值 | 202 | 78.6 |
-
-重叠 **139 天**、相关系数 **0.41**。
-
-⇒ **两把尺子不一样，我们没做任何缩放，也不打算做**。面板里 `world_tension`
-在 **2026-03-23 之前全是 NaN**，这是**预期**——那段历史上**没有**地缘风险数据，
-**不能**拿 GPRC 去补（补了就是两段不同尺子的拼接序列，比没有更糟）。
-
-**后果要说在前面**：相关边的样本量会从数千掉到**约 150**（139 个重叠日 + 之后新增），
-置信区间会明显变宽；如果那条边因此变成"无统计意义"，那是这个决定的真实代价，不是实现 bug。
-
-### 23.2 旧表**不删**
-
-`geopolitic_risk` 是唯一有 10 年历史的记录，删了就永远找不回来：
-- `Source` 保持 `enabled=False`（已冻结）
-- `freshness` 跳过它（冻结表不进新鲜度，见 §22 的 `_frozen_tables`）
-- 它**不再出现在任何面板的列里**（`COLUMNS` 里已经没有）
-
-### 23.3 验收（2026-11-18 实测）
-
-| 面板 | 列数 | 变化 |
-|---|---|---|
-| `CAUSUAL_ASHARE` | 40 | `geopolitic_risk` 去掉、`world_tension` 加进来；**其余 39 列逐位不变** |
-| `CAUSUAL_GOLD` | 19 | 同上，**其余 18 列逐位不变** |
-
-`world_tension` 首个非空 = **2026-03-23**（两个面板一致）；`tables_of(panel)` 同步含它；
-`freshness(CAUSUAL_*)` 里不再出现 `geopolitic_risk`。
-
-## 24. 日更：先补历史、再取最新（2026-11-21）
-
-**事故**：服务器上 `stock_daily` **独缺 2026-11-19**（11-18 和 11-20 都在）。
-fuyao 的快照接口只有"当前"——错过一天就**永远补不回来**，所以那天的 5,573 行数据
-就此丢失，只能事后用历史接口补。
-
-### 24.1 三条改动
-
-| 函数 | 作用 |
-|---|---|
-| `historical_batch(codes, start, end)` | 批量历史 K 线（个股 `/prices/historical-batch`、指数 `/index/prices/historical-batch`），**单次 ≤10 码**；`date_ms` 是 UTC 毫秒，已转 Asia/Shanghai |
-| `daily_write_guard(table, trade_date)` | 日更三条守卫**抽成一份**：①`trade_date` 就是今天（周末/节假日接口回上一个交易日）②已收盘（≥15:30）③库里没有该日或更新的日期。返回 `None`=可写，否则返回跳过原因 |
-| `stock_daily_sync()` | 日更入口：**查缺口（含中间的洞）→ 补历史 → 再取当天** |
-
-### 24.2 为什么不能只看 `MAX(date)`
-
-`stock_daily` 的洞是"11-18 有、11-19 没有、11-20 有"——`MAX(date)=11-20` 完全看不出来。
-所以 `stock_daily_sync` 按 **"最近 20 个交易日里库里缺哪几天"** 来找：
-
-```python
-recent = trading_days_between(target - 20 天, target)
-missing = [d for d in recent if d not in 库里已有的日期]
-```
-
-实测在服务器上正确地找出了 `['2026-11-19']`。
-
-### 24.3 守卫抽出来共用
-
-`stock_daily_delta` 原先自带一套守卫（收盘后 + 交易日==今天 + `latest >= trade_date` 跳过），
-现在改为调 `daily_write_guard()`。**这套逻辑一旦被抄第二份就会漂**——凡是"把当前快照
-当日线写"的入口都必须走它。
-
-⚠️ **边界是 `>=`**：库里最新 >= `trade_date` 就跳过 ⇒ 同一天重复跑不会写重，
-也不会把更旧的 snapshot 盖到更新的行上。
-
-## 25. 日更守卫与缺口检查：源无关，住在 `fin/check.py`（2026-11-22）
-
-原来这两件事长在 `sources/fuyao.py` 里。用户的判断是对的：**"先补历史再取最新"、
-"查历史漏洞"、"防旧数据当新数据写入"不是 Fuyao 特有的**，长在源里，第二个源要用就
-变成第二份副本，必然漂移（AGENTS §4「数据只在一处定义」）。
-
-### 25.1 五个函数（都在 `datahub/fin/check.py`）
-
-| 函数 | 作用 |
-|---|---|
-| `trading_days(start, end, market="CN")` | 交易日序列（复用 `expected_dates`） |
-| `is_trading_day(day, market="CN")` | 这天是不是交易日 |
-| `last_closed_trading_day(now=None)` | 最后一个**已收盘**的交易日（收盘前/周末 = 上一个） |
-| `find_gaps(table, lookback=20, path=None)` | 最近 N 个交易日里**缺哪几天**（`MAX(date)` 看不出中间的洞） |
-| `write_guard(table, trade_date, *, source=None, path=None, now=None)` | 四条守卫 → `(能不能写, 原因)` |
-
-`write_guard` 的四条：①`trade_date`==今天 ②已收盘（≥15:30）③**是交易日**
-④库里已有该日或更新（边界 `>=`）→ 跳过。
-
-### 25.2 各源怎么接的
-
-| 源 | 接法 | 为什么 |
-|---|---|---|
-| `fuyao`（`stock_daily` snapshot） | **调 `write_guard`** | 唯一"把当前快照当日线写"的源；周六事故就出在这 |
-| `fuyao`（`stock_daily_sync`） | **调 `find_gaps`** | 缺口含"中间的洞"，`MAX(date)` 查不出 |
-| `fuyao`（`historical_batch` 补数） | 不需要 `write_guard` | 日期**逐行来自接口的 `date_ms`**，不存在"用今天盖章" |
-| `index_sina` / `index_tx`（`csi300` / `csi1000` / `csi_all`） | 不需要 `write_guard` | 源返回**带日期的历史序列**，按 `date` upsert；不会出现"旧数据被标成今天" |
-| `margin_total`（`margin_balance`） | 同上 | 日期取自源的 `信用交易日期` 列 |
-| `etf_shares`（long） | 同上 | 每行带 `(code, date)`，`date` 来自源 |
-| `fut_hold` / `fut_daily`（`gold_open_interest` / `gold_cny`） | 同上 | 同上 |
-| `world_tension` / `xaus_gold` / `fred` | 同上 | 同上 |
-| ~~`shibor3m`~~ | — | **已于 2026-11-28 删除**（见 §28） |
-
-**"天然不需要守卫"不是省略，是结论**：这些源的数据行**自己带着日期**，写库是
-"按日期 upsert"，不存在"给今天的行填昨天的值"这种错法。它们**需要的是
-`find_gaps`**（查有没有漏天），而 `find_gaps` 是通用的，任何 daily 表都能调。
-
-⚠️ 判据（以后加新源时问一句）：**"这个源的每一行，日期是从哪来的？"**
-· 来自数据本身 → 不需要 `write_guard`
-· 来自"现在"（快照/实时行情）→ **必须**走 `write_guard`
-
-### 25.3 2026-11-21 的教训
-
-`stock_daily` 在周六跑了日更：快照返回 `timestamp = 今天(11-21)`，但 values 是
-**周五收盘**。只判"日期==今天"的守卫放行 → 5,572 行 11-20 的数据被标成 11-21
-（逐字段相同，已删除）。**"日期==今天"不等于"这行数据是今天的"**——
-还必须问"今天真的是交易日吗"。
-
-### 25.4 一个"整体失效但看起来正常"的 bug（2026-11-22）
-
-重构时 `check.py` 里出现了**两个同名 `trading_days`**：
-
-```python
-def trading_days(market, start, end) -> pd.DatetimeIndex   # line 40，老签名
-def trading_days(start, end, market="CN") -> list[str]     # line 443，我新加的
-```
-
-Python 只留最后一个 → `expected_dates` 里按**位置**传参变成
-`trading_days("CN", "2026-11-10", "2026-11-20")` → `DateParseError: unable to parse: CN`
-→ `check.run()` 里 **17 张日频表全报「日历失败」**，**逐日缺口检查整体没在跑**。
-
-而它在页面上只是 `issues` 里的一条文字；测试 49/49 全绿（没有测试直接调
-`expected_dates("D", ...)`，而新测试恰好走的是被覆盖后的那个签名）。
-
-**三条修法与教训**：
-
-1. **合并成一个** `trading_days(start, end, market="CN") -> pd.DatetimeIndex`，
-   `expected_dates` 两处调用改成**关键字传参**（`market=market`）——别靠位置。
-2. **`check.run()` 的 `except` 不许把"检查没跑成"混进 `issues`**：现在每行带
-   `status`，取值 `data`（数据真有问题）/ `check_failed`（检查本身失败），
-   失败同时打到 stderr。
-3. **测试要覆盖"被依赖的函数签名"**：新增
-   `test_expected_dates_cn_has_no_weekends` / `..._us_market`（US 就是当日报错的市场）、
-   `test_find_gaps_agrees_with_check_run`（人为造洞，两个入口报同一批日期）、
-   `test_check_run_marks_calendar_failure_separately`。
-
-**通用教训**：同名函数覆盖 + 位置传参 = **静默的签名错位**。
-加函数前先 `grep "def <名字>"`；调用自己模块的函数**尽量用关键字**。
-
-## 26. 职责切分：日历在 shared、写在 guard、查在 check（2026-11-22）
-
-用户的要求是"**一个文件一件事**"：`check.py` 不该同时管日历、写库守卫、缺口检查。
-
-| 东西 | 现在在哪 | 为什么 |
-|---|---|---|
-| `trading_days` / `expected_periods` / `is_trading_day` / `last_closed_trading_day` | **`shared/utils/trading_calendar.py`** | 全系统共用（不是 datahub 私产）；同名覆盖过一次，17 张日频表的检查整体失效 |
-| `write_guard` | **`datahub/fin/sources/guard.py`** | 它的语义是"**写之前挡一下**"，属写库；`check` 只负责"查" |
-| `find_gaps` / `unacked` / `run` | `datahub/fin/check.py` | 查缺口、过滤已登记、出报告 |
-
-### 26.1 `find_gaps` 的语义（返回 dict）
+| True | False | **不可抗力**：源还没发布，在 `lag_days` 宽限内 | 等，不报警 |
+| True | True | **忘记更新**：宽限**已过**（严格大于截止日）还没到 | 报警 |
+
+`expect` 按 `freq` 推：`D`=上一工作日、`M`=上月月末、`Q`=上季末、`Y`=上年末；
+`W` / `SPARSE` **有意不判**。每行带 `freq` —— 下游要筛月频表就**看这个字段**，
+**不要维护手写清单**（`MONTH_TABLES` 已经漂过两次）。
+
+**约束**：
+
+- **`lag_days` 的权威来源是 `update.FREQ_HINT`**，不是 `metadata` 那一列：
+  `_ensure_meta` 每轮都会用 `FREQ_HINT` 覆盖 `metadata.lag_days`，
+  所以**手改 `UPDATE metadata SET lag_days=…` 会被下一轮冲掉**。
+- **`lag_days` 同时承担两个职责**：①对齐日（数据何时可见）②新鲜度宽限。
+  **设大了是双重损失**：既推迟可见（前视风险 / 历史对齐整体后移），又推迟报警。
+- `lag_days ≥ 周期长度` 时 `overdue` **永远为 False**（`expect` 随今天往前滚）——
+  低频表的 lag 不能设得比周期还长。
+- 严格 `>`：`expect + lag` 当天是**发布截止日**（数据可能收盘后才入），当天不算 overdue。
+  连带：`lag=0` 的日频表在严格 `>` 下**永远不会 overdue**，靠 `stale` 报。
+- `static` / `eav` 跳过（没有日期轴）；**冻结表**（`SOURCES` 里 `enabled=False`）也不进，
+  否则同一张表 `freshness` 说"有意停更"、`check` 说"缺 N 天"，两处结论打脸。
+
+### 13.2 `find_gaps`（`fin.check`）
 
 ```python
 find_gaps(table, *, lookback=None, max_age_days=None, today=None, path=None) -> dict
-# {"table", "freq", "missing": [日期…], "stale": 实际最新|None,
-#  "expected_latest": 应到的最新, "non_trading": [日期…]}
+# {"table", "freq", "missing", "stale", "expected_latest", "non_trading"}
 ```
 
-**`today=None`（2026-11-23 加）**：可指定"今天是哪天"，默认现在。
-不传的话 `expected_latest` 随真实日期变（11-20 → 11-23 → 11-24…），
-测试只能靠"今天恰好是什么"，**一天红一次**。`run(..., today=)` 也透传，
-`stock_daily_sync` 等调用方按需传。
-⚠️ 传 `"2026-11-20"` 会被当成 **00:00**（未收盘）→ 退回前一个交易日；要表达"已收盘"
-就带时间（`"2026-11-20 16:00"`）—— `_as_now()` 保留时间部分就是为了这个。
+**约束**：
 
-三条**刻意的**决定：
+- **不吃 `lag_days`**：宽限是 `freshness` 的语义，不是"数据缺"。只报事实，调用方自己套宽限。
+- **低频表按周期比，不按日期相等**：`M/Q/Y` 的数据日期是"披露日/月末"之类的任意一天，
+  逐日比会把整月算成缺口。
+- **窗口起点不早于表首日**：表还没建的时候不算缺口。
+- `lookback` 默认**按频率**：`D` 60 个交易日、`W` 26 周、`M` 24 月、`Q` 8 季、`Y` 5 年。
+- **`today=None`** 可指定"今天是哪天"。⚠️ 传 `"2026-11-20"` 会被当 **00:00（未收盘）**
+  → 退回前一个交易日；要表达"已收盘"就带时间（`"2026-11-20 16:00"`）。
+  **测试必须传**，否则结果随真时间变、一天红一次。
+- **`non_trading`**（库里有、但不是交易日）：**只查 `market=CN` 的 `D` 表**。
+  美股/全球序列本来就有非交易日数据（`fed_rate` 每日历日都有值、FRED 美股假日照发、
+  `world_tension` 是新闻指数）；`W/M/Q/Y` 的日期是周期末日，落在周末正常。
+  判定走 `is_trading_day`（交易所日历）——A 股有**调休开市**、也有**节假日休市**，
+  `weekday() < 5` 是错的。
+- **交易日历只有一份，在 `shared/utils/trading_calendar.py`**
+  （`trading_days` / `expected_periods` / `is_trading_day` / `last_closed_trading_day`）。
+  datahub 只 import、**不再定义**——曾因同名函数覆盖（`trading_days` 两份），
+  17 张日频表的缺口检查整体失效而页面只显示一条"日历失败"。
 
-1. **不吃 `lag_days`**。"源还没发布"是 `freshness` 的宽限语义，**不是"数据缺"**。
-   `find_gaps` 只报原始事实，调用方自己套宽限——否则就是第二个 `freshness`，两套定义必然打架。
-2. **低频表按周期比，不按日期相等**：`M/Q/Y` 的数据日期是"披露日/月末"之类的任意一天
-   （`cpi_yoy` 停在 2026-10-31、上一期在 2026-10-15），逐日比会把整月算成缺口
-   （`m1/m2/total_*` 的「53 天缺口」就是这么误报的）。`expected_latest` 取
-   **上一个已结束的周期**（当月/当季还没结束，不要求它）。
-3. **窗口起点不早于表首日**：表还没建的时候不算缺口，否则新表一上来就报"缺 51 天"。
+### 13.3 `check.run()` 的报告
 
-**`lookback` 默认值按频率定**（不搞一刀切）：`D` 60 个交易日（约 3 个月，够抓"漏更一周"）、
-`W` 26 周、`M` 24 月、`Q` 8 季、`Y` 5 年、`SPARSE` 24 期。低频表一年才几个点，扫短了等于没扫。
+`run(path, recent_days=90, today=None) -> DataFrame`，每行带 `status`：
 
-**`SPARSE` / `eav` 没有"洞"的概念**：`missing` 恒空，只报 `stale`
-（超过 `max_age_days`（默认 90）没更新 → `stale`）。
-
-### 26.2 `run()` 现在也报"尾部停滞"（文案变了）
-
-以前 `run()` 只用表自身的 `min/max` 当区间，**尾部停更完全看不见**（`csi_all` 停在
-11-13 时报"无缺口"）。现在 `run()` 走 `find_gaps`，所以会多出这类 issue：
-
-```
-最新停在 2026-11-17，应到 2026-11-20；近期缺 3 天（…）
-```
-
-⇒ **`/data` 的问题表数会变多**（本地 17 → 30）。这是**有意**的：以前"尾部停更"只有
-service 的 `overdue_tables` 和 `freshness` 在看，`check` 自己看不见。
-SPARSE 表的「最近一条停在 X」也**统一成了 `stale`**，不再两套说法。
-
-### 26.3 `unacked` 独立成函数
-
-`D` 按日比、`M/Q/Y` **按周期**比（ack 了 9 月任意一天，9 月就不报）。逻辑从 `run()` 里
-搬出来，便于单测（`test_unacked_filters_by_day_and_by_period`）。
-
-### 26.4 防回潮的结构断言
-
-`tests/datahub/test_daily_guards.py::test_guard_and_calendar_have_single_home` 断言：
-
-- `find_gaps` 在 `check.py`、`write_guard` 在 `sources/guard.py`，`write_guard` **不许**在 `check.py`
-- `trading_days` / `expected_periods` / `is_trading_day` / `last_closed_trading_day`
-  的 `__module__` 必须是 `shared.utils.trading_calendar`
-
-### 26.5 回归：`run()` 丢了冻结表过滤（2026-11-22）
-
-切分 `check` 时我把「冻结表不进问题清单」这段过滤丢了，结果同一张表：
-
-```
-freshness  : 有意冻结、跳过
-check.run  : industrial_yoy 最新停在 2025-08-31，应到 2026-10-31；近期缺 3 天
-```
-
-**两处结论互相打脸。** 用户对 eav / frozen 的处理明确说过"照旧"，
-所以这是偏离要求，不是设计选择。
-
-修法：`run()` 开头算一次 `_frozen_tables()`，循环里 `continue` 并记下，
-返回前复用 `_announce_frozen()` 打一次通知（**不另造一套打印**）；
-通知前缀从 `[新鲜度]` 改成 `[datahub]`（`freshness` 与 `check` 共用这一条）。
-
-修后：问题表 **30 → 27、零冻结表**。剩下的 27 张里：
-
-| 性质 | 张数 |
+| status | 含义 |
 |---|---|
-| 真该看（`overdue=True`） | 20 |
-| **源还没发布**（`overdue=False`：`vix` / `usdcny` / `usd_index` / `fed_rate` / `real_yield_10y`） | 5 |
-| `freshness` 里没有（`gold_cot_net_long` 周频） | 1 |
+| `data` | 数据真有问题（缺数 / 停更 / 重复 / 空值） |
+| `warning` | **只有**非交易日脏数据 |
+| `check_failed` | **检查本身没跑成**（日历失败），不是数据问题 |
 
-后 6 张是"`find_gaps` 不吃 `lag_days`"的直接后果——**原则我认同**（否则就有两套 lag），
-但页面层需要能区分「缺，但源还没发」与「缺，且已超宽限」。
-**候选方案（等用户拍板，未做）**：`run()` 每行加一列 `within_grace: bool`
-（该表在 `freshness` 里 `overdue=False` 即 `True`），`/data` 据此分开展示。
+报告三档：`非交易日数据 N 天` / `最新停在 X，应到 Y` / `近期缺 N 天` + `历史缺口 N 天`。
+`unacked(missing, acked, freq)`：`D` 按日、`M/Q/Y` 按周期过滤已登记缺口。
 
-### 26.6 记录：`finances` 的 metadata 频率是错的
+⚠️ **分工**：`check` 报"数据缺了没"（事实）；面向用户的**到期告警文案**在
+`service/ops/states/data.py::overdue_tables`（它自己套 `lag_days` 宽限）。两边都不许吞掉对方。
 
-`find_gaps("finances")` 返回 `freq=D`、`expected_latest=""`。查 `metadata`：
-`freq=D, market=NONE, kind=eav` —— **metadata 自己把频率写错了**（原始数据是季报）。
+---
 
-现在被 `_frozen_tables()` 挡着，没造成误报；但**等 `finances` 解冻那天**，这个 `freq=D`
-会让它天天报缺口。**记录在案，不现在改**：改 `metadata.freq` 会连带影响 `freshness` 的
-lag 判定（那是另一条链）。
+## 14. 取数入口与缓存
 
-### 26.7 `find_gaps` 顺带查"非交易日脏数据"（2026-11-24）
+- **`get_data(panel)` 是全系统唯一取数入口**，只在装配点调（`*/cli.py`、`service/**`、
+  `*/web/routes.py`）。核心代码（`port` / `pipeline` / `features` / `analysis`）**只接收 DataFrame**。
+  有静态测试钉住（`tests/cross/test_layering.py`），且带**反向校验**：
+  "定义处"与"至少一个装配点"都必须真的存在，否则检查器会"永远绿"。
+- **进程内缓存** `_CACHE`（`(panel, start, end) → 面板`），返回**副本**；`DataPort.run_update()` 结束时
+  （`finally`）`clear_cache()`，`freshness=True` 是逃生口。
+  **边界**：多 worker 各一份；别的进程写库**不会**让它失效。
+- `series_map(names, start, end, codes)` 三个参数**都落到 SQL**；`codes` **只对 long** 有意义，
+  打到其它 kind **告警并忽略**（静默忽略 = 调用方以为筛过、实际拿全量）。
+- **窗口不变量**：`get_data(p, start, end) == get_data(p).loc[start:end]`——
+  每列在 adapter 的 `_WARMUP` 里声明往前多取多少天（0/10/45/130），取完再切。
 
-**背景**：服务器上曾有 **5,572 行 `2026-11-22`（周日）的 `stock_daily`**——守卫补上之前
-写进去的，一直没人发现。**守卫是"写入前拦"，已经入库的脏数据它不清、也报不出来。**
+---
 
-`find_gaps` 的返回多一个字段：
-
-```python
-"non_trading": ["2026-11-14", ...]   # 库里有、但不是交易日的日期
-```
-
-三条限定的理由（都是实测出来的，不是保守）：
-
-1. **只对 `market=CN` 的 `D` 表检查**。美股/全球序列**本来就有非交易日数据**：
-   `fed_rate`（FRED DFF）每个日历日都有值、FRED 在美股假日（Labor Day）照发、
-   `world_tension` 是新闻指数（周末也有分数）。对它们查非交易日一次报 8 张表几十天，全是误报。
-2. **`W/M/Q/Y` 不查**：数据日期是**周期末日**，落在周末正常。`gold_cot_net_long` 是周线、
-   日期全在**周日**——对 W 开启实测一次报 33 天，全误报。
-3. **只查 `lookback` 窗口内**（与 `missing` 同一窗口），不全表扫（`stock_daily` 有 500 万行）。
-
-判定用 `shared.utils.trading_calendar.is_trading_day`（**交易所日历**）：
-A 股有**调休开市**（周末上班）、也有**节假日休市**（工作日关门），`weekday() < 5` 是错的。
-
-`check.run()` 会把它报成 `非交易日数据 N 天（2026-11-14 等）`，`status="warning"`
-（**只有当这一行没有别的毛病时才标 warning**：脏数据该显眼，但不该让整个检查 fail；
-同时还缺数/停更的仍算 `data`）。
-
-## 27. 失败分类：`transient` vs `structural`（2026-11-25）
-
-**噪声来源**：FRED 一次网络抖动 → `vix` / `usdcny` / `usd_index` 三张表同时失败 →
-状态机把整条 `fetch` 标成 **error**（其中 `shibor3m` 恰在保鲜期内被判过期）。
-用户每天看到一条 error，实际只是网络问题。
-
-**方案：按失败原因分类 + 先重试再降级**（不是"凡是失败都降级"——那样真故障会被吞掉）。
-
-### 27.1 `datahub/fin/retry.py`
-
-| 函数 | 作用 |
-|---|---|
-| `classify_error(exc) -> "transient" \| "structural"` | **按异常类型**判，不靠字符串 |
-| `call_with_retry(fn, retries=2, delays=(1, 3))` | 只对 transient 重试 |
-| `is_transient(exc)` / `failed_kinds(details)` | 小工具 |
+## 15. 失败分类与重试（`fin/retry.py`）
 
 | kind | 典型异常 |
 |---|---|
-| `transient` | `requests` 的 `ConnectionError` / `Timeout` / `ConnectTimeout` / `ReadTimeout`、`TimeoutError`、`ConnectionResetError`、`ssl.SSLError`、`urllib.error.URLError`、`http.client.RemoteDisconnected`、`pandas_datareader` 的 **`RemoteDataError`**、HTTP 5xx / 429 |
+| `transient` | `requests` 的 `ConnectionError`/`Timeout`/`ConnectTimeout`/`ReadTimeout`、`TimeoutError`、`ConnectionResetError`、`ssl.SSLError`、`urllib.error.URLError`、`http.client.RemoteDisconnected`、**`pandas_datareader` 的 `RemoteDataError`**、HTTP 5xx / 429 |
 | `structural` | 解析失败、列名对不上、`KeyError`、认证失败、源返回空但本不该空、schema 变了 |
 
-**拿不准的一律 `structural`**：宁可吵，不可静默。
+**约束**：
 
-⚠️ `RemoteDataError` **不继承** `requests` 的异常（内部包了 `urlopen` 的 `HTTPError`），
-所以必须按类名单独认——`vix` / `usdcny` 每天报的就是它。
+- 按**异常类型**判，不靠字符串（`type(e).__name__` 当兜底也不行）。
+- **拿不准一律 `structural`**：宁可吵，不可静默。
+- `RemoteDataError` **不继承** `requests` 异常（内部包 `urllib` 的 `HTTPError`）——必须按类名单独认，
+  否则 FRED 的报错会被判 structural，降级失效。
+- `call_with_retry(fn, retries=2, delays=(1,3))`：**只对 transient 重试**，structural 直接抛。
+- `UpdateReport.all_transient`：有失败且**全是** transient 才 True（没失败 = False）。
+  上层据此决定 error 还是 warn。
 
-### 27.2 `UpdateReport.all_transient`
+---
 
-```python
-all_transient = 有失败 且 每条失败都是 transient   # 没失败时 False
-```
+## 16. 已知限制与陷阱
 
-每条失败明细多了 `kind` 字段。上层（`service/ops/states/data.py`）据此：
-
-- `stale and not report.all_transient` → 仍报 **error**（结构性 + 过期，真故障）
-- `stale and report.all_transient` → 降级 **warn**（`blocking=False`，不挡后续状态）
-
-### 27.3 重试放在源调用外面（`update.run()`）
-
-```python
-obj = call_with_retry(lambda: s.func(...), on_retry=...)
-```
-
-只对 transient 重试 2 次（1s/3s）——**先把噪声降下来，再谈降级**。
-
-### 27.4 待办（用户建议，未做）
-
-`vix` / `usdcny` / `usd_index` / `fed_rate` / `real_yield_10y` **全在 FRED 一家**：
-一次抖动 = 5 张表同时失败，噪声被放大 5 倍。建议在 `update` 里对**同源失败归并报一条**
-（`FRED: 5 张表失败`）而不是 5 条。**未实现**，等用户决定。
-
-## 28. 删除 `shibor3m`（2026-11-28）
-
-**整条链路删除**：表 + 源 + 面板列 + 元数据。同期 `causual` 删掉 `SHIBOR3M` 边。
-
-三条依据：
-
-1. **上游滞后 8 个交易日**：akshare 的 Shibor 序列只到 11-13（链路没坏，是源慢）。
-2. **`metadata.lag_days=0`**：按 `freq=D` + lag 0 判，每天都会判"过期"→ 状态机每天报 error。
-3. **用户**："银行间流动性不是我关注的信号之一" → 从因果层也拿掉。
-
-删除清单：
-
-| 位置 | 删了什么 |
+| 项 | 说明 |
 |---|---|
-| `fin/sources/akshare.py` | `shibor3m()`（含 `macro_china_shibor_all` 那段） |
-| `fin/sources/__init__.py` | import + `Source("shibor3m", …)` |
-| `shared/adapter/datahub_adapter.py` | `_ASHARE_MACRO["shibor3m"]` + `_WARMUP` 里的名字（**orchestrator 授权的跨模块改动**） |
-| `metadata` / `shibor3m` 表 | 本地已 `DROP` + 删元数据行（服务器由 orchestrator 同步时删） |
+| `industrial_yoy` / `exports_yoy` | akshare 只有财经日历接口，数据停在 2025-08（`enabled=False`） |
+| `geopolitic_risk` | FRED 无此序列，旧数据冻结；新数据用 `world_tension`（2026-03-23 起） |
+| `share` 类字段 | `statsmodels/table` 里的股本用**当前**近似，越往前越不准 |
+| `finances` | EAV 表（**不能 `read`**，4 列主键 + `value` TEXT）；`metadata.freq` 被写成 `D`（原始是季报），解冻后会天天报缺口 |
+| EAV 登记 | "这张表是不是 EAV" **只认 `core/schema.EAV_TABLES`**，`metadata.kind` 只是缓存；**不要靠列名/形态去猜**（猜法一改就漏） |
+| FRED 单点 | `vix`/`usdcny`/`usd_index`/`fed_rate`/`real_yield_10y` 全在 FRED 一家，一次抖动 5 表同时失败；按源归并**未实现** |
+| `--backfill` | 主块必须在**文件末尾**（否则 `--backfill` 先执行、`NameError`）；**新增模块级函数不要往它后面追加** |
+| 新鲜度类测试 | 阈值按**日历日**算：长周末/长假后会**假红**（5 天阈值遇上三天连休），见红先算工作日 |
+| 备份 | **不能直接拷 `.sqlite`**：WAL 里有未落盘的页，要用 `sqlite3 .backup` 或 `VACUUM INTO` |
 
-`check.py` **没有**针对它的特例（grep 0 命中），无需清理。
+**不要做的事**：
 
-**规模**：`SOURCES` **34 → 33**（enabled 28）；`tables()` **41 → 40**；`DERIVED` 仍 9 条。
+- 不要回填 `dividend` 表（已并入 `adj_factor`；两边冲突时以 `adj_factor` 为准、`plan` 留空）。
+- 不要在 `etf_group_shares` 里 `fillna(0)`（见 §12.3）。
+- 不要把 ETF 代码/分组写进 adapter（分组知识只在 `fin/derive._ETF_GROUPS`）。
+- 不要用 `INSERT OR REPLACE` 写 multi 表（见 §11.1）。
+- 不要为"宏观覆盖更全"把 `shibor3m` 加回来（见 §17）。
+- **不要拿 GPRC 去补 `world_tension`**：两套尺子拼起来比缺一段更糟。
 
-⚠️ 删完后 `CAUSUAL_ASHARE` 面板少一列，`tests/shared/test_adapter_contract.py` 会红到
-`causual` 侧同步改完为止——**这是预期的**，不要为让它绿而保留声明。
+---
+
+## 17. 变更记录
+
+| 日期 | 变更 | 结论 / 约束 |
+|---|---|---|
+| 11-14 | 一表一序列落地（宽表只合并同源同频同生命周期） | 表多但语义单一；`SELECT * FROM vix` 就是全部 |
+| 11-14 | `breadth` / `dividend_yield` 改为现算，不建表 | 派生量不落表、不进 `metadata` |
+| 11-14 | `dividend` 并入 `adj_factor`，删 `breadth_*` / `dividend_annual` | 表 46 → 41；冲突时 `plan` 留空、**别回填 `dividend`** |
+| 11-14 | 额度实测（专业版） | 有独立 `heavy_quota`、无全局日额度；降级有 `ok:false` 与"少表"两种表现 |
+| 11-16 | `metadata` 删 `source` / `depends` | 派生量不进 metadata；`check` / `/data` 分不清"缺表"与"该现算" |
+| 11-16 | 窗口与 `codes` 下推 SQL | `codes` 打非 long 表要**告警**，不许静默忽略 |
+| 11-16 | 派生量注册表 + warmup | 窗口不变量；warmup 三种单位 |
+| 11-16 | `etf_group_shares` 沉进数据层 | adapter 不许有 ETF 代码；`0.0` 欠账待重拟合时修 |
+| 11-16 | 通用特征从 `shared/utils/features.py` 迁入 derive | 该文件已删；面板列为唯一出口 |
+| 11-16 | multi 写路径改 `ON CONFLICT DO UPDATE` + 列熔断 | **不许 `INSERT OR REPLACE`**（会清空未返回的列） |
+| 11-17 | 接 Fuyao（`stock_daily` 先改 dump） | `date_ms` 是 UTC 毫秒；`turnover` 是成交额；`thscode` 要后缀 |
+| 11-17 | 日更改 `prices/snapshot` 分页 | 3 页 ~2 秒；dump 只用于历史回补 |
+| 11-17 | 删 `financials`，登记 `finances`（EAV） | EAV 不能 `read`；主键 4 列、`value` 是 TEXT |
+| 11-17 | `adj_factor` 全市场回填 | **只增不改**；源函数不返回它不认识的列（曾把 985 行配股清成 0） |
+| 11-17 | `world_tension` 修 Cloudflare UA | 外部 GET 必带浏览器 UA；**非 200 必响** |
+| 11-18 | 因果层 `geopolitic_risk` → `world_tension` | **换测量、不缩放**；2026-03-23 前 NaN 是预期；边样本量降到 ~150 |
+| 11-18 | 新鲜度搬回数据层 | `stale` / `overdue` 两个布尔量；`lag ≥ 周期` 时 overdue 不可达 |
+| 11-18 | `gold_etf_holdings` lag 40 → 20 | `lag_days` 兼任"对齐日"与"宽限"，**不能设大** |
+| 11-21 | 日更"先补历史再取最新" | 守卫四条；周六曾把周五数据写成新的一天 → 必须判交易日 |
+| 11-22 | `check` 职责切分（日历→`shared`、`write_guard`→`sources/guard.py`） | 同名函数覆盖曾让 17 张日频表检查整体失效 |
+| 11-22 | 「冻结表不进 check」回归并修复 | 冻结表两边口径必须一致，否则互相打脸 |
+| 11-23 | `find_gaps` 加 `today` | 测试必须钉 `today`，否则每天红一次 |
+| 11-24 | `find_gaps` 加 `non_trading` | 只查 `market=CN` 的 `D` 表；`W/M/Q/Y` 与美股/全球序列不查 |
+| 11-25 | 失败分类 `transient`/`structural` + 重试 | `RemoteDataError` 不继承 `requests`；拿不准归 structural |
+| 11-28 | 删 `shibor3m`（表 + 源 + 面板列 + 元数据） | 源数 34 → 33、表 41 → 40；上游滞后 8 天且用户不关注银行间流动性 |
