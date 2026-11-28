@@ -47,3 +47,39 @@ experiment/hmm_state/
 5. 统计三级证据：探索性 → 候选 → 稳健；稳健要求：前后分段 lift 同号，两段 CI 都不含 0，**晚期样本复现**。
 6. 小样本直接丢弃，n 阈值写在 config 统一管理，不要散落在各个函数。
 
+
+
+## 中长期价格与波动率联合输入实验
+
+打开 [long_joint_states_viz.ipynb](long_joint_states_viz.ipynb)，选择
+`D:/desktop/workspace/global_venv/Scripts/python.exe` 对应的内核并运行全部单元。
+通过本地数据面板读取中证全指，在相同样本日期和时间切分上比较 Student-t HMM 的价格基准（K=2）与联合模型（K=2、3、4）。联合输入加入 30 日 RV、ATR 和 Garman–Klass 波动率的对数。
+每个模型各有一张样本外 Plotly 状态图，另有日转移矩阵对照。表格给出状态占比、持续期和未来 20 日收益 ES5。
+本节是独立实验，前文描述的是主流水线。
+
+
+## 短期价格与短期波动联合输入实验
+
+[short_joint_states_viz.ipynb](short_joint_states_viz.ipynb) 使用与上节相同的 Python 环境。
+短期价格和短期波动共八个现有特征同时进入 Student-t HMM。在共同样本上拟合 K=5、6、7、8、9。
+每个 K 各有一张样本外 Plotly 状态图，另有转移矩阵、各状态占比、持续期和未来 5 日收益 ES5。
+
+
+## BTCUSDT 分状态与现货回测
+
+从仓库根目录运行以下 PowerShell 命令，使用 Binance 公开月度现货分钟档案。默认日期范围为 2017-08 至 2026-10，缓存的 ZIP 可供分钟实验复用，派生 CSV 为 UTC 自然日线。数据都放在 `experiment/out/hmm_state/btc/`。
+
+```powershell
+$env:HTTPS_PROXY = 'http://127.0.0.1:7890'
+& 'D:/desktop/workspace/global_venv/Scripts/python.exe' -m experiment.hmm_state.btc_data
+```
+
+打开 [btc_states_viz.ipynb](btc_states_viz.ipynb)，选择同一 Python 内核运行。
+Notebook 展示短价格、短波动和长价格的状态图与画像，以及下一日开盘成交、单边 10 bp 成本下的样本外净值及回撤。
+
+BTC notebook 的「样本外多空策略」追加了完整规则及逐项过滤对照。
+上涨持有 +100%，下跌持有 −80%，中间态继承最近方向并减半。
+最高短波动再乘 0.5，长短方向冲突再乘 0.8。次日开盘调仓，按成交额计单边 10 bp；
+空头使用现货收益模拟，未计资金费率、借币成本和强平。
+
+「仅长价格多空」使用长价格状态 1 做多 100%，状态 0 做空 80%，沿用相同成交和成本假设。
