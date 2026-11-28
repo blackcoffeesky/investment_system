@@ -60,7 +60,7 @@ causual_core/
      ├─ regime_infer.py   外推最新标签
      ├─ signal_layer.py         逐边算 z、β、贡献 → α
      ├─ macro_layer.py      供需层：位置 × 边际
-     └─ narrative.py      渲染卡片
+     └─ web/render.py       渲染卡片
      ▼
 causual/output/{asset}/cards/
      ├── YYYY/MM/card_YYYY-MM-DD.md     日频：状态 + 信号层
@@ -121,6 +121,17 @@ DERIVED_COLS = (...)   # 其中"耦合层算好、我只搬进来"的那几列
 读法：**按 `schema` 分支**，不靠 `try/except KeyError` 猜（那会把"结构写错"和"结构是旧版"
 混成同一件事）。这一层收在 `causual_core/spec.py`：4 处读签名、2 处读画像都调它。
 
+三条必须记住（2026-11-23 起）：
+
+- **v2 没有 `spec["data"]`**。那一层只存在于 legacy；代码里读签名/画像一律走
+  `causual_core/spec.py`，别处不许再写 `spec["data"]["…"]`（写了就是 `KeyError`）。
+- **`label_signature` 的语义变了**：v2 起 = **primary 组的标签指纹**
+  （`label_fingerprint(labels)` = 对每行 `日期:标签` 取 sha1，前 12 位；只哈希 primary 那一条）。
+  ⇒ **换特征 / 换滚动窗口 → 标签序列变 → 签名变 → 边快照必须重估**；
+  ⇒ **加分组不变**（别的组进不进 `groups` 都不影响 primary 的指纹）。
+- 签名和边快照对不上时 `pipeline.run` 直接 `CardRejected`（"标签体系不一致"）——
+  这是有意的 fail-closed：宁可不出卡，也不要拿旧 β 配新标签。
+
 **画像怎么进卡片**：`profile` 是现算的，所以由**装配点**放进 `state["profile"]`——
 `cli.state_view()` 这个 helper 三个装配点共用（CLI、`web/routes.py`、测试）。
 核心代码只读 `state["profile"]`；两样都没有时打一行 stderr 并给空表，
@@ -143,16 +154,39 @@ fit_dml_edge(sub, …)          # 标签窗口（有标签的日子）
 
 | 资产 | 边 | 估计器 | 频率 | n_obs | 实际拟合到 |
 |---|---|---|---|---|---|
-| ashare | RY / USDCNY / USD_INDEX / VIX / SHIBOR / MARGIN | causal_forest | D | 2287 | 2026-05-12（起点 = 首个标签日 2016-08-02）|
-| ashare | NATIONAL_ETF | event_study | D | 200 | 2026-11-13（事件 2016-03 起）|
-| ashare | AMOUNT_SHOCK | event_study | D | 34 | 2026-11-13（事件 2012-12 起）|
-| ashare | INSIDER_NET | distributed_lag | ME | 117 | 2026-10-31（月度 2015-12 起）|
+| ashare | REAL_YIELD / USDCNY / USD_INDEX / VIX / MARGIN | causal_forest | D | 2293 | 2026-05-20（起点 = 首个标签日 2016-08-02）|
+| ashare | NATIONAL_ETF | event_study | D | 200 | 2026-11-24（事件 2016-03 起）|
+| ashare | AMOUNT_SHOCK | event_study | D | 34 ⚠️ | 2026-11-24（事件 2012-12 起）|
 | ashare | EQUITY_SUPPLY | distributed_lag | ME | 60 | 2026-11-30（月度 2020-01 起）|
-| gold | REAL_YIELD / USD_INDEX / VIX | causal_forest | D | 3781 | 2026-01-08（整段历史）|
-| gold | USDCNY / OPEN_INTEREST / COT_NET_LONG | causal_forest | D | 2202 | 2026-01-08 |
-| gold | FED_RATE / CPI_SURPRISE / ETF_FLOW | distributed_lag | ME | 175 / 212 / 119 | 2025-06-30 ~ 2026-11-30 |
-| gold | GEOPOLITIC_RISK（= `world_tension`）| event_study | D | 26 | 2026-11-16 |
+| gold | REAL_YIELD / USD_INDEX / VIX | causal_forest | D | 3786 | 2026-01-15（整段历史）|
+| gold | USDCNY / OPEN_INTEREST / COT_NET_LONG | causal_forest | D | 2207 | 2026-01-15 |
+| gold | FED_RATE / CPI_SURPRISE / ETF_FLOW | distributed_lag | ME | 175 / 212 / 120 | 2025-06-30 ~ 2026-11-30 |
+| gold | GEOPOLITIC_RISK（= `world_tension`）| event_study | D | 26 | 2026-11-23 |
 | gold | CB_GOLD_BUY | distributed_lag | ME | **0** | **—（样本不足，未估计）** |
+
+**当前边数（与 `EDGES` 对齐，改边必须同时改这三处）**：
+
+| 资产 | 边数 | 进 α | 不进 α |
+|---|---|---|---|
+| ashare | **8** | **7**（RY / USDCNY / USD_INDEX / VIX / MARGIN / NATIONAL_ETF / AMOUNT_SHOCK）| `EQUITY_SUPPLY`（supply 层）|
+| gold | **11** | **9** | `ETF_FLOW`、`CB_GOLD_BUY`（样本不足/方向不可靠）|
+
+已删的两条 A 股边（别复活）：
+
+- `INSIDER_NET`（2026-11-23，用户：内部人增持只在宏观层用）——`insider_net` 列仍在
+  `PANEL_COLS` 里供 `NET_SUPPLY` 使用，但不再成边；`validate_insider`（四段稳健性）
+  一并退役，因为四等分后每段只有 16~18 个月，够不到 `fit_distributed_lag` 的
+  `max_lag+16=22` 下限，**结构性失效**。
+- `SHIBOR3M`（2026-11-28，用户：银行间流动性不在关注信号集）——数据层同时删了
+  `shibor3m` 表；`SHIBOR_CHG_BP` 派生列一起去掉。它没被任何边当 `confounder`，
+  所以删它不影响其他边的估计，只影响 α 的加总（它自己那份贡献约 −2bp）。
+
+⚠️ `AMOUNT_SHOCK` 的 `n_obs` 会**随数据修订来回变**（观测到 34 → 22 → 34）：
+它按 `VOLUME_Z` 的事件数计，而成交量历史被日更重写过。**读这条边的 n 之前先看数据日期**，
+别把它当成标签或边结构变化的信号。
+
+纯度（`purity`）是**逐边**按该边自己的 β 与 CI 算的：删掉别的边、或别的边换估计器，
+都不会改变它。跨边比较纯度只在"同一次估计、同一份标签"下有意义的。
 
 ⇒ 引用某条边的 β 时，要说清它是**哪个区间、什么样本单位**上估的；跨边相加得到的 α
 （以及不同边之间的 β 比较）都只能是"各段各自成立"的粗略合成。
@@ -172,9 +206,9 @@ fit_dml_edge(sub, …)          # 标签窗口（有标签的日子）
 | `nodes.py` | 节点定义与分类（外生/中间/内生） |
 | `estimators.py` | DML / 分布滞后 / 事件研究 / OLS(HAC) 四类估计器 |
 | `signal_layer.py` | 读边快照 → 算当期 z → 剂量×敏感性 → 汇总 α |
-| `macro_layer.py` | 供需层：`pair_view`（位置 × 边际）、`describe_series`、结构层读取 |
+| `macro_layer.py` | 供需层：`pair_view`（位置 × 边际）、结构层读取 |
 | ~~`freshness.py`~~ | **已删（2026-11-18）**：判定口径搬回数据层（见 §8.1）；本模块只剩 `pipeline._notes`（拼句子）与 `_month_of`（归档月） |
-| `narrative.py` | 渲染总览卡与详情卡（Markdown） |
+| `web/render.py` | 渲染总览卡与详情卡（Markdown）——`causual_core/narrative.py` 与 `build_console()` 已删（2026-11-23） |
 | `snapshot.py` | 边快照的读写（`causual/data/snapshots/`） |
 | `spec.py` | **吃两种状态层 spec 结构**：`label_signature_of(spec)` / `primary_group(spec)` / `profile_of(spec)`（见 §3.4） |
 | `regime_fit.py` | 拟合 HMM 状态模型并落盘 |
@@ -306,11 +340,12 @@ python -m datahub.fin.check
 
 | 项 | 影响 | 建议 |
 |---|---|---|
-| `narrative.py` 579 行，卡片/详情/控制台三个渲染都在里面 | 改一处容易碰坏另一处 | 拆成 `card.py` / `detail.py` / `console.py` |
+| `web/render.py` 677 行，卡片/详情两个渲染都在里面（`causual_core/narrative.py` 那层早已不存在） | 改一处容易碰坏另一处 | 拆成 `card.py` / `detail.py` |
 | `pipeline.prepare()` 既算特征又算供需层 | 职责混在一起 | 拆 `features.py` / `supply.py` |
 | 状态外推用"上次模型 + 新数据" | 模型老了会失真，卡片有"龄期"提示但不会自动重训 | 加龄期阈值告警 |
-| `CAUSUAL_DATA_SOURCE=csv` 已废弃但代码里还有残留判断 | 迷惑 | 清掉 |
-| `EQUITY_SUPPLY` 的列 2026-11-15 才接上真数据（`equity_fin_monthly`），但**边快照里还是 `n=0` 的旧模型** | 卡片上这条边一直显示"未估计"，分不清是"没数据"还是"没重估" | adapter 定稿后统一重估 edges（本轮明确不做） |
+
+> `EQUITY_SUPPLY` 那条债（"列接了真数据、快照还是 `n=0`"）**已经消掉**：2026-11 的重估之后
+> 它 `n=60`、正常参与展示（只是不进 α，因为 tier=supply）。
 
 ### 8.1 识别口径的坑（都是静默的）
 

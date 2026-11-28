@@ -44,14 +44,14 @@ causual/
 │   ├── signal_layer.py          # 贡献 = 剂量 × β × z × gate × active × 纯度
 │   ├── macro_layer.py           # 结构层 + 供需层（位置 × 边际）
 │   ├── (freshness.py 已删)       # 判过期搬到数据层：shared.adapter.freshness
-│   ├── regime_fit.py            # 状态模型拟合
-│   ├── regime_infer.py          # 今日后验 / 标签外推
 │   ├── pipeline.py              # 出卡编排：面板 → 信号 → 叙事 → 落盘
 │   ├── cli.py                   # 命令行：regime / edges / audit / daily
-│   ├── narrative.py             # 卡片渲染（总览 / 详情 / 控制台）
 │   ├── card_split.py            # 把完整卡拆成日频卡 / 月频卡
-│   ├── snapshot.py / evaluate.py
+│   ├── snapshot.py / evaluate.py / spec.py
 │   └── （原 utils/ 已迁到 shared/utils/：time_align.py、data_processing.py）
+│
+│   # 卡片渲染在 causual/web/render.py（causual_core/narrative.py 2026-11-23 已删）；
+│   # 状态模型拟合/外推在 state_layer（本模块只消费传进来的标签）。
 ├── causual_assets/
 │   ├── common.py                # 面板组装公用件（列名映射 + 公布滞后）
 │   ├── ashare/{pipeline,config}.py
@@ -270,15 +270,17 @@ regime_engine/            独立顶级包：通用隐状态引擎（不含资产
 causual/causual_core/     与资产无关的因果内核
 ├── nodes.py              全局节点池
 ├── edge.py               Edge 数据类
-├── calendar.py           align_to_trading_calendar
 ├── estimators.py         DML / 分布滞后 / 事件研究
-├── signal.py  narrative.py  snapshot.py  evaluate.py
-├── cli.py                python -m causual.causual_core.cli daily --asset gold
-└── cli.py                regime / edges / audit
+├── signal_layer.py       贡献 = 剂量 × β × z × gate × active × 纯度
+├── macro_layer.py        结构层 + 供需层
+├── snapshot.py           边模型快照（β / CI / n_obs / fitted_until）
+├── spec.py               吃两种状态层 spec 结构（v2 / legacy）
+├── evaluate.py           方向审计
+└── cli.py                regime / edges / audit / daily
 
 causual/causual_assets/   资产插件
-├── gold/                 config(11 边) fetch label pipeline
-└── ashare/               config(12 边) fetch label pipeline
+├── gold/                 config(11 边) label pipeline
+└── ashare/               config(8 边)  label pipeline
 ```
 
 日常三条命令：
@@ -346,6 +348,18 @@ causual/
 **已删除（v4.2）**：`JEWELRY_DEMAND`、`TECH_DEMAND`、`MINE_SUPPLY` 三条季频边。
 它们只有 WGC 季频数据（~35 个季度），去趋势后全部不显著，且合计只占黄金需求的小部分；
 恢复时需把三列加回 `REQUIRED_COLUMNS`。
+
+**A 股那边是 8 条边（其中 7 条进 α）**，逐边的估计器 / `n_obs` / 拟合区间见
+[`DESIGN.md` §3.5](DESIGN.md)（那张表同时是"各边样本区间不一致"的说明）。
+
+**已删除（2026-11-23 / 11-28，别复活）**：
+
+- `INSIDER_NET → CSI_ALL`（内部人净增持）——用户：内部人增持**只在宏观层用**。
+  数据列 `insider_net` 仍在面板里，供宏观层算「净供给（融资−增持）」；
+  配套的分段稳健性诊断 `validate_insider` 一并退役（四等分后每段 16~18 个月，
+  够不到分布滞后的 `max_lag+16=22` 下限，方法本身结构性失效）。
+- `SHIBOR3M → CSI_ALL`（银行间流动性）——用户：不在关注信号集；数据层同时删了
+  `shibor3m` 表。它没被任何别的边当 `confounder`，所以删它只影响 α 加总（它自己约 −2bp）。
 
 三个刻意的设计：
 
@@ -520,7 +534,10 @@ python -m causual.causual_core.cli audit  --asset ashare   # 方向一致性审�
 
 > ⚠️ **v3.1 口径（2026-10 及之前）**：标签体系是**黄金 K=4 / A 股 K=4**，且含 `extreme_*` 链；
 > `label_signature` 当时是**按特征清单哈希**的。
-> 2026-11-22 起：A 股降为 **K=3**、extreme 链移除、`label_signature` 改为**按标签序列**算。
+> 2026-11-22 起：A 股降为 **K=3**、extreme 链移除、`label_signature` 改为**按标签序列**算
+> （`sha1("日期:标签")` 前 12 位，只哈希 primary 组 → **加分组不变**，换特征/换窗口会变）。
+> 2026-11-23 又修了一个 t-HMM 的 bug（历史每段都被贴上"最后一次 refit 的命名映射"，
+> 名字被整体置换）——**那之前的纯度与 α 不可与之后直接比较**，详见 `CHANGES.md` v5.60。
 > **下表数字仅作历史参照，不可与当前卡片直接对比**——同一日期在旧标签下落在哪个状态、
 > 用的是哪套 β，都已经变了。
 
@@ -567,6 +584,10 @@ python -m causual.causual_core.cli audit  --asset ashare   # 方向一致性审�
 | 状态模型靠外推 | 模型超过 2 个月没重训就会失真，卡片只标"龄期"不阻断 |
 | ~~新鲜度只看 `freshness.WATCH*` 里的表~~ | **2026-11-18 已修**：手写清单删除，改按 `tables_of(panel)` 全表判（口径在数据层）。旧清单只盯 11 张日频表，`geopolitic_risk` / `gold_open_interest` / `xau_usd` 过期了根本没人报（实测补上后 ashare / gold 卡片各多一条告警） |
 | 新鲜度按 `lag_days` 判"该不该有" | `lag_days` 描述的是**发布节律**，判不出"连续 15 个月没更新"这类停更——只能靠卡片的"数据滞后"提示与 readme 第 4.5 节人工盯 |
+| `AMOUNT_SHOCK` 的 `n_obs` 会随数据修订来回变（实测 34 → 22 → 34）| 它按 `VOLUME_Z` 的事件数计，而成交量历史被日更重写过。**读这条边的 n 之前先看数据日期**，别把它当成标签或边结构变化的信号 |
+| 各边的样本区间不一致（DML 用有标签的日子、事件研究用事件、分布滞后用月度）| α 是把不同区间上估出来的 β 相加，只能是"各段各自成立"的粗略合成；逐边区间见 DESIGN §3.5。**不是 bug，是暂不统一的口径** |
+| 纯度（`purity`）逐边按自己的 β 与 CI 算 | 删掉别的边、别的边换估计器，都不会改它；**跨边比纯度只在"同一次估计、同一份标签"下有意义** |
+| `label_signature` 变了就必须重估 edges | v2 起签名 = primary 组的标签指纹：**换特征 / 换滚动窗口会变**，**加分组不变**。对不上时出卡直接 `CardRejected`（fail-closed） |
 
 ## 11. 使用建议
 
