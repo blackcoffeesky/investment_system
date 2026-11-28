@@ -256,8 +256,9 @@ def test_state_excludes_causual_inputs():
     """
     from state_layer.port import get_port
 
+    # 2026-11-28：`shibor3m` 已从数据层与因果层删除，不再列在"causual 专属表"里
     causual_only = {"vix", "usdcny", "usd_index", "fed_rate", "real_yield_10y",
-                    "shibor3m", "margin_balance", "etf_shares", "insider_net"}
+                    "margin_balance", "etf_shares", "insider_net"}
     used = set(get_port().required_tables("ashare"))
     assert not (used & causual_only), f"状态层读了 causual 的表：{used & causual_only}"
 
