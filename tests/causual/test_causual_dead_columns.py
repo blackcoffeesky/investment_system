@@ -167,9 +167,11 @@ def test_ashare_panel_column_count():
 
     2026-11-15 改语义列名并掉三对（`CLOSE`+`CSI_ALL`、`EQUITY_SUPPLY`+
     `EQUITY_FIN_MONTHLY`、`CLOSE`+`GOLD_CNY`）；2026-11-16 六列派生量改名
-    （数目不变，只是大小写）。数字对不上说明有列被漏搬或重复加。
+    （数目不变，只是大小写）；2026-11-28 删 `SHIBOR3M` 边（连 `shibor3m` 列与
+    `SHIBOR_CHG_BP` 派生列一起去掉）→ A 股 raw 35→34、prep 56→54。
+    数字对不上说明有列被漏搬或重复加。
     """
-    expect = {"ashare": (35, 56), "gold": (19, 28)}
+    expect = {"ashare": (34, 54), "gold": (19, 28)}
     for asset, (want_raw, want_prep) in expect.items():
         pkg, prep = _panel(asset)
         from causual.causual_core.cli import _load_panel

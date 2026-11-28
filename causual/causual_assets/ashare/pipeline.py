@@ -35,7 +35,7 @@ PANEL_COLS: tuple[str, ...] = (
     # 价格 / 量
     "open", "high", "low", "close", "volume",
     # 指数 / 资金
-    "csi300", "csi1000", "shibor3m", "margin_balance",
+    "csi300", "csi1000", "margin_balance",
     # A 股宏观 / 供给
     "pmi", "insider_net", "retail_sales", "retail_sales_mom",
     "cpi_yoy", "ppi_yoy", "industrial_yoy", "exports_yoy",
@@ -124,7 +124,6 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
     df["VIX_CHG"] = df["vix"].diff()
     df["USDCNY_RET"] = dp.pct_change_pct(df["usdcny"])
     df["FED_CHG_BP"] = dp.diff_bp(df["fed_rate"])
-    df["SHIBOR_CHG_BP"] = dp.diff_bp(df["shibor3m"])
     df["PMI_CHG"] = df["pmi"].diff()
     df["MARGIN_CHG"] = dp.pct_change_pct(df["margin_balance"])
     # 两融净流入（亿元/日）：余额差分。信号层用"净流入/流出方向"比余额水平更有信息

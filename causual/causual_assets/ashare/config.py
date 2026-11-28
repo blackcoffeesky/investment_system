@@ -17,7 +17,6 @@ from causual.causual_core.nodes import Node
 
 # 资产专用节点的传输特性：决定估计器（slow → 分布滞后，fast → 当期 DML）
 LOCAL_NODES: dict[str, Node] = {
-    "SHIBOR3M": Node("SHIBOR3M", "D", "asset", "fast", 1, "Shibor 3M"),
     "PMI": Node("PMI", "M", "natural", "slow", 3, "制造业 PMI"),
     "MARGIN_BALANCE": Node("MARGIN_BALANCE", "D", "asset", "fast", 1, "两融余额"),
     "NATIONAL_ETF": Node("NATIONAL_ETF", "D", "asset", "fast", 0, "国家队 ETF 份额"),
@@ -54,7 +53,6 @@ TREATMENT_COL: dict[str, str] = {
     N.REAL_YIELD: "RY_CHG_BP",
     N.VIX: "VIX_CHG",
     N.USDCNY: "USDCNY_RET",
-    "SHIBOR3M": "SHIBOR_CHG_BP",
     "PMI": "PMI_CHG",
     "MARGIN_BALANCE": "MARGIN_NET",
     "NATIONAL_ETF": "national_etf_event",
@@ -68,7 +66,6 @@ SOURCE_COL: dict[str, str] = {
     N.REAL_YIELD: "RY_CHG_BP",
     N.VIX: "VIX_CHG",
     N.USDCNY: "USDCNY_RET",
-    "SHIBOR3M": "SHIBOR_CHG_BP",
     "PMI": "pmi",
     "MARGIN_BALANCE": "MARGIN_NET",
     "NATIONAL_ETF": "national_etf",
@@ -113,12 +110,9 @@ EDGES: list[Edge] = [
          reading_mode="diff", reading_desc="VIX 日变化",
          confounders=("usd_index",),
          falsifier="国内政策对冲时，外盘恐慌不传导"),
-    Edge(source="SHIBOR3M", target=TARGET,
-         mechanism="银行间流动性（资金成本）", direction=-1, magnitude=0.65,
-         latency="1-2 日", regime_valid=ALL, estimator="causal_forest",
-         reading_mode="diff", reading_desc="Shibor 3M 日变化（bp）",
-         confounders=("real_yield_10y",),
-         falsifier="流动性宽松但信用未扩张，资金淤积在银行间"),
+    # SHIBOR3M 已删除（2026-11-28，用户：银行间流动性不在关注信号集里；
+    # 数据层的 `shibor3m` 表也一并删了）。它的 confounder 只有 real_yield_10y，
+    # 没有别的边依赖它，所以删掉不影响其他边的估计，只影响 α 的加总。
     # PMI 已移除（v5.2）：符号与理论相反、n=159 且不显著。
     # 未来只作为混杂/效应修饰，不再单独成边。见 PROBLEM P25。
     Edge(source="MARGIN_BALANCE", target=TARGET,
