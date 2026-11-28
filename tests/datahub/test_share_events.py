@@ -11,10 +11,11 @@ import importlib
 
 import pandas as pd
 
-from datahub.fin.sources.share_events import NOT_EVENT, normalize_events, to_prefixed
+from datahub.fin.sources.akshare import (NOT_EVENT, _prefixed,
+                                        share_change_normalize as normalize_events)
 
 
-def test_to_prefixed_by_code_segment():
+def test_prefixed_by_code_segment():
     """按**交易所代码段**判，不按首字符 —— `920xxx` 属北交所，首字符是 9。"""
     cases = {
         "600519": "sh600519",
@@ -32,7 +33,7 @@ def test_to_prefixed_by_code_segment():
         "abcdef": None,
     }
     for raw, want in cases.items():
-        assert to_prefixed(raw) == want, (raw, to_prefixed(raw), want)
+        assert _prefixed(raw) == want, (raw, _prefixed(raw), want)
 
 
 def _raw() -> pd.DataFrame:
@@ -53,7 +54,6 @@ def test_normalize_drops_periodic_reports_and_converts_units():
     # 万股 → 股：125,008.16 万股 = 1,250,081,601 股（与库内快照逐股一致）
     assert abs(df.loc[df["date"] == "2020-06-24", "total_after"].iloc[0]
                - 1_250_081_601) < 2.0   # 浮点：125008.16 万股
-    assert set(df["kind"]) == {"event"}
     assert set(df["code"]) == {"sh600519", "sz000001", "bj920670"}
 
 

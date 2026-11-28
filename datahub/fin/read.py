@@ -161,9 +161,10 @@ LONG_SCHEMAS: dict[str, dict[str, str]] = {
     "etf_shares": {"shares": "REAL"},
     # 股本变动：每次增发/回购注销/送转插一行，市值按日期向前填
     "shares_history": {
-        # `kind`：`base` = 当期快照（ashareapi 一次全市场）/ `event` = 股本变动事件（巨潮）。
-        # `event_code` / `event_type` 只有 event 行有值（变动原因编码 / 中文原因）。
-        "kind": "TEXT",          # base / event
+        # 一行 = 一笔股本变动事件（巨潮）。`event_code` = 变动原因编码（如 015011），
+        # `event_type` = 中文原因（如 转增）。**没有 `kind` 列**：
+        # 曾经为兼容"当期快照"加过 `kind=base/event`，那让两套口径混在一张表里，
+        # 2026-11-28 清掉了（快照只是"最后一笔事件"，不需要第二种行）。
         "event_code": "TEXT",
         "event_type": "TEXT",
         "delta_total": "REAL",

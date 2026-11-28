@@ -284,21 +284,21 @@ _FROZEN_ANNOUNCED = False
 
 
 def _frozen_tables() -> set[str]:
-    """**有意冻结**的表：`SOURCES` 里登记但 `enabled=False` 的。
+    """**有意停更**的表：所有源都标了 `frozen=True`。
 
-    2026-11-18：`freshness` 一上线就把 `geopolitic_risk` / `industrial_yoy` /
-    `exports_yoy` 报成 overdue——**技术正确、语义错误**：这三张是**有意停更**的
-    （FRED 无此序列 / 财经日历接口停更），不是"忘了跑"。
-
-    判定依据只能是 **源注册表**（`metadata` 里没有 `enabled` 列）：
-    在 `SOURCES` 里且 `enabled=False` ⇒ 冻结；**不在 `SOURCES` 里的表（手工导入表、
-    intake 表）一律不跳**——它们更该被盯着（`gold_etf_holdings` 就是靠这个报缺月的）。
+    ⚠️ 判断依据是 `Source.frozen`，**不是**"有没有 enabled 的源"：
+    `enabled=False` 有两种含义——「有意停更」（上游没了）和「手动节奏」
+    （`shares_history` 季度跑、`adj_factor` 按需回填）。后者**必须继续被检查**，
+    否则源悄悄停了我们不会知道（2026-11-28：`shares_history` 一度因此被跳过，
+    180 天过时规则永远不触发）。
     """
     from datahub.fin.sources import SOURCES
 
-    all_t = {t for s in SOURCES for t in s.table.split("|")}
-    active = {t for s in SOURCES if s.enabled for t in s.table.split("|")}
-    return all_t - active
+    by_table: dict[str, list] = {}
+    for src in SOURCES:
+        for t in str(src.table).split("|"):
+            by_table.setdefault(t, []).append(src)
+    return {t for t, srcs in by_table.items() if srcs and all(x.frozen for x in srcs)}
 
 
 def _announce_frozen(frozen: set[str], skipped: list[str]) -> None:

@@ -466,8 +466,23 @@ INSERT INTO t (date, c1, c2) … ON CONFLICT(date) DO UPDATE SET c1=excluded.c1,
   低频表的 lag 不能设得比周期还长。
 - 严格 `>`：`expect + lag` 当天是**发布截止日**（数据可能收盘后才入），当天不算 overdue。
   连带：`lag=0` 的日频表在严格 `>` 下**永远不会 overdue**，靠 `stale` 报。
-- `static` / `eav` 跳过（没有日期轴）；**冻结表**（`SOURCES` 里 `enabled=False`）也不进，
+- `static` / `eav` 跳过（没有日期轴）；**冻结表**（`Source.frozen=True`）也不进，
   否则同一张表 `freshness` 说"有意停更"、`check` 说"缺 N 天"，两处结论打脸。
+
+### 13.1.1 「有意停更」和「手动节奏」是两件事
+
+2026-11-28 踩过：`shares_history` 的唯一源标了 `enabled=False`（季度/手动跑），
+而当时 `_frozen_tables()` 用的是"没有 enabled 的源"→ 整张表被当成冻结表跳过 →
+**180 天过时规则永远不会触发**（等于"没人管它会不会停"）。
+
+现在 `Source` 有两个独立字段：
+
+| 字段 | 含义 | `check` / `freshness` |
+|---|---|---|
+| `enabled=False` | **手动节奏**：不参加每日 update（`shares_history` 季度跑、`adj_factor` 按需回填） | **照旧检查** |
+| `frozen=True` | **有意停更**：上游没了（`exports_yoy` / `industrial_yoy` / `geopolitic_risk`） | 跳过，并在 stderr 打一次清单 |
+
+判据：`_frozen_tables()` = **所有源都 `frozen=True`** 的表。
 
 ### 13.2 `find_gaps`（`fin.check`）
 
@@ -576,15 +591,22 @@ find_gaps(table, *, lookback=None, max_age_days=None, today=None, path=None) -> 
 
 ## 18. 股本变动历史（`shares_history`）
 
-### 18.1 两类行，一张表
+### 18.1 只有一类行：事件
 
-| `kind` | 含义 | 来源 | 行数（2026-11-28） |
-|---|---|---|---|
-| `base` | 当期**快照**（每只一条） | ashareapi `/v1/snapshot` | 5,578 |
-| `event` | 股本**变动事件**（每笔一条） | 巨潮（akshare `stock_share_change_cninfo`） | 107,405 |
+| 列 | 含义 |
+|---|---|
+| `code` / `date` | 证券 + **股本变动生效日** |
+| `event_code` / `event_type` | 变动原因编码（如 `015011`）+ 中文（如 `转增`） |
+| `delta_total` | 与**上一笔**的总股本差（第一笔为 `NULL`） |
+| `total_after` / `float_after` | 变动后总股本 / 流通股本（**股**） |
 
-`event` 行多两列：`event_code`（变动原因编码，如 `015011`）/ `event_type`（中文原因，如 `转增`）。
-同一天既有送股又有转增的，合并成一行，原因用 `、` 连接、编码用 `,` 连接。
+**没有 `kind` 列**。2026-11-28 之前曾用 `kind=base/event` 把"当期快照"和"历史事件"
+混在一张表里——那是**为省事做的临时凑合**：5,578 行 `base` 全在 2026-11-14、
+`event_code`/`event_type` 全空，`dividend_yield` 靠它兜底权重。
+
+后果很具体：**2026 年新旧股息率"完全一致"是数据重叠造成的假象**
+（清掉 `base` 重算后是 +0.01%，见 §18.5）。现在快照不再是"另一种行"——
+它就是**最后一笔事件**。
 
 ### 18.2 三条口径（错一条就静默错）
 
@@ -620,7 +642,7 @@ find_gaps(table, *, lookback=None, max_age_days=None, today=None, path=None) -> 
 
 | 场景 | 用什么 | 成本 |
 |---|---|---|
-| 首次回填（1990 起全历史） | `python -m datahub.fin.intake.shares "data/股本数据/股本变动历史明细.csv"` | 约 20 秒（本地文件） |
+| 首次回填（1990 起全历史） | `python trash/intake_shares.py …`（**一次性脚本在本地 `trash/`，gitignored 不入库**） | 约 20 秒 |
 | 日常增量 | `python -m datahub.fin.update --only shares_history`（源 `enabled=False`，手动跑） | 5,658 只 × ~0.6s / 8 线程 ≈ **5~7 分钟** |
 
 **数据文件不进 git**（`data/` 是 gitignored，30 MB csv + 9.5 MB parquet）。
@@ -654,9 +676,11 @@ find_gaps(table, *, lookback=None, max_age_days=None, today=None, path=None) -> 
 | 2023 | 2.3713% | 2.4647% | +3.94% |
 | 2024 | 2.3750% | 2.4473% | +3.04% |
 | 2025 | 2.1258% | 2.1693% | +2.05% |
-| 2026 | 2.0641% | 2.0640% | −0.00% |
+| 2026 | 2.0641% | 2.0644% | +0.01% |
 
-**2016-2026 十一年**：平均绝对差 **0.157 个百分点**、平均相对差 **9.67%**、最大 **+25.67%（2016）**。
+**2016-2026 十一年**：平均绝对差 **0.157 个百分点**、平均相对差 **9.68%**、最大 **+25.67%（2016）**。
+
+⚠️ **2026 年是 +0.01%，不是 0.00%**：清掉 `base` 行之前它显示 −0.00%，那是"当年快照 == 当年时点股本"的重叠假象，**不是结论**。
 
 **结论**：旧口径**系统性低估**，且越往前越严重（股本单调变大）；2026 年差 0.00%
 是因为"当前快照"正好等于该年时点值。`yield_median` 基本不动（每股口径，与权重无关）。
@@ -693,3 +717,5 @@ find_gaps(table, *, lookback=None, max_age_days=None, today=None, path=None) -> 
 | 11-28 | 删 `shibor3m`（表 + 源 + 面板列 + 元数据） | 源数 34 → 33、表 41 → 40；上游滞后 8 天且用户不关注银行间流动性 |
 | 11-28 | 接入巨潮股本变动事件（107,405 行）+ 删 `shibor3m` | `shares_history` 变事件表（`freq=SPARSE`）；权重改 as-of（2020 年股息率 +12.8%）；2020 年前的年份用最早一期股本兜底 |
 | 11-28 | SPARSE 事件表补「最久多久算过时」（`shares_history` 180 天）+ 跳过行显式打印 | 阈值必须写在 `check.SPARSE_MAX_AGE` 里、且 `metadata.note` 要同步；**不给 `201xxx` 补前缀**（B 股会混进全市场统计） |
+| 11-28 | 清掉 `shares_history` 的 `kind=base` 5,578 行 + `DROP COLUMN kind`；删 `ashare_shares` 源；`share_events.py` 并回 `akshare.py`；两个一次性脚本移入 `trash/` | **不要为省事把两套口径混进一张表**（`kind` 会成为永久拐杖）；2026 年股息率由此从 −0.00% 变成 +0.01%，后者才是真值 |
+| 11-28 | `Source` 加 `frozen` 字段，`_frozen_tables()` 改按它判 | `enabled=False` 曾同时被当成冻结，导致 `shares_history` 的 180 天规则永不触发；**手动节奏的表必须继续被检查** |

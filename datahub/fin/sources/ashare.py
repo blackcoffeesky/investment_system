@@ -294,39 +294,3 @@ def ashare_daily_delta(*, table: str = "stock_daily", force_date: str = "",
     return out
 
 
-def ashare_shares(start: str = "", end: str = "", table: str = "",
-                 batch: int = 200, **_) -> pd.DataFrame:
-    """当前股本快照 → shares_history 的 kind=base 行。
-
-    走 `/v1/snapshot-batch`：专业版 **200 只/次**，全市场 28 次（实测约 1 分钟）。
-    比逐只 `/v1/snapshot` 快 200 倍，且**额度一样**（1 次/只）。
-
-    历史变动靠以后的增发/回购/送转事件往前推，不从今天倒推
-    （倒推会把增发漏掉；`/v1/events` 只给"当日"事件，拿不到历史）。
-    """
-    codes = _all_codes()
-    today = str(pd.Timestamp.today().date())
-    rows: list[dict] = []
-    failed: list[str] = []
-    for i in range(0, len(codes), batch):
-        chunk = codes[i:i + batch]
-        res = api_get("/snapshot-batch", codes=",".join(chunk))
-        got = {}
-        if res.get("ok"):
-            for e in api_rows(res):
-                if isinstance(e, dict) and e.get("code"):
-                    got[str(e["code"])] = e
-        for code in chunk:
-            e = got.get(code)
-            d = e.get("data") if isinstance(e, dict) else None
-            total = _num(d.get("total_shares")) if isinstance(d, dict) else None
-            if not e or not e.get("ok") or not total:
-                failed.append(code)
-                continue
-            rows.append({"code": code, "date": today, "kind": "base",
-                         "delta_total": None, "total_after": total,
-                         "float_after": _num(d.get("float_shares"))})
-    if failed:
-        print(f"  shares_history：{len(failed)} 只失败（无快照/非股票），例：{failed[:5]}")
-    print(f"  shares_history：{len(rows)}/{len(codes)} 只写入（{today}）")
-    return pd.DataFrame(rows)

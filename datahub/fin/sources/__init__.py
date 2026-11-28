@@ -21,12 +21,10 @@
 
 from __future__ import annotations
 
-from datahub.fin.sources import share_events
 from datahub.fin.sources.base import Source, _with_prefix
 
 from datahub.fin.sources.ashare import (
     ashare_company,
-    ashare_shares,
 )
 from datahub.fin.sources.akshare import (
     cn_cpi,
@@ -62,7 +60,7 @@ __all__ = ["SOURCES", "Source"]
 SOURCES: list[Source] = [
     # 股本变动事件（巨潮 / akshare）：5,658 只 × ~0.6s ≈ 5~7 分钟，
     # 所以不参加每日 update；季度或手动跑 `update --only shares_history`。
-    Source("shares_history", share_events.shares_history_events, {}, shape="long",
+    Source("shares_history", akshare.share_change, {}, shape="long",
            enabled=False, note="股本变动事件（巨潮）；季度或手动跑，约 5-7 分钟"),
     # 共享宏观
     Source("vix", fred, {"series_id": "VIXCLS"}, note="FRED"),
@@ -70,7 +68,7 @@ SOURCES: list[Source] = [
     Source("usd_index", fred, {"series_id": "DTWEXBGS"}, note="FRED 广义美元指数"),
     Source("fed_rate", fred, {"series_id": "DFF"}, note="FRED 联邦基金有效利率"),
     Source("real_yield_10y", fred, {"series_id": "DFII10"}, note="FRED 10 年 TIPS"),
-    Source("geopolitic_risk", fred, {"series_id": "GPRC"}, enabled=False,
+    Source("geopolitic_risk", fred, {"series_id": "GPRC"}, enabled=False, frozen=True,
            note="FRED 无此序列；旧数据冻结，新数据改用 world_tension"),
     Source("world_tension", world_tension, note="World Tension Meter（2026-03 起）"),
     Source("xau_usd", xaus_gold, note="XAUS Gold API；2021-11 之前保留旧值"),
@@ -96,9 +94,9 @@ SOURCES: list[Source] = [
     Source("m1_yoy|m2_yoy|m1_level|m2_level", cn_money, note="货币供应，一并取 4 张表"),
     Source("retail_sales", cn_retail, note="社零累计同比（旧口径）"),
     Source("retail_sales_mom", cn_retail_mom, note="社零当月同比"),
-    Source("industrial_yoy", cn_industrial, enabled=False,
+    Source("industrial_yoy", cn_industrial, enabled=False, frozen=True,
            note="仅财经日历接口，已停更（2025-08）"),
-    Source("exports_yoy", cn_exports, enabled=False, note="同上"),
+    Source("exports_yoy", cn_exports, enabled=False, frozen=True, note="同上"),
     Source("total_shares|total_mktcap", stock_market_cap, note="交易所月度统计"),
     Source("gold_cpi_surprise", us_cpi_surprise, note="FRED CPIAUCSL → 同比 − AR(1) 预期"),
 
@@ -115,7 +113,6 @@ SOURCES += [
     # 全市场清单：一次调用拿全，每月刷一次足够
     Source("company", ashare_company, shape="static", note="ashareapi /v1/stocks"),
     # 当前股本快照：季度刷一次（历史变动靠事件推）
-    Source("shares_history", ashare_shares, shape="long", note="ashareapi /v1/snapshot"),
     # 日 K：**先补历史（historical-batch）再取最新（snapshot）**。
     # 只靠 snapshot 的话错过一天就永远补不回来（2026-11-21 服务器缺 11-19 就是这么来的）；
     # 缺口检测按"最近 20 个交易日里库里缺哪几天"，**不是**只看 MAX(date)（洞看不出来）。

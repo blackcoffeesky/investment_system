@@ -19,7 +19,8 @@ class Source:
     params: dict = field(default_factory=dict)
     kind: str = "auto"        # auto / manual
     shape: str = "auto"       # auto / long / static（决定写库方式）
-    enabled: bool = True
+    enabled: bool = True      # False = 日常更新跳过（**手动节奏**，仍要检查新鲜度）
+    frozen: bool = False      # True = **有意停更**（上游没了）；check / freshness 都不报它
     note: str = ""
 
 

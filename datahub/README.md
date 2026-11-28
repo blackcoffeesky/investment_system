@@ -241,15 +241,17 @@ API 不支持区间就在函数内过滤。返回值只含数据本身——对�
 
 ## 6.1 股本变动历史（`shares_history`）
 
-一张表两类行：`kind='base'`（当期快照，每只一条）+ `kind='event'`（**变动事件**，每笔一条，
-带 `event_code` / `event_type`）。2026-11-28 接入巨潮的 107,405 条事件（1990 起）。
+一行 = **一笔股本变动事件**（1990 起，来自巨潮），列：
+`code / date / event_code / event_type / delta_total / total_after / float_after`。
+`event_code` 是原因编码（`015011`）、`event_type` 是中文（`转增`）。**没有 `kind` 列**。
 
 ```bash
-# 首次回填（本地大文件，不进 git）
-python -m datahub.fin.intake.shares "data/股本数据/股本变动历史明细.csv" --dry-run   # 先看统计
-python -m datahub.fin.intake.shares "data/股本数据/股本变动历史明细.csv"             # 真写
+# 首次回填：一次性脚本在 trash/（不进 intake）；大文件在 data/ 且 gitignored
+# 一次性脚本放在本地 trash/（gitignored，不入库）；换机器要自己留一份
+python trash/intake_shares.py "data/股本数据/股本变动历史明细.csv" --dry-run   # 先看统计
+python trash/intake_shares.py "data/股本数据/股本变动历史明细.csv"             # 真写
 
-# 日常增量（源 enabled=False，手动/季度跑；5,658 只 ≈ 5~7 分钟）
+# 日常增量（源 enabled=False，手动/季度跑；5,658 只 ≈ 5-7 分钟）
 python -m datahub.fin.update --only shares_history
 ```
 
@@ -257,7 +259,7 @@ python -m datahub.fin.update --only shares_history
 **剔掉 `定期报告`**（约 58%，那不是变动）、**单位 ×1e4**（源是万股、库是股）、
 **代码按代码段加前缀**（`920xxx` → `bj`，不能按首字符猜）。
 
-`metadata.freq = SPARSE`：事件表不按季度判缺口，只看"别超过 90 天没更新"。
+`metadata.freq = SPARSE`：事件表不按季度判缺口，只看"超过 **180 天**没新增"。
 
 ---
 
