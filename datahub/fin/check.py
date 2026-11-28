@@ -592,13 +592,6 @@ def find_gaps(table: str, *, lookback: int | None = None,
     return out
 
 
-def find_gaps_list(table: str, *, lookback: int | None = None,
-                   today: str | pd.Timestamp | None = None,
-                   path: Path | None = None) -> list[str]:
-    """兼容薄包装：只要 `missing` 的调用方用它（别把调用点改散）。"""
-    return find_gaps(table, lookback=lookback, today=today, path=path)["missing"]
-
-
 def _period_of(day: str, freq: str) -> object:
     """一个日期属于哪个"期"（`M`/`Q`/`Y`），`D` 原样返回日期字符串。"""
     if freq in ("M", "Q", "Y"):

@@ -334,11 +334,11 @@ def share_change_normalize(raw: pd.DataFrame, *, code_col: str = "证券代码",
         stats["跳过原因"] = (f"深 B 老代码段（{bad[0]} 一类，{len(bad)} 个代码），"
                           f"不在 A 股池 → 不猜前缀、不写库")
     stats["日期无法解析"] = int(df["date"].isna().sum())
-    df = cast_ok(df.dropna(subset=["code", "date"]))
+    df = df.dropna(subset=["code", "date"])
 
     is_report = df["event_type"].isin(NOT_EVENT)
     stats["定期报告（剔除）"] = int(is_report.sum())
-    df = cast_ok(df[~is_report].copy())
+    df = df[~is_report].copy()
 
     # 同一 (code, date) 多条（送股+转增同日分两条）→ 合并成一行，原因用 `、` 连
     df = df.sort_values(["code", "date"], kind="stable")
@@ -361,12 +361,7 @@ def share_change_normalize(raw: pd.DataFrame, *, code_col: str = "证券代码",
     stats["事件行"] = len(df)
     stats["涉及证券"] = int(df["code"].nunique())
     stats["日期范围"] = f"{df['date'].min()} ~ {df['date'].max()}" if len(df) else "—"
-    return cast_ok(df), stats
-
-
-def cast_ok(df: pd.DataFrame) -> pd.DataFrame:
-    """`dropna` 之后让类型检查器闭嘴（内容不变）。"""
-    return df
+    return df, stats
 
 
 def _share_change_one(raw_code: str, start: str, end: str) -> pd.DataFrame:
